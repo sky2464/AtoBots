@@ -1,6 +1,7 @@
 """Configuration: limits and paths. No company-specific text lives here."""
+import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 
 
@@ -40,6 +41,8 @@ class Config:
     memory_cap_bytes: int = 8 * 1024
     chat_rollover_tokens: int = 100000
     archive_offserver_pct: int = 70
+    batch_max_messages: int = 20
+    batch_max_bytes: int = 64 * 1024
     default_model: str = "sonnet"
     claude_bin: str = "/home/claude/.local/bin/claude"
     claude_projects_dir: Path | None = None
@@ -56,7 +59,36 @@ class Config:
         home = os.environ.get("CLAUDEBOT_HOME") or _home_from_file()
         if not home:
             raise RuntimeError(f"CLAUDEBOT_HOME is not set (and {ENV_FILE} has none)")
-        return cls(Path(home))
+        cfg = cls(Path(home))
+        cfg._apply_overrides()
+        return cfg
+
+    def _apply_overrides(self) -> None:
+        """Optional `<home>/config.json` overrides the numeric limits above.
+        Unknown keys are ignored; a bad value stops with a clear message."""
+        path = self.home / "config.json"
+        try:
+            text = path.read_text()
+        except FileNotFoundError:
+            return
+        except OSError as e:
+            raise RuntimeError(f"cannot read {path}: {e}") from None
+        try:
+            data = json.loads(text)
+        except ValueError as e:
+            raise RuntimeError(f"{path} is not valid JSON: {e}") from None
+        if not isinstance(data, dict):
+            raise RuntimeError(f"{path} must hold a JSON object")
+        numeric = {f.name for f in fields(self) if f.type in (int, "int")}
+        for key, value in data.items():
+            if key not in numeric:
+                continue
+            if isinstance(value, bool) or not isinstance(value, int) \
+                    or value < 1:
+                raise RuntimeError(
+                    f"{path}: {key} must be a whole number of 1 or more, "
+                    f"not {value!r}")
+            setattr(self, key, value)
 
     @property
     def db_path(self) -> Path:

@@ -21,6 +21,8 @@ from .db import connect, ct_display, tx, utcnow
 
 _NAME_RE = re.compile(r"[a-z][a-z0-9-]{0,30}")
 STATUSES = ("active", "paused", "retired")
+# Names the record uses for non-bot actors; no bot may take one.
+RESERVED_NAMES = ("system", "cli", "hook", "owner")
 _FILES = ("SOUL.md", "PERSONA.md", "MEMORY.md")
 _TEMPLATE_SKILLS = Path(__file__).resolve().parent.parent / "templates" / "skills"
 _LIST_FIELDS = ("skills", "mcp", "plugins")
@@ -50,6 +52,9 @@ class Bot:
 def _check_name(name) -> None:
     if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
         raise ValueError("bot name must match ^[a-z][a-z0-9-]{0,30}$")
+    if name in RESERVED_NAMES:
+        raise ValueError(f"{name!r} is reserved (used for actors in the "
+                         "record); pick another name")
 
 
 def _sha(path: Path) -> str:

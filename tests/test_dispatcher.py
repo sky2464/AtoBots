@@ -579,7 +579,15 @@ class WakeTests(Base):
         self.assertEqual(len(self.system_notes()), 1)  # at most once an hour
         self.clock.advance(1801)
         d.tick()
-        self.assertEqual(len(self.system_notes()), 2)
+        self.assertEqual(len(self.system_notes()), 1)  # same list: not again
+        requests.capture(self.conn, "and also Y", "sess")
+        d.tick()
+        self.assertEqual(len(self.system_notes()), 2)  # list changed
+        self.ready()
+        self.tick(d)
+        self.clock.advance(24 * 3600 + 1)
+        d.tick()
+        self.assertEqual(len(self.system_notes()), 3)  # unchanged for 24 h
 
     def test_open_work_wake_survives_restart_without_extras(self):
         requests.capture(self.conn, "please do X", "sess")
@@ -603,7 +611,7 @@ class WakeTests(Base):
         i = items.new(self.cfg, self.conn, "p", "backend", status="paused")
         j = items.new(self.cfg, self.conn, "q", "backend", status="pending")
         k = items.new(self.cfg, self.conn, "r", "backend", status="paused")
-        self.conn.execute("UPDATE items SET waiting_on='owner' WHERE id=?", (k,))
+        self.conn.execute("UPDATE items SET owner_waiting=1 WHERE id=?", (k,))
         self.conn.execute("DELETE FROM messages")
         d = self.make()
         d.tick()
@@ -616,7 +624,7 @@ class WakeTests(Base):
     def test_only_owner_waiting_items_do_not_wake_admin(self):
         k = items.new(self.cfg, self.conn, "r", "backend", status="paused")
         j = items.new(self.cfg, self.conn, "q", "backend", status="pending")
-        self.conn.execute("UPDATE items SET waiting_on='owner' WHERE id=?", (k,))
+        self.conn.execute("UPDATE items SET owner_waiting=1 WHERE id=?", (k,))
         d = self.make()
         d.tick()
         self.assertEqual(self.system_notes(), [])

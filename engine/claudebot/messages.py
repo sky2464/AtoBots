@@ -145,9 +145,10 @@ def ask(cfg: Config, conn: sqlite3.Connection, frm: str, to: str,
 def reply(conn: sqlite3.Connection, frm: str, message_id: int, body: str,
           file: str | None = None, hop_limit: int = Config.hop_limit,
           chain_window_s: int = Config.chain_window_s,
-          now: str | None = None) -> int:
+          now: str | None = None, home=None) -> int:
     """Answer a message. Clears the item's waiting_on and wakes the asker; the
-    reply carries the path of the asker's handoff note."""
+    reply carries the path of the asker's handoff note (absolute when `home`
+    is given: the asker's run starts in its own bot folder)."""
     with tx(conn):
         m = conn.execute("SELECT * FROM messages WHERE id=?",
                          (message_id,)).fetchone()
@@ -160,7 +161,8 @@ def reply(conn: sqlite3.Connection, frm: str, message_id: int, body: str,
         if file:
             text += f"\n\nAnswer file: {file}"
         if m["item_id"]:
-            text += f"\n\nYour handoff note: {handoff_rel_path(m['item_id'], m['from_bot'])}"
+            note = handoff_rel_path(m["item_id"], m["from_bot"])
+            text += f"\n\nYour handoff note: {os.path.join(home, note) if home else note}"
         mid = _insert(conn, frm, m["from_bot"], f"Re: {m['subject']}", text,
                       m["item_id"], "answer", m["priority"], m["level"],
                       m["effort"], message_id, None, hop_limit,
@@ -244,7 +246,8 @@ def _cmd_ask(args):
 def _cmd_reply(args):
     def go(cfg, conn):
         print(reply(conn, args.frm, args.message_id, args.body, file=args.file,
-                    hop_limit=cfg.hop_limit, chain_window_s=cfg.chain_window_s))
+                    hop_limit=cfg.hop_limit, chain_window_s=cfg.chain_window_s,
+                    home=cfg.home))
         return 0
     return _run(go)
 

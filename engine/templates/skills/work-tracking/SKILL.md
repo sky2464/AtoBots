@@ -33,7 +33,10 @@ question, or already finished, still gets linked, to an item you close as done.
 Change one with `cb item status T-0007 doing`. Close finished work with
 `cb item status T-0007 done`, and say in your reply what is actually finished.
 Use `--owner-waiting` on `cb item new` when the next move is the Owner's, and
-`--priority N` to raise something.
+`--priority N` to raise something. For an item that already exists, mark it with
+`cb item waiting-on-owner T-0007`, and clear it once he answers with
+`cb item waiting-on-owner T-0007 --off`. Items marked this way are listed for
+the Owner and are not chased again on your idle rounds.
 
 ## Before you switch
 
@@ -61,8 +64,8 @@ the order `cb next` gives.
 
 Do not wait to be asked. Run `cb next`, take the first item you may do within
 your rules, and work it. If you finish, report briefly and take the next one.
-If an item needs something only the Owner can give, set it owner-waiting and
-move on.
+If an item needs something only the Owner can give, run
+`cb item waiting-on-owner ID` and move on.
 
 ## When asked "what is open?"
 

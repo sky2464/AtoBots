@@ -29,6 +29,10 @@ SQL_MAX_BYTES = 200 * 1024 ** 2
 MEM_READINGS = 3        # low readings in a row before it is a finding
 REPEAT_DAYS = 7         # an unchanged finding is repeated after this long
 WAKES_PER_DAY = 3       # most messages the doctor sends backend in 24 hours
+WAITING_HOURS = 48      # an item waiting on a bot this long is a finding
+# Findings that are the Owner's to act on: shown by `cb doctor` and in the chat
+# brief, never sent to a bot (a bot cannot add a remote).
+NO_WAKE = ("backup-remote", "archive-remote")
 
 
 @dataclass(frozen=True)
@@ -121,6 +125,23 @@ def _age_hours(iso: str, now: str) -> float:
             ).total_seconds() / 3600
 
 
+def setup_findings(cfg: Config) -> list[Finding]:
+    """Missing off-server remotes. Only the Owner can fix these, so they are
+    never sent to a bot."""
+    if not (cfg.home / ".git").exists():
+        return []
+    have = backup.remotes(cfg)
+    out = []
+    if backup.BACKUP_REMOTE not in have:
+        out.append(Finding("backup-remote", "There is no 'backup' remote, so "
+                           "nothing is backed up off this server. The Owner "
+                           "needs to add a repository."))
+    if backup.ARCHIVE_REMOTE not in have:
+        out.append(Finding("archive-remote", "There is no 'archive' remote, so "
+                           "old archive months are not copied off this server."))
+    return out
+
+
 def _backup_checks(cfg, conn, now: str) -> list[Finding]:
     """The silent failure: backups that are not happening."""
     if not (cfg.home / ".git").exists():
@@ -129,19 +150,13 @@ def _backup_checks(cfg, conn, now: str) -> list[Finding]:
     have = backup.remotes(cfg)
     first = conn.execute("SELECT MIN(at) FROM activity").fetchone()[0]
     young = first is None or _age_hours(first, now) < STALE_HOURS
-    if backup.BACKUP_REMOTE not in have:
-        out.append(Finding("backup-remote", "There is no 'backup' remote, so "
-                           "nothing is backed up off this server. The Owner "
-                           "needs to add a repository."))
-    else:
+    out.extend(setup_findings(cfg))
+    if backup.BACKUP_REMOTE in have:
         last = backup.meta_get(conn, "backup.last_push_ok")
         if (last is None and not young) or (
                 last and _age_hours(last, now) > STALE_HOURS):
             out.append(Finding("backup-push", "No backup push has succeeded "
                                f"in over {STALE_HOURS} hours."))
-    if backup.ARCHIVE_REMOTE not in have:
-        out.append(Finding("archive-remote", "There is no 'archive' remote, so "
-                           "old archive months are not copied off this server."))
     last = backup.meta_get(conn, "backup.last_snapshot_ok")
     if (last is None and not young) or (
             last and _age_hours(last, now) > STALE_HOURS):
@@ -182,14 +197,35 @@ def _db_checks(cfg: Config, conn: sqlite3.Connection, now: str
     limit = (datetime.fromisoformat(now)
              - timedelta(seconds=cfg.lease_seconds)).isoformat(timespec="seconds")
     for r in conn.execute("SELECT id, bot, started_at FROM runs WHERE"
-                          " ended_at IS NULL AND started_at < ? ORDER BY id",
+                          " ended_at IS NULL AND started_at < ?"
+                          " AND COALESCE(lane,'')!='chat' ORDER BY id",
                           (limit,)):
         out.append(Finding(f"run:{r['id']}",
                            f"Run {r['id']} of {r['bot']} has been going since "
                            f"{r['started_at']} UTC, longer than the "
                            f"{cfg.lease_seconds} s lease."))
+    out.extend(_waiting_checks(conn, now))
     for msg in bots.check(cfg, conn):
         out.append(Finding("bots:" + msg, f"Bot files: {msg}"))
+    return out
+
+
+def _waiting_checks(conn, now: str) -> list[Finding]:
+    """Open items that have waited on someone for more than WAITING_HOURS, so
+    a question nobody answered does not sit forever."""
+    out = []
+    for r in conn.execute(
+            "SELECT id, waiting_on, updated_at, (SELECT MAX(a.at) FROM"
+            " activity a WHERE a.kind='item.waiting' AND a.ref=items.id) AS"
+            " since FROM items WHERE COALESCE(waiting_on,'')!='' AND"
+            " archived_at IS NULL AND status NOT IN ('done','parked')"
+            " ORDER BY n"):
+        since = r["since"] or r["updated_at"]
+        if since and _age_hours(since, now) > WAITING_HOURS:
+            out.append(Finding(
+                f"waiting:{r['id']}",
+                f"{r['id']} has been waiting on {r['waiting_on']} for over "
+                f"{WAITING_HOURS} hours (since {since} UTC) with no answer."))
     return out
 
 
@@ -229,7 +265,22 @@ def run(cfg: Config, conn: sqlite3.Connection, **kw) -> list[Finding]:
     now = kw.get("now") or utcnow()
     found = checks(cfg, conn, **kw)
     for f in found:
+        if f.key in NO_WAKE:
+            continue
         try:
+            if f.key.startswith("waiting:"):  # Admin's to chase, not backend's
+                if _due(conn, f.key, f.text, now):
+                    tag = hashlib.sha256(f"{f.key}{now}".encode()).hexdigest()[:12]
+                    messages.send(conn, "system", ADMIN,
+                                  "An item is waiting too long", f.text +
+                                  " Nudge whoever it waits on or ask the "
+                                  "Owner.", kind="alert", level="normal",
+                                  dedupe_key=f"doctor:{f.key}:{tag}",
+                                  hop_limit=_NEVER_STOP, now=now)
+                    _mark(conn, f.key, f.text, now)
+                    activity.record(conn, "system", "doctor.finding", f.text,
+                                    f.key)
+                continue
             tag = hashlib.sha256(f"{f.key}{f.text}{now}".encode()).hexdigest()[:12]
             if _due(conn, f.key, f.text, now) and \
                     _wakes_today(conn, now) < WAKES_PER_DAY:

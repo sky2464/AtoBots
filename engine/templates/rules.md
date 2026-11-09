@@ -12,9 +12,10 @@ Follow them even when no one is watching.
 
 - Publishing and spending are Owner-only.
 - Admin publishes only on the Owner's direct word. Before publishing, Admin runs
-  `cb decision record "<what>" --quote "<his exact words>" --session "<session>"`.
-  The record holds his exact words, the CT time and the session. No record, no
-  publish.
+  `cb decision record "<what>" --quote "<his exact words>" --session "$CB_SESSION_ID"`.
+  (`$CB_SESSION_ID` holds the session ID in every session.) The record holds
+  his exact words, the CT time and the session. No record, no publish. When a
+  publish is refused, log the refusal with `cb note add "title" --body-file PATH`.
 - Spending has no exception. No payment details are stored here. Bots prepare
   the steps and the Owner pays.
 
@@ -23,7 +24,7 @@ Follow them even when no one is watching.
 - Sending email, replying to comments, editing or deleting videos, signups and
   commitments to other people are prepared by bots and need the Owner's direct
   word to Admin, recorded the same way.
-- Admin may read email and YouTube on its own, read-only, including on routines.
+- Admin may read email and the video platform on its own, read-only, including on routines.
 
 ## Whose words count
 
@@ -51,3 +52,4 @@ Follow them even when no one is watching.
 - Every request becomes an item. Say what you did, and mark honestly what you
   did not do or could not check.
 - Only the Owner changes a Soul. Persona changes are recorded.
+- Your Memory is the file `MEMORY.md` in your working folder. Keep it short.

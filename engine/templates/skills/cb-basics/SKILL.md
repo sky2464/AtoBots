@@ -32,12 +32,24 @@ command. Everything you do through `cb` is recorded under your name.
 - `cb reply MESSAGE_ID "answer"` answers a message. Use `--file PATH` for a
   longer answer.
 
+## Setup files
+
+- An MCP server definition is `$CLAUDEBOT_HOME/mcp/NAME.json`; a plugin is the
+  folder `$CLAUDEBOT_HOME/plugins/NAME/`. Name them with `cb bot new` or
+  `cb bot set` (`--mcp`, `--plugins`).
+- Tokens from `cb secret` are not wired into MCP yet. Never write a token value
+  into an MCP file.
+- `--connectors` on a bot exposes every account connector the Owner has linked,
+  not just one. Ask the Owner before turning it on.
+
 ## Remember
 
 - `cb note add "title" --body-file PATH` files a note under your own
   knowledge folder. Use it for what others, or you in a later session, will
   need to find.
-- Memory is your own file. Keep it short and current. Never put a secret in it.
+- Memory is the file `MEMORY.md` in your working folder. Keep it short and
+  current. Never put a secret in it.
+- `$CB_SESSION_ID` is your session's ID, for `cb decision record --session`.
 
 ## Secrets
 

@@ -90,9 +90,10 @@ def task_packet(cfg: Config, conn: sqlite3.Connection, bot, msgs) -> str:
     for iid in item_ids:
         row = items.get(conn, iid)
         lines.append(f"## {iid}: {row['title']} (status {row['status']})")
-        lines.append(f"Item folder: work/{iid}/")
-        note = messages.handoff_rel_path(iid, bot.name)
-        if (cfg.home / note).is_file():
+        # Absolute: the run starts in bots/<name>, not in the company home.
+        lines.append(f"Item folder: {cfg.home / 'work' / iid}/")
+        note = cfg.home / messages.handoff_rel_path(iid, bot.name)
+        if note.is_file():
             lines.append(f"Your handoff note from earlier: {note} (read it first)")
         lines.append("")
     lines.append("Read the files named above yourself. When you finish, "
@@ -117,6 +118,7 @@ def build_command(cfg: Config, bot: bots.Bot, session_id: str, prompt_file,
            f"--setenv=HOME={CLAUDE_HOME}",
            f"--setenv=PATH={CLAUDE_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin",
            f"--setenv=CB_BOT={bot.name}",
+           f"--setenv=CB_SESSION_ID={session_id}",
            f"--setenv=CLAUDEBOT_HOME={cfg.home}",
            cfg.claude_bin, "-p", task,
            "--output-format", "json",
@@ -142,9 +144,11 @@ def build_command(cfg: Config, bot: bots.Bot, session_id: str, prompt_file,
 
 
 def _parse(output: str):
-    """The JSON result object from claude's stdout, or None."""
+    """The JSON result object from claude's stdout, or None. Tries the whole
+    text, then each line from the last."""
     text = (output or "").strip()
-    for candidate in (text, text.rsplit("\n", 1)[-1]):
+    candidates = [text] + [l for l in reversed(text.split("\n")) if l.strip()]
+    for candidate in candidates:
         try:
             data = json.loads(candidate)
         except ValueError:
@@ -154,12 +158,30 @@ def _parse(output: str):
     return None
 
 
+def _usage_limited(data, text: str) -> bool:
+    """A usage limit by pattern, by HTTP 429, or by an error result whose text
+    mentions both a limit and a reset time."""
+    if any(re.search(p, text, re.I) for p in USAGE_LIMIT_PATTERNS):
+        return True
+    if not data:
+        return False
+    if data.get("api_error_status") == 429:
+        return True
+    low = str(data.get("result", "")).lower()
+    return bool(data.get("is_error")) and "limit" in low and "reset" in low
+
+
 def classify(exit_code: int, output: str) -> str:
     """ok | usage_limit | timeout | oom | error. Unknown failures are error."""
     output = output or ""
     if exit_code == 0:
         data = _parse(output)
-        return "ok" if data is not None and not data.get("is_error") else "error"
+        if data is None:
+            return "error"
+        if not data.get("is_error"):
+            return "ok"
+        return "usage_limit" if _usage_limited(
+            data, str(data.get("result", ""))) else "error"
     if exit_code in OOM_EXIT_CODES or any(
             re.search(p, output, re.I) for p in OOM_PATTERNS):
         return "oom"
@@ -168,9 +190,7 @@ def classify(exit_code: int, output: str) -> str:
         return "timeout"
     data = _parse(output)
     text = str(data.get("result", "")) if data else output
-    if any(re.search(p, text, re.I) for p in USAGE_LIMIT_PATTERNS):
-        return "usage_limit"
-    return "error"
+    return "usage_limit" if _usage_limited(data, text) else "error"
 
 
 def _tokens(data) -> tuple:

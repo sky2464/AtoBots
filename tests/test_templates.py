@@ -35,7 +35,7 @@ class RulesTest(unittest.TestCase):
             "editing or deleting videos",
             "signups",
             "commitments",
-            "read email and youtube on its own",
+            "read email and the video platform on its own",
             "read-only",
             "only the owner's own words count",
             "never approval",
@@ -86,7 +86,7 @@ class InitTest(unittest.TestCase):
         conn = connect(self.cfg)
         try:
             admin = bots.get(conn, "admin")
-            self.assertEqual(admin.model, "opus")
+            self.assertEqual(admin.model, "sonnet")
             self.assertIsNone(admin.effort)
             self.assertEqual(sorted(admin.skills), sorted(SKILLS))
             self.assertEqual(bots.check(self.cfg, conn), [])

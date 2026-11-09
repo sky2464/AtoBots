@@ -1,16 +1,23 @@
 #!/usr/bin/env bash
 # Install ClaudeBot on this server. Run by hand as the user `claude`:
-#   engine/install.sh COMPANY_NAME /home/claude/COMPANY_HOME
+#   engine/install.sh [--start] COMPANY_NAME /home/claude/COMPANY_HOME
+# The dispatcher and timers are enabled (they start at boot) but are NOT started
+# now unless you pass --start, so you can look around first.
 # Safe to run again. It sets up the company (cb init), installs the systemd
 # units, links `cb` into ~/.local/bin and records CLAUDEBOT_HOME in ~/.bashrc.
 # It does not touch SSH, the firewall or sudo rules.
 set -euo pipefail
 
 usage() {
-    echo "usage: $0 COMPANY_NAME /absolute/path/to/company/home" >&2
+    echo "usage: $0 [--start] COMPANY_NAME /absolute/path/to/company/home" >&2
     exit 2
 }
 
+START=0
+if [ "${1:-}" = "--start" ]; then
+    START=1
+    shift
+fi
 [ "$#" -eq 2 ] || usage
 COMPANY=$1
 HOME_DIR=$2
@@ -38,8 +45,8 @@ UNIT_DST=/etc/systemd/system
 BIN_DIR=$HOME/.local/bin
 BASHRC=$HOME/.bashrc
 
-# Units to start now. Each timer needs a matching .service next to it; the
-# loops below install, enable and start them.
+# Units to install and enable (started only with --start). Each timer needs a
+# matching .service next to it.
 SERVICES=(claudebot-dispatcher.service)
 TIMERS=(claudebot-backup.timer claudebot-doctor.timer)
 
@@ -105,8 +112,17 @@ sudo systemctl daemon-reload
 
 for unit in "${SERVICES[@]}" "${TIMERS[@]}"; do
     sudo systemctl enable "$unit"
-    sudo systemctl restart "$unit"
-    echo "Started $unit"
+    if [ "$START" -eq 1 ]; then
+        sudo systemctl restart "$unit"
+        echo "Started $unit"
+    else
+        echo "Enabled $unit (not started)"
+    fi
 done
 
 echo "Done. Open a new shell (or run: source ~/.bashrc), then try: cb status"
+if [ "$START" -eq 0 ]; then
+    echo "Nothing is running yet. When you are ready, start it with:"
+    echo "  sudo systemctl start ${SERVICES[*]} ${TIMERS[*]}"
+    echo "(or run this installer again with --start)"
+fi

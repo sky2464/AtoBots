@@ -8,6 +8,7 @@ concurrency, the heavy lane, free memory and the per-bot hourly wake cap.
 Every run gets its own worker thread and its own database connection. All
 time comes from the injected `clock` and all memory readings from `mem_fn`.
 """
+import hashlib
 import signal
 import sys
 import threading
@@ -133,17 +134,31 @@ class Dispatcher:
 
     # ---- claim / release / finish ----
 
-    def claim(self, bot: str) -> list:
+    def claim(self, bot: str, hold: bool = False) -> list:
         """Move this bot's queued messages (and any whose lease ran out) to
-        claimed in one transaction, with a lease and one more attempt."""
+        claimed in one transaction, with a lease and one more attempt. A run
+        takes at most `batch_max_messages` messages and `batch_max_bytes` of
+        text (`-p` is one argument, capped by the OS); the rest wait for the
+        next run. While the Owner is in a chat (`hold`) only Admin's urgent
+        messages to other bots are taken."""
         conn = self._db()
         now = self.clock()
         lease = _plus(now, self.cfg.lease_seconds)
+        extra = (" AND priority=? AND from_bot='admin' AND to_bot!='admin'"
+                 if hold else "")
         with tx(conn):
-            ids = [r["id"] for r in conn.execute(
-                "SELECT id FROM messages WHERE to_bot=? AND (status='queued'"
-                " OR (status='claimed' AND lease_until<?)) ORDER BY id",
-                (bot, now))]
+            ids, size = [], 0
+            for r in conn.execute(
+                    "SELECT id, LENGTH(CAST(COALESCE(subject,'')||"
+                    "COALESCE(body,'') AS BLOB)) AS sz FROM messages WHERE"
+                    " to_bot=? AND (status='queued' OR (status='claimed' AND"
+                    f" lease_until<?)){extra} ORDER BY id",
+                    (bot, now, *((_URGENT,) if hold else ()))):
+                if ids and (len(ids) >= self.cfg.batch_max_messages or
+                            size + r["sz"] > self.cfg.batch_max_bytes):
+                    break
+                ids.append(r["id"])
+                size += r["sz"]
             for i in ids:
                 conn.execute("UPDATE messages SET status='claimed',"
                              " lease_until=?, attempts=attempts+1, run_id=NULL"
@@ -363,12 +378,12 @@ class Dispatcher:
                      f"{name}: {type(e).__name__}: {e}")
         if self._paused(conn, now):
             return []
+        hold = False
         try:
-            if self.owner_fn():
-                return []
+            hold = bool(self.owner_fn())
         except Exception as e:  # noqa: BLE001
             _log(conn, "owner_check.failed", str(e))
-        return self._start_ready(conn, now)
+        return self._start_ready(conn, now, hold)
 
     def _call_routines(self, conn, now) -> None:
         if self.routines_fn is None:
@@ -438,8 +453,10 @@ class Dispatcher:
                               item_id=r["id"], now=now)
 
     def _wake_admin(self, conn, now) -> None:
-        """Admin goes back to open work at most once an hour, when nothing
-        is queued for it and the Owner is not in a chat."""
+        """Admin goes back to open work when nothing is queued for it and the
+        Owner is not in a chat, at most once an hour, and only if the list of
+        open work changed since the last wake or 24 hours have passed. Items
+        waiting on the Owner are not Admin's to chase."""
         bot = "admin"
         if bot not in {b.name for b in bots.list_bots(conn, include_reserved=True)}:
             return
@@ -455,29 +472,42 @@ class Dispatcher:
         except Exception:  # noqa: BLE001
             pass
         key = f"wake.openwork.{bot}"
-        last = conn.execute("SELECT value FROM meta WHERE key=?",
-                            (key,)).fetchone()
+        dkey = key + ".digest"
+        get = lambda k: conn.execute(  # noqa: E731
+            "SELECT value FROM meta WHERE key=?", (k,)).fetchone()
+        last = get(key)
         if last and _before(now, _plus(last["value"], _HOUR)):
             return
         unhandled = requests.unhandled(conn)
         paused = conn.execute(
             "SELECT id, title FROM items WHERE status='paused'"
-            " AND archived_at IS NULL AND COALESCE(waiting_on,'')!='owner'"
+            " AND archived_at IS NULL AND COALESCE(owner_waiting,0)=0"
             " ORDER BY n").fetchall()
         if not unhandled and not paused:
             return
         lines = []
         if unhandled:
             lines.append(f"{len(unhandled)} Owner request(s) not yet turned "
-                         "into items (cb unhandled).")
+                         "into items (cb request unhandled).")
         lines += [f"Paused: {p['id']} {p['title']}" for p in paused]
+        # What this wake says, by identity of the things in it. The same list
+        # is not sent again for 24 hours.
+        digest = hashlib.sha256("\n".join(
+            [f"R-{r['id']}" for r in unhandled]
+            + [f"{p['id']}:{p['title']}" for p in paused]).encode()
+        ).hexdigest()
+        prev = get(dkey)
+        if last and prev and prev["value"] == digest and \
+                _before(now, _plus(last["value"], 24 * _HOUR)):
+            return
         mid = self._system_send(
             conn, bot, "Open work", "\n".join(lines) + "\nPick up what you can.",
             f"openwork:{bot}:{now[:13]}", now=now)
         if mid:
             with tx(conn):
-                conn.execute("INSERT OR REPLACE INTO meta(key, value)"
-                             " VALUES (?,?)", (key, now))
+                for k, v in ((key, now), (dkey, digest)):
+                    conn.execute("INSERT OR REPLACE INTO meta(key, value)"
+                                 " VALUES (?,?)", (k, v))
 
     def _wake_capped(self, conn, bot: str, now: str) -> bool:
         n = conn.execute("SELECT COUNT(*) FROM runs WHERE bot=? AND"
@@ -493,11 +523,17 @@ class Dispatcher:
             now=now)
         return True
 
-    def _start_ready(self, conn, now) -> list:
+    def _start_ready(self, conn, now, hold: bool = False) -> list:
+        """`hold`: the Owner is in a chat, so only Admin's urgent messages to
+        other bots (such as the test wake of a new bot) may start a run."""
         active = {b.name: b for b in bots.list_bots(conn, include_reserved=True)}
         groups: dict[str, list] = {}
         for m in conn.execute("SELECT * FROM messages WHERE status='queued'"
                               " ORDER BY id"):
+            if hold and not (m["priority"] == _URGENT and
+                             m["from_bot"] == "admin" and
+                             m["to_bot"] != "admin"):
+                continue
             groups.setdefault(m["to_bot"], []).append(m)
         cands = []
         for name, msgs in groups.items():
@@ -526,7 +562,7 @@ class Dispatcher:
                 break
             if self._wake_capped(conn, name, now):
                 continue
-            msgs = self.claim(name)
+            msgs = self.claim(name, hold)
             if not msgs:
                 continue
             lane = "heavy" if any(m["level"] == "heavy" for m in msgs) \

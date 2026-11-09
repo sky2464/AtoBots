@@ -121,12 +121,29 @@ def split(cfg: Config, conn: sqlite3.Connection, parent: str, titles: list,
 
 
 _OPEN_ORDER = "ORDER BY owner_waiting DESC, priority DESC, n ASC"
+# Items owned by infrastructure roles (the backend) are not company work.
+_NOT_RESERVED = (" AND owner NOT IN (SELECT name FROM bots WHERE org='"
+                 + bots.RESERVED_ORG + "')")
+
+
+def set_owner_waiting(conn: sqlite3.Connection, id: str, on: bool,
+                      actor: str) -> None:
+    """Mark that the next move is the Owner's (or clear it again)."""
+    with tx(conn):
+        _get(conn, id)
+        conn.execute("UPDATE items SET owner_waiting=?, updated_at=?"
+                     " WHERE id=?", (int(bool(on)), utcnow(), id))
+        activity.record(conn, actor, "item.owner_waiting",
+                        f"{id}: waiting on the Owner" if on
+                        else f"{id}: no longer waiting on the Owner", id)
 
 
 def next_items(conn: sqlite3.Connection, owner: str | None = None,
-               limit: int = 20) -> list:
+               limit: int = 20, include_reserved: bool = False) -> list:
     sql = (f"SELECT * FROM items WHERE archived_at IS NULL"
            f" AND status NOT IN {_DONE_SQL}")
+    if not include_reserved:
+        sql += _NOT_RESERVED
     args: list = []
     if owner is not None:
         sql += " AND owner=?"
@@ -134,14 +151,16 @@ def next_items(conn: sqlite3.Connection, owner: str | None = None,
     return conn.execute(f"{sql} {_OPEN_ORDER} LIMIT ?", (*args, limit)).fetchall()
 
 
-def open_items(conn: sqlite3.Connection) -> list:
+def open_items(conn: sqlite3.Connection,
+               include_reserved: bool = False) -> list:
     """Every item not done or parked, plus any parent that still has an
     unfinished child, whatever its own status says."""
+    extra = "" if include_reserved else _NOT_RESERVED
     return conn.execute(
         f"SELECT * FROM items i WHERE archived_at IS NULL AND (status NOT IN"
         f" {_DONE_SQL} OR EXISTS (SELECT 1 FROM items c WHERE c.parent=i.id"
         f" AND c.archived_at IS NULL AND c.status NOT IN {_DONE_SQL}))"
-        f" {_OPEN_ORDER}").fetchall()
+        f"{extra} {_OPEN_ORDER}").fetchall()
 
 
 def decide(conn: sqlite3.Connection, title: str, quote: str, said_at: str,
@@ -262,10 +281,18 @@ def _cmd_open(args):
     return _run(go)
 
 
+def _cmd_waiting_on_owner(args):
+    def go(cfg, conn):
+        set_owner_waiting(conn, args.id, not args.off, _actor())
+        return 0
+    return _run(go)
+
+
 def _cmd_decision_record(args):
     def go(cfg, conn):
+        session = args.session or os.environ.get("CB_SESSION_ID", "")
         print(decide(conn, args.title, args.quote, args.said_at or utcnow(),
-                     args.session or "", _actor()))
+                     session, _actor()))
         return 0
     return _run(go)
 
@@ -328,6 +355,12 @@ def register(subparsers) -> None:
     sh = sub.add_parser("show")
     sh.add_argument("id")
     sh.set_defaults(func=_cmd_show)
+    wo = sub.add_parser("waiting-on-owner",
+                        help="mark that the next move is the Owner's")
+    wo.add_argument("id")
+    wo.add_argument("--off", action="store_true",
+                    help="clear the mark (the Owner answered)")
+    wo.set_defaults(func=_cmd_waiting_on_owner)
     nx = subparsers.add_parser("next", help="what to work on next")
     nx.add_argument("--owner")
     nx.add_argument("--limit", type=int, default=20)
@@ -340,7 +373,8 @@ def register(subparsers) -> None:
     rec.add_argument("title")
     rec.add_argument("--quote", required=True, help="the Owner's exact words")
     rec.add_argument("--said-at", help="ISO 8601; default now")
-    rec.add_argument("--session")
+    rec.add_argument("--session",
+                     help="default: $CB_SESSION_ID, set in every session")
     rec.set_defaults(func=_cmd_decision_record)
     shw = dsub.add_parser("show")
     shw.add_argument("id")

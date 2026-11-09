@@ -328,7 +328,9 @@ class LoopTests(Base):
         sid1 = calls[1]["argv"][calls[1]["argv"].index("--session-id") + 1]
         self.assertNotEqual(sid0, sid1)
         self.assertIn("ontinuing", out)
-        self.assertEqual(len(out.strip().splitlines()), 1)
+        self.assertIn("Brief as of", out)  # printed once, on the first start
+        self.assertEqual(out.count("Brief as of"), 1)
+        self.assertEqual(out.count("ontinuing"), 1)
         self.assertFalse(chat.marker_path(self.cfg).exists())
         self.assertTrue(chat.rollover_path(self.cfg).is_file())
         runs = self.conn.execute(

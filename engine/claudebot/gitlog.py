@@ -11,7 +11,8 @@ from contextlib import contextmanager
 from .config import Config
 
 GITIGNORE = (".secrets/", "*.db", "*.db-wal", "*.db-shm", "archive/", "media/",
-             ".claude/projects/")
+             ".claude/projects/", ".chat/", ".chat.lock", "capture-failed.log",
+             "*.pid")
 _ENV = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_TERMINAL_PROMPT": "0"}
 

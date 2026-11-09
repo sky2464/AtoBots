@@ -164,7 +164,18 @@ def _clip(text: str, cap: int = LINE_CAP) -> str:
     return text if len(text) <= cap else text[:cap - 1] + "…"
 
 
-def _sections(conn, since: str) -> list:
+def _setup_section(cfg: Config) -> list:
+    """Things only the Owner can set up (no off-server backup). Shown here and
+    in `cb doctor`; they never wake a bot."""
+    from . import doctor  # late: doctor imports dispatcher, which imports chat
+    try:
+        found = doctor.setup_findings(cfg)
+    except Exception:  # noqa: BLE001  # the brief matters more than this
+        return []
+    return [("Not set up", [_clip(f.text) for f in found])] if found else []
+
+
+def _sections(conn, since: str, cfg: Config | None = None) -> list:
     out = []
     reqs = requests.unhandled(conn)
     if reqs:
@@ -191,6 +202,8 @@ def _sections(conn, since: str) -> list:
             done.append(_clip(f"{a['ref']} {row['title'] if row else ''}"))
     if done:
         out.append((f"Done since {ct_display(since)}", done))
+    if cfg is not None:
+        out.extend(_setup_section(cfg))
     return out
 
 
@@ -203,7 +216,7 @@ def brief(cfg: Config, conn, since: str | None = None,
     ).isoformat(timespec="seconds")
     head = f"Brief as of {ct_display(now)}"
     foot = "Full lists: cb open, cb request unhandled."
-    sections = _sections(conn, since)
+    sections = _sections(conn, since, cfg)
     if not sections:
         return (f"{head}\nNothing new: no open requests, nothing waiting on "
                 f"the Owner, nothing stuck.\n{foot}")
@@ -393,9 +406,11 @@ def _have_terminal() -> bool:
 
 def _compose_prompt(cfg, conn, brief_text: str, summary) -> str:
     parts = [bots.identity_prompt(cfg, conn, BOT),
-             "# This chat\n\nYou are talking live with the Owner. Open with "
-             "a short plain summary of the brief below (skip it if he starts "
-             "with a request of his own).\n\n# Startup brief\n\n" + brief_text]
+             "# This chat\n\nYou are talking live with the Owner. The brief "
+             "below was already printed on his screen before the chat opened, "
+             "so do not repeat it. Wait for him to speak; answer from the "
+             "brief when he asks about it.\n\n# Startup brief\n\n"
+             + brief_text]
     if summary is not None:
         parts.append(
             "# Continuing an earlier chat\n\nThe earlier chat grew long and "
@@ -481,13 +496,16 @@ def _one_session(cfg, conn, summary, token, first: bool) -> str:
             mcp = runner._private_file(mcp_text, ".json")
             temp.append(mcp)
         cmd = _command(cfg, bot, session_id, prompt, settings, mcp)
-        env = dict(os.environ, CB_BOT=BOT, CLAUDEBOT_HOME=str(cfg.home))
+        env = dict(os.environ, CB_BOT=BOT, CLAUDEBOT_HOME=str(cfg.home),
+                   CB_SESSION_ID=session_id)
         env.pop(TOKEN_ENV, None)
         if token:
             env[TOKEN_ENV] = token
         _unlink(last_block_path(cfg))
         if summary is not None:
             print("Continuing this chat in a fresh session.", flush=True)
+        elif first:
+            print(text, flush=True)  # on screen only; not sent as a prompt
         proc = _launch(cmd, str(cfg.bots_dir / BOT), env)
         # The marker stays until this session ends well; the summary file is
         # never deleted.

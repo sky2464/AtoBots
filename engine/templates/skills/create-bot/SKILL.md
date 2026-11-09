@@ -30,6 +30,15 @@ sonnet is the default), effort (leave unset unless needed), the skills it needs
 a bot only what its job needs, to keep its sessions small. The Owner connects
 any account himself. Install a new tool only from a source he approved.
 
+Where things live, if the job needs them: an MCP server definition is a file
+`$CLAUDEBOT_HOME/mcp/NAME.json` (name it in `--mcp NAME`), and a plugin is a
+folder `$CLAUDEBOT_HOME/plugins/NAME/` (name it in `--plugins NAME`). Secrets
+stored with `cb secret` are not wired into MCP yet, so a token in an MCP
+definition would have to be a `${VARIABLE}` the bot's session already has;
+never write a token value into the file. `--connectors` exposes every account
+connector the Owner has linked (mail, calendar, drive and so on) to that bot,
+not just one, so ask him first and say so plainly.
+
 ## 2. Draft the Soul and Persona
 
 Make an item for the job (`cb item new "Create bot NAME"`) and write both into
@@ -74,10 +83,12 @@ Changing its setup later is `cb bot set NAME ...`. Changing its Soul needs
 
 ```
 cb check
-cb send NAME "Welcome" "Introduce yourself in two sentences, in your own voice." --from admin
+cb send NAME "Welcome" "Introduce yourself in two sentences, in your own voice." --from admin --priority urgent
 ```
 
-Look for its reply with `cb inbox` and `cb search`. Confirm it answered in
+`--priority urgent` from you starts the new bot at once, even while the Owner
+is in a chat with you (other messages wait until he leaves). Its reply waits
+the same way, so look for it with `cb inbox` and `cb search`. Confirm it answered in
 character. If it did not answer or sounds wrong, fix the Persona (you may),
 and for a Soul fix, show the Owner and record his word again.
 

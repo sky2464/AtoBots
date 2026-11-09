@@ -15,7 +15,7 @@ MODULES = [store, bots, items, messages, requests, search, routines,
 
 TEMPLATES = Path(__file__).resolve().parent.parent / "templates"
 ADMIN_SKILLS = ("cb-basics", "work-tracking", "create-bot")
-ADMIN_MODEL = "opus"
+ADMIN_MODEL = "sonnet"
 BACKEND_SKILLS = ("cb-basics",)
 BACKEND_MODEL = "sonnet"
 
@@ -95,7 +95,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except RuntimeError as e:  # e.g. a bad config.json
+        print(f"error: {e}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
