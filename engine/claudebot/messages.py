@@ -6,6 +6,7 @@ import os
 import sqlite3
 import sys
 import uuid
+from datetime import datetime
 
 from . import activity, bots, items
 from .config import Config
@@ -27,7 +28,7 @@ def _check_body(body) -> None:
 
 
 def _insert(conn, frm, to, subject, body, item_id, kind, priority, level,
-            effort, in_reply_to, dedupe_key, hop_limit) -> int:
+            effort, in_reply_to, dedupe_key, hop_limit, now, window) -> int:
     """Caller holds the transaction. Returns the message id, or 0 when the
     hop limit stopped the chain."""
     if frm != SYSTEM:
@@ -55,32 +56,37 @@ def _insert(conn, frm, to, subject, body, item_id, kind, priority, level,
         prev = conn.execute(
             "SELECT * FROM messages WHERE item_id=? AND chain_id IS NOT NULL"
             " ORDER BY id DESC LIMIT 1", (item_id,)).fetchone()
+    if prev is not None and in_reply_to is None and not _within(
+            prev["created_at"], now, window):
+        prev = None  # item went quiet: a new exchange starts a new chain
     if prev is not None and prev["chain_id"]:
         chain, hop = prev["chain_id"], (prev["hop"] or 0) + 1
     else:
         chain, hop = "C-" + uuid.uuid4().hex[:12], 0
     if hop >= hop_limit:
-        _hop_stop(conn, frm, to, subject, item_id, chain, hop)
+        _hop_stop(conn, frm, to, subject, item_id, chain, hop, now)
         return 0
     cur = conn.execute(
         "INSERT INTO messages(from_bot, to_bot, item_id, kind, subject, body,"
         " priority, level, effort, hop, chain_id, dedupe_key, status, created_at)"
         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'queued',?)",
         (frm, to, item_id, kind, subject, body, priority, level, effort, hop,
-         chain, dedupe_key, utcnow()))
+         chain, dedupe_key, now))
     activity.record(conn, frm, "message.send",
                     f"{frm} -> {to}: {subject}", str(cur.lastrowid))
     return cur.lastrowid
 
 
-def _hop_stop(conn, frm, to, subject, item_id, chain, hop) -> None:
+def _within(then: str, now: str, window: int) -> bool:
+    return (datetime.fromisoformat(now) - datetime.fromisoformat(then)
+            ).total_seconds() <= window
+
+
+def _hop_stop(conn, frm, to, subject, item_id, chain, hop, now) -> None:
     detail = (f"chain {chain} stopped at hop {hop}: {frm} -> {to}: {subject}"
               + (f" (item {item_id})" if item_id else ""))
     key = f"hopstop:{chain}"
-    already = conn.execute("SELECT 1 FROM messages WHERE dedupe_key=?",
-                           (key,)).fetchone()
-    if not already:
-        activity.record(conn, SYSTEM, "message.hop_stop", detail, chain)
+    activity.record(conn, SYSTEM, "message.hop_stop", detail, chain)
     admin = conn.execute("SELECT status FROM bots WHERE name='admin'").fetchone()
     if admin is None or admin["status"] == "retired":
         return
@@ -88,7 +94,7 @@ def _hop_stop(conn, frm, to, subject, item_id, chain, hop) -> None:
     # chain and reset the loop guard.
     _insert(conn, SYSTEM, "admin", "Message chain stopped at hop limit",
             detail + ". The message was not delivered.", None, "note", "normal",
-            "normal", None, None, key, 10**9)
+            "normal", None, None, key, 10**9, now, 0)
 
 
 def send(conn: sqlite3.Connection, frm: str, to: str, subject: str, body: str,
@@ -96,13 +102,16 @@ def send(conn: sqlite3.Connection, frm: str, to: str, subject: str, body: str,
          priority: str = "normal", level: str = "normal",
          effort: str | None = None, in_reply_to: int | None = None,
          dedupe_key: str | None = None,
-         hop_limit: int = Config.hop_limit) -> int:
+         hop_limit: int = Config.hop_limit,
+         chain_window_s: int = Config.chain_window_s,
+         now: str | None = None) -> int:
     """Queue a message and return its id (the original id for a repeated
     dedupe_key). Returns 0 if the hop limit stopped the chain; Admin is told
     once per chain."""
     with tx(conn):
         return _insert(conn, frm, to, subject, body, item_id, kind, priority,
-                       level, effort, in_reply_to, dedupe_key, hop_limit)
+                       level, effort, in_reply_to, dedupe_key, hop_limit,
+                       now or utcnow(), chain_window_s)
 
 
 def handoff_rel_path(item_id: str, frm: str) -> str:
@@ -110,28 +119,33 @@ def handoff_rel_path(item_id: str, frm: str) -> str:
 
 
 def ask(cfg: Config, conn: sqlite3.Connection, frm: str, to: str,
-        item_id: str, question: str, handoff: str) -> int:
+        item_id: str, question: str, handoff: str,
+        now: str | None = None) -> int:
     """Leave a handoff note in the item's folder, mark the item as waiting on
     `to`, and send the question. The asker can then exit."""
     items.get(conn, item_id)
     bots.get(conn, frm)
     path = items.folder(cfg, item_id) / f"handoff-{frm}.md"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(handoff)
+    now = now or utcnow()
     with tx(conn):
         mid = _insert(conn, frm, to, f"Question on {item_id}", question,
                       item_id, "question", "normal", "normal", None, None,
-                      None, cfg.hop_limit)
+                      None, cfg.hop_limit,
+                      now, cfg.chain_window_s)
         if mid:
             conn.execute("UPDATE items SET waiting_on=?, updated_at=?"
                          " WHERE id=?", (to, utcnow(), item_id))
             activity.record(conn, frm, "item.waiting", f"{item_id}: waiting on {to}",
                             item_id)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(handoff)
     return mid
 
 
 def reply(conn: sqlite3.Connection, frm: str, message_id: int, body: str,
-          file: str | None = None) -> int:
+          file: str | None = None, hop_limit: int = Config.hop_limit,
+          chain_window_s: int = Config.chain_window_s,
+          now: str | None = None) -> int:
     """Answer a message. Clears the item's waiting_on and wakes the asker; the
     reply carries the path of the asker's handoff note."""
     with tx(conn):
@@ -149,7 +163,8 @@ def reply(conn: sqlite3.Connection, frm: str, message_id: int, body: str,
             text += f"\n\nYour handoff note: {handoff_rel_path(m['item_id'], m['from_bot'])}"
         mid = _insert(conn, frm, m["from_bot"], f"Re: {m['subject']}", text,
                       m["item_id"], "answer", m["priority"], m["level"],
-                      m["effort"], message_id, None, Config.hop_limit)
+                      m["effort"], message_id, None, hop_limit,
+                      now or utcnow(), chain_window_s)
         if m["item_id"] and mid:
             conn.execute("UPDATE items SET waiting_on=NULL, updated_at=?"
                          " WHERE id=? AND waiting_on=?",
@@ -180,7 +195,7 @@ def complete(conn: sqlite3.Connection, ids) -> None:
 # ---- CLI ----
 
 def _actor() -> str:
-    return os.environ.get("CB_BOT") or os.environ.get("CLAUDEBOT_BOT") or "cli"
+    return os.environ.get("CB_BOT", "cli")
 
 
 def _run(fn):
@@ -201,7 +216,8 @@ def _cmd_send(args):
                    item_id=args.item, kind=args.kind, priority=args.priority,
                    level=args.level, effort=args.effort,
                    in_reply_to=args.in_reply_to, dedupe_key=args.dedupe_key,
-                   hop_limit=cfg.hop_limit)
+                   hop_limit=cfg.hop_limit,
+                   chain_window_s=cfg.chain_window_s)
         if not mid:
             print("error: hop limit reached; not delivered, Admin was told",
                   file=sys.stderr)
@@ -227,7 +243,8 @@ def _cmd_ask(args):
 
 def _cmd_reply(args):
     def go(cfg, conn):
-        print(reply(conn, args.frm, args.message_id, args.body, file=args.file))
+        print(reply(conn, args.frm, args.message_id, args.body, file=args.file,
+                    hop_limit=cfg.hop_limit, chain_window_s=cfg.chain_window_s))
         return 0
     return _run(go)
 

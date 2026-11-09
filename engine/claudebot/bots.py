@@ -260,7 +260,7 @@ def check(cfg: Config, conn: sqlite3.Connection) -> list[str]:
 # ---- CLI wiring -----------------------------------------------------------
 
 def _actor() -> str:
-    return os.environ.get("CLAUDEBOT_BOT", "cli")
+    return os.environ.get("CB_BOT", "cli")
 
 
 def _csv(v):

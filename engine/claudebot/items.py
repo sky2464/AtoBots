@@ -164,7 +164,7 @@ def decide(conn: sqlite3.Connection, title: str, quote: str, said_at: str,
 # ---- CLI ----
 
 def _actor() -> str:
-    return os.environ.get("CLAUDEBOT_BOT", "cli")
+    return os.environ.get("CB_BOT", "cli")
 
 
 def _run(fn):

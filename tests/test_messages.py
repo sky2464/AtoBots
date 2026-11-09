@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
@@ -135,6 +136,81 @@ class ChainTests(MessagesBase):
         self.assertEqual(self.conn.execute(
             "SELECT COUNT(*) FROM activity WHERE kind='message.hop_stop'"
         ).fetchone()[0], 1)
+
+
+def at(seconds):
+    base = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    return (base + timedelta(seconds=seconds)).isoformat(timespec="seconds")
+
+
+DAY = 86400
+
+
+class ChainWindowTests(MessagesBase):
+    def setUp(self):
+        super().setUp()
+        self.t = items.new(self.cfg, self.conn, "t", "backend")
+
+    def notes(self):
+        return self.conn.execute(
+            "SELECT * FROM messages WHERE from_bot='system'").fetchall()
+
+    def test_four_ask_reply_cycles_over_days_all_deliver(self):
+        for k in range(4):
+            q = messages.ask(self.cfg, self.conn, "backend", "admin", self.t,
+                             "q", "h", now=at(k * DAY))
+            self.assertTrue(q)
+            self.assertTrue(messages.reply(self.conn, "admin", q, "a",
+                                           now=at(k * DAY + 60)))
+        self.assertEqual(self.notes(), [])
+
+    def test_nine_item_sends_over_days_all_deliver(self):
+        for k in range(9):
+            self.assertTrue(messages.send(self.conn, "admin", "backend", "s", "b",
+                                          item_id=self.t, now=at(k * DAY)))
+
+    def test_tight_reply_loop_stops_at_hop_8_with_one_note(self):
+        last = messages.send(self.conn, "admin", "backend", "s", "b", now=at(0))
+        for k in range(1, 8):
+            frm, to = ("backend", "admin") if k % 2 else ("admin", "backend")
+            last = messages.send(self.conn, frm, to, "s", "b", in_reply_to=last,
+                                 now=at(k))
+            self.assertTrue(last)
+        for k in (8, 9):
+            self.assertEqual(messages.send(self.conn, "admin", "backend", "s", "b",
+                                           in_reply_to=last, now=at(k)), 0)
+        self.assertEqual(len(self.notes()), 1)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM activity WHERE kind='message.hop_stop'"
+        ).fetchone()[0], 2)
+
+    def test_tight_ask_loop_stops_at_hop_8_with_one_note(self):
+        results = [messages.ask(self.cfg, self.conn, "backend", "admin", self.t,
+                                "q", "h", now=at(k)) for k in range(10)]
+        self.assertTrue(all(results[:8]))
+        self.assertEqual(results[8:], [0, 0])
+        self.assertEqual(len(self.notes()), 1)
+
+    def test_send_past_window_after_stop_delivers(self):
+        for k in range(9):
+            messages.send(self.conn, "admin", "backend", "s", "b",
+                          item_id=self.t, now=at(k))
+        self.assertEqual(messages.send(self.conn, "admin", "backend", "s", "b",
+                                       item_id=self.t, now=at(10)), 0)
+        i = messages.send(self.conn, "admin", "backend", "s", "b",
+                          item_id=self.t, now=at(10 + 901))
+        self.assertTrue(i)
+        self.assertEqual(self.msg(i)["hop"], 0)
+
+    def test_reply_honours_hop_limit(self):
+        q = messages.ask(self.cfg, self.conn, "backend", "admin", self.t, "q", "h")
+        self.assertEqual(messages.reply(self.conn, "admin", q, "a", hop_limit=1), 0)
+        self.assertEqual(items.get(self.conn, self.t)["waiting_on"], "admin")
+
+    def test_blocked_ask_writes_no_handoff(self):
+        self.cfg.hop_limit = 0
+        messages.ask(self.cfg, self.conn, "backend", "admin", self.t, "q", "h")
+        self.assertFalse((self.cfg.work_dir / self.t / "handoff-backend.md").exists())
 
 
 class AskReplyTests(MessagesBase):

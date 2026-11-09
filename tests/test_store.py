@@ -211,7 +211,7 @@ class StoreTests(unittest.TestCase):
         script = ("import os,sys;print(os.environ['X'][:2]);"
                   "print(os.environ['X'],file=sys.stderr);sys.exit(4)")
         env = dict(os.environ, CLAUDEBOT_HOME=self.tmp.name,
-                   CLAUDEBOT_BOT="admin")
+                   CB_BOT="admin")
         cb = Path(__file__).resolve().parent.parent / "engine" / "bin" / "cb"
         p = subprocess.run([sys.executable, str(cb), "secret", "run",
                             "--env", "X=t", "--", "python3", "-c", script],

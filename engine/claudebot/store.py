@@ -267,7 +267,7 @@ def run_with(cfg: Config, conn, actor: str, env_map: dict, argv: list,
 # ---- CLI wiring -----------------------------------------------------------
 
 def _actor() -> str:
-    return os.environ.get("CLAUDEBOT_BOT", "cli")
+    return os.environ.get("CB_BOT", "cli")
 
 
 def _cmd_add(args) -> int:

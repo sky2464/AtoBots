@@ -15,6 +15,7 @@ class Config:
     lease_seconds: int = 2100
     retry_attempts: int = 3
     hop_limit: int = 8
+    chain_window_s: int = 900
     wakes_per_bot_per_hour: int = 12
     batch_delay_seconds: int = 5
     poll_seconds: int = 5
