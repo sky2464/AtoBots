@@ -32,7 +32,8 @@ def ensure_repo(cfg: Config) -> None:
     with _locked(cfg):
         for key, value in (("user.name", "claudebot"),
                            ("user.email", "claudebot@claudebot.local"),
-                           ("commit.gpgsign", "false")):
+                           ("commit.gpgsign", "false"),
+                           ("gc.auto", "1000")):
             cur = _git(cfg, "config", "--local", key, check=False).stdout.strip()
             if cur != value:
                 _git(cfg, "config", "--local", key, value)

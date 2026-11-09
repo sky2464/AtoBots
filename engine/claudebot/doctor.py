@@ -4,6 +4,9 @@ check finds something wrong, and each finding is reported at most once a day.
 The checks never depend on the dispatcher: this runs from its own timer, so it
 still works (and says so) when the dispatcher is down.
 """
+import hashlib
+import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -12,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from . import activity, bots, dispatcher, messages
+from . import activity, backup, bots, dispatcher, messages
 from .config import Config
 from .db import connect, utcnow
 
@@ -20,6 +23,12 @@ DISPATCHER_UNIT = "claudebot-dispatcher.service"
 BACKEND = "backend"
 ADMIN = "admin"
 _NEVER_STOP = 10 ** 9
+STALE_HOURS = 24
+GIT_MAX_BYTES = 5 * 1024 ** 3
+SQL_MAX_BYTES = 200 * 1024 ** 2
+MEM_READINGS = 3        # low readings in a row before it is a finding
+REPEAT_DAYS = 7         # an unchanged finding is repeated after this long
+WAKES_PER_DAY = 3       # most messages the doctor sends backend in 24 hours
 
 
 @dataclass(frozen=True)
@@ -44,8 +53,8 @@ def _memory_mb() -> int | None:
 
 def checks(cfg: Config, conn: sqlite3.Connection | None = None,
            active_fn=dispatcher_active, mem_fn=_memory_mb,
-           disk_usage_fn=shutil.disk_usage, now: str | None = None
-           ) -> list[Finding]:
+           disk_usage_fn=shutil.disk_usage, now: str | None = None,
+           track: bool = True) -> list[Finding]:
     """Everything wrong right now. Opens its own connection if none is given,
     so a database that cannot be opened is a finding, not a crash."""
     now = now or utcnow()
@@ -58,25 +67,97 @@ def checks(cfg: Config, conn: sqlite3.Connection | None = None,
         total, used = disk_usage_fn(cfg.home if cfg.home.exists() else "/")[:2]
         pct = used * 100 / total if total else 0
         if pct >= cfg.archive_offserver_pct:
-            out.append(Finding("disk", f"The disk is {pct:.0f}% full "
+            out.append(Finding("disk", f"The disk is over {int(pct) // 5 * 5}% full "
                                f"(limit {cfg.archive_offserver_pct}%)."))
     except OSError as e:
         out.append(Finding("disk", f"Could not read disk usage: {e}"))
+    out.extend(_backup_size_checks(cfg))
     mb = mem_fn()
-    if mb is not None and mb < cfg.memory_floor_mb:
-        out.append(Finding("memory", f"Available memory is {mb} MB, below the "
-                           f"{cfg.memory_floor_mb} MB floor."))
     own = conn is None
     try:
         if own:
             conn = connect(cfg)
         out.extend(_db_checks(cfg, conn, now))
+        out.extend(_backup_checks(cfg, conn, now))
+        if mb is not None:
+            out.extend(_memory_check(cfg, conn, mb, track))
     except sqlite3.Error as e:
         out.append(Finding("database", f"The database could not be opened or "
                            f"read: {e}"))
     finally:
         if own and conn is not None:
             conn.close()
+    return out
+
+
+def _memory_check(cfg, conn, mb: int, track: bool) -> list[Finding]:
+    """Low memory is a finding only after MEM_READINGS low readings in a row."""
+    try:
+        n = int(backup.meta_get(conn, "doctor.mem_low") or 0)
+    except ValueError:
+        n = 0
+    n = n + 1 if mb < cfg.memory_floor_mb else 0
+    if track:
+        backup.meta_set(conn, "doctor.mem_low", str(n))
+    if n >= MEM_READINGS:
+        return [Finding("memory", "Available memory has been below the "
+                        f"{cfg.memory_floor_mb} MB floor for "
+                        f"{MEM_READINGS} checks in a row.")]
+    return []
+
+
+def _age_hours(iso: str, now: str) -> float:
+    return (datetime.fromisoformat(now) - datetime.fromisoformat(iso)
+            ).total_seconds() / 3600
+
+
+def _backup_checks(cfg, conn, now: str) -> list[Finding]:
+    """The silent failure: backups that are not happening."""
+    if not (cfg.home / ".git").exists():
+        return []
+    out = []
+    have = backup.remotes(cfg)
+    first = conn.execute("SELECT MIN(at) FROM activity").fetchone()[0]
+    young = first is None or _age_hours(first, now) < STALE_HOURS
+    if backup.BACKUP_REMOTE not in have:
+        out.append(Finding("backup-remote", "There is no 'backup' remote, so "
+                           "nothing is backed up off this server. The Owner "
+                           "needs to add a repository."))
+    else:
+        last = backup.meta_get(conn, "backup.last_push_ok")
+        if (last is None and not young) or (
+                last and _age_hours(last, now) > STALE_HOURS):
+            out.append(Finding("backup-push", "No backup push has succeeded "
+                               f"in over {STALE_HOURS} hours."))
+    if backup.ARCHIVE_REMOTE not in have:
+        out.append(Finding("archive-remote", "There is no 'archive' remote, so "
+                           "old archive months are not copied off this server."))
+    last = backup.meta_get(conn, "backup.last_snapshot_ok")
+    if (last is None and not young) or (
+            last and _age_hours(last, now) > STALE_HOURS):
+        out.append(Finding("backup-snapshot", "No backup snapshot has "
+                           f"succeeded in over {STALE_HOURS} hours."))
+    return out
+
+
+def _tree_bytes(path: Path) -> int:
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.lstat(os.path.join(root, f)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def _backup_size_checks(cfg: Config) -> list[Finding]:
+    out = []
+    if (cfg.home / ".git").is_dir() and _tree_bytes(cfg.home / ".git") > GIT_MAX_BYTES:
+        out.append(Finding("git-size", "The Git history (.git) is over 5 GB."))
+    sql = cfg.home / backup.SQL_REL
+    if sql.is_file() and sql.stat().st_size > SQL_MAX_BYTES:
+        out.append(Finding("sql-size", "backup/company.sql is over 200 MB."))
     return out
 
 
@@ -102,31 +183,64 @@ def _db_checks(cfg: Config, conn: sqlite3.Connection, now: str
     return out
 
 
+def _due(conn, key: str, text: str, now: str) -> bool:
+    """First time, changed text, or REPEAT_DAYS since the last notice."""
+    raw = backup.meta_get(conn, f"doctor.seen:{key}")
+    if raw:
+        try:
+            seen = json.loads(raw)
+            if seen["text"] == text and _age_hours(seen["at"], now) < \
+                    REPEAT_DAYS * 24:
+                return False
+        except (ValueError, KeyError, TypeError):
+            pass
+    return True
+
+
+def _mark(conn, key: str, text: str, now: str) -> None:
+    backup.meta_set(conn, f"doctor.seen:{key}",
+                    json.dumps({"text": text, "at": now}))
+
+
+def _wakes_today(conn, now: str) -> int:
+    since = (datetime.fromisoformat(now) - timedelta(hours=24)
+             ).isoformat(timespec="seconds")
+    return conn.execute(
+        "SELECT COUNT(*) FROM messages WHERE to_bot=? AND from_bot='system'"
+        " AND dedupe_key LIKE 'doctor:%' AND created_at>=?",
+        (BACKEND, since)).fetchone()[0]
+
+
 def run(cfg: Config, conn: sqlite3.Connection, **kw) -> list[Finding]:
-    """Run the checks and message `backend` once per finding per day; a
-    down dispatcher is also told to Admin. Returns all current findings."""
+    """Run the checks and tell `backend` about each finding on the first
+    sighting, when its text changes, or after 7 days; never more than 3 times
+    in 24 hours overall. A down dispatcher is also told to Admin, with the
+    same backoff. Returns all current findings."""
     now = kw.get("now") or utcnow()
     found = checks(cfg, conn, **kw)
-    day = now[:10]
     for f in found:
-        key = f"doctor:{f.key}:{day}"
-        if conn.execute("SELECT 1 FROM messages WHERE dedupe_key=?",
-                        (key,)).fetchone():
-            continue
         try:
-            messages.send(conn, "system", BACKEND, f"Health check: {f.key}",
-                          f.text + " Look into it; fix only what is safe and "
-                          "tell Admin the rest.", kind="alert",
-                          level="normal", dedupe_key=key,
-                          hop_limit=_NEVER_STOP, now=now)
-            if f.key == "dispatcher":
+            tag = hashlib.sha256(f"{f.key}{f.text}{now}".encode()).hexdigest()[:12]
+            if _due(conn, f.key, f.text, now) and \
+                    _wakes_today(conn, now) < WAKES_PER_DAY:
+                messages.send(conn, "system", BACKEND, f"Health check: {f.key}",
+                              f.text + " Look into it; fix only what is safe "
+                              "and tell Admin the rest.", kind="alert",
+                              level="normal",
+                              dedupe_key=f"doctor:{f.key}:{tag}",
+                              hop_limit=_NEVER_STOP, now=now)
+                _mark(conn, f.key, f.text, now)
+                activity.record(conn, "system", "doctor.finding", f.text,
+                                f.key)
+            if f.key == "dispatcher" and _due(conn, "dispatcher:admin",
+                                              f.text, now):
                 messages.send(conn, "system", ADMIN,
                               "The dispatcher is down", f.text + " The server "
                               "may need a restart of " + DISPATCHER_UNIT + ".",
                               kind="alert", level="normal",
-                              dedupe_key=f"doctor:{f.key}:admin:{day}",
+                              dedupe_key=f"doctor:{f.key}:admin:{tag}",
                               hop_limit=_NEVER_STOP, now=now)
-            activity.record(conn, "system", "doctor.finding", f.text, f.key)
+                _mark(conn, "dispatcher:admin", f.text, now)
         except (sqlite3.Error, ValueError, KeyError) as e:
             # e.g. the database is damaged: the printed finding still shows.
             print(f"doctor: could not report {f.key}: {e}", file=sys.stderr)
@@ -148,7 +262,7 @@ def _cmd_doctor(args) -> int:
             if conn is not None:
                 conn.close()
     else:
-        found = checks(cfg)
+        found = checks(cfg, track=False)
     for f in found:
         print(f"- {f.text}")
     if not found:

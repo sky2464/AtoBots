@@ -19,11 +19,14 @@ secrets must be entered again.
 import json
 import os
 import re
+import fnmatch
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
+import hashlib
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -39,6 +42,14 @@ MARKER = "OFFSITE"
 _MONTH_RE = re.compile(r"\d{4}-\d{2}")
 _NEVER_STOP = 10 ** 9
 _GIT_TIMEOUT = 600
+MAX_FILE_BYTES = 50 * 1024 * 1024
+SECRET_NAMES = (".env*", "*.pem", "*.key", "id_rsa*", "id_ed25519*")
+_EXCLUDE_BEGIN = "# claudebot-unsafe-begin"
+_EXCLUDE_END = "# claudebot-unsafe-end"
+_URL_USERINFO = re.compile(r"(://)[^/@\s]+@")
+# meta keys starting with these are bookkeeping about the backups themselves;
+# they are left out of the dump so that recording a backup is not a change.
+META_SKIP = ("backup.", "doctor.")
 SECRETS_NOTE = ("Secrets are NOT backed up: .secrets/ never leaves this server "
                 "and its key has no other copy. After losing the server, the "
                 "store's secrets must be entered again.")
@@ -67,15 +78,36 @@ def _git(cwd: Path, *args, stdin: str | None = None
         raise BackupError(f"git {args[0]} timed out") from None
 
 
+def clean(text: str) -> str:
+    """Error text safe to show: no user:password@ inside URLs."""
+    return _URL_USERINFO.sub(r"\1", text)
+
+
 def _git_ok(cwd: Path, *args, stdin: str | None = None) -> str:
     r = _git(cwd, *args, stdin=stdin)
     if r.returncode:
-        raise BackupError(f"git {args[0]} failed: {r.stderr.strip()[:300]}")
+        raise BackupError(
+            f"git {args[0]} failed: {clean(r.stderr.strip())[:300]}")
     return r.stdout
 
 
-def _remotes(cfg: Config) -> list:
+def remotes(cfg: Config) -> list:
+    if not (cfg.home / ".git").exists():
+        return []
     return _git_ok(cfg.home, "remote").split()
+
+
+_remotes = remotes
+
+
+def meta_get(conn: sqlite3.Connection, key: str) -> str | None:
+    r = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+    return r[0] if r else None
+
+
+def meta_set(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?,?)",
+                 (key, value))
 
 
 def _tmpdir(cfg: Config) -> str:
@@ -114,9 +146,12 @@ def export_sql(cfg: Config, conn: sqlite3.Connection) -> Path:
         copy = sqlite3.connect(tmp / "copy.db")
         try:
             conn.backup(copy)
-            part = out.with_name(out.name + ".part")
+            part = tmp / f"company.sql.{os.getpid()}.part"
+            skip = tuple(f"""INSERT INTO "meta" VALUES('{p}""" for p in META_SKIP)
             with open(part, "w", encoding="utf-8") as f:
                 for line in copy.iterdump():
+                    if line.startswith(skip):
+                        continue
                     f.write(line + "\n")
                 f.flush()
                 os.fsync(f.fileno())
@@ -133,17 +168,136 @@ def snapshot(cfg: Config, conn: sqlite3.Connection) -> str | None:
     or None when nothing changed since the last snapshot."""
     gitlog.ensure_repo(cfg)
     export_sql(cfg, conn)
-    return gitlog.commit_sweep(cfg, "Hourly snapshot")
+    held = _hold_back_unsafe(cfg)
+    if held:
+        _alert_admin(cfg, conn, "unsafe-files",
+                     "Files left out of the backup",
+                     "These files were not added to the backup (over 50 MB or "
+                     "named like a secret): " + ", ".join(held[:20])
+                     + (f" and {len(held) - 20} more" if len(held) > 20 else "")
+                     + ". They stay on the server only.")
+    sha = gitlog.commit_sweep(cfg, "Hourly snapshot")
+    _git(cfg.home, "gc", "--auto", "-q")
+    meta_set(conn, "backup.last_snapshot_ok", utcnow())
+    return sha
+
+
+def _hold_back_unsafe(cfg: Config) -> list:
+    """Keep files over 50 MB or named like secrets out of the commit: they go
+    in .git/info/exclude (local, never pushed). Returns their paths."""
+    exclude = cfg.home / ".git" / "info" / "exclude"
+    exclude.parent.mkdir(exist_ok=True)
+    lines = exclude.read_text().split("\n") if exclude.exists() else []
+    if _EXCLUDE_BEGIN in lines and _EXCLUDE_END in lines:
+        a, b = lines.index(_EXCLUDE_BEGIN), lines.index(_EXCLUDE_END)
+        lines = lines[:a] + lines[b + 1:]
+    lines = [x for x in lines if x]
+    out = _git_ok(cfg.home, "ls-files", "-z", "--others", "--modified",
+                  "--exclude-standard")
+    held, tracked = [], set(_git_ok(cfg.home, "ls-files", "-z").split("\0"))
+    for rel in sorted(set(x for x in out.split("\0") if x)):
+        try:
+            st = os.lstat(cfg.home / rel)
+        except OSError:
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            continue
+        name = rel.rsplit("/", 1)[-1]
+        big = st.st_size > MAX_FILE_BYTES and rel != SQL_REL
+        if big or any(fnmatch.fnmatchcase(name, p) for p in SECRET_NAMES):
+            held.append(rel)
+    block = [_EXCLUDE_BEGIN]
+    for rel in held:
+        if rel not in tracked and "\n" not in rel:
+            block.append("/" + re.sub(r"([*?\[\]!#\\])", r"\\\1", rel))
+    block.append(_EXCLUDE_END)
+    exclude.write_text("\n".join(lines + block) + "\n")
+    return held
+
+
+def _secret_values(cfg: Config) -> dict:
+    """name -> the strings a leaked value would show up as. Short values are
+    left out: they would match ordinary text."""
+    from . import store
+    out = {}
+    for name in store._read_index(cfg):
+        v = store._reveal(cfg, name)
+        if len(v) < 8:
+            continue
+        t = v.decode("utf-8", "replace")
+        out[name] = {v, t.replace("'", "''").encode(),
+                     json.dumps(t)[1:-1].encode()}
+    return out
+
+
+def _scan_chunks(chunks, values: dict) -> set:
+    longest = max((len(x) for vs in values.values() for x in vs), default=0)
+    hits, tail = set(), b""
+    for chunk in chunks:
+        data = tail + chunk
+        for name, vs in values.items():
+            if any(x in data for x in vs):
+                hits.add(name)
+        tail = data[-(longest - 1):] if longest > 1 else b""
+    return hits
+
+
+def _file_chunks(path: Path):
+    with open(path, "rb") as f:
+        while chunk := f.read(1 << 20):
+            yield chunk
+
+
+def scan_for_secrets(cfg: Config) -> list:
+    """Names of store items whose value appears in company.sql or in the
+    commits not yet pushed. The values themselves are never returned."""
+    values = _secret_values(cfg)
+    if not values:
+        return []
+    hits = set()
+    sql = cfg.home / SQL_REL
+    if sql.is_file():
+        hits |= _scan_chunks(_file_chunks(sql), values)
+    ref = f"refs/remotes/{BACKUP_REMOTE}/main"
+    rng = f"{ref}..main" if not _git(cfg.home, "rev-parse", "--verify", "-q",
+                                     ref).returncode else "main"
+    p = subprocess.Popen(["git", "log", "-p", "--no-color", "--format=%B", rng,
+                          "--"], cwd=cfg.home, env=_env(),
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    try:
+        hits |= _scan_chunks(iter(lambda: p.stdout.read(1 << 20), b""), values)
+    finally:
+        p.stdout.close()
+        p.wait()
+    if p.returncode:
+        raise BackupError("could not read the commits to scan them")
+    return sorted(hits)
 
 
 def push(cfg: Config, conn: sqlite3.Connection | None = None) -> str:
-    """Push main to the `backup` remote. Returns "pushed", "no-remote" or
-    "failed". Never forced; a failure tells Admin once a day."""
-    if BACKUP_REMOTE not in _remotes(cfg):
+    """Push main to the `backup` remote. Returns "pushed", "no-remote",
+    "blocked" (a secret value was found in what would be pushed) or "failed".
+    Never forced; problems tell Admin once a day."""
+    if BACKUP_REMOTE not in remotes(cfg):
         print(f"note: no '{BACKUP_REMOTE}' remote yet, so nothing was pushed. "
               f"Add one with: git -C {cfg.home} remote add {BACKUP_REMOTE} "
               "<repo-url>")
         return "no-remote"
+    try:
+        hits = scan_for_secrets(cfg)
+    except (BackupError, RuntimeError, OSError, KeyError, ValueError) as e:
+        hits = None
+        why = f"the secret scan could not run ({type(e).__name__})"
+    if hits is None or hits:
+        why = why if hits is None else (
+            "the value of the store item(s) " + ", ".join(hits)
+            + " appears in the backup data")
+        _alert_admin(cfg, conn, "push-blocked", "Backup push blocked",
+                     f"Nothing was pushed because {why}. The snapshot stays "
+                     "on the server. A secret must never leave it; the value "
+                     "has to be removed from the data first.")
+        print("error: push blocked: " + why, file=sys.stderr)
+        return "blocked"
     try:
         _git_ok(cfg.home, "push", "-q", BACKUP_REMOTE, "main")
     except BackupError as e:
@@ -154,6 +308,8 @@ def push(cfg: Config, conn: sqlite3.Connection | None = None) -> str:
                      "tries again.")
         print(f"error: {e}", file=sys.stderr)
         return "failed"
+    if conn is not None:
+        meta_set(conn, "backup.last_push_ok", utcnow())
     return "pushed"
 
 
@@ -174,9 +330,10 @@ def restore(cfg: Config, source: str, target) -> str:
             target.mkdir(parents=True, exist_ok=True)
             sql = src.read_text(encoding="utf-8")
         else:
-            r = _git(Path.cwd(), "clone", "-q", source, str(target))
+            r = _git(Path.cwd(), "clone", "-q", "--", source, str(target))
             if r.returncode:
-                raise BackupError(f"git clone failed: {r.stderr.strip()[:300]}")
+                raise BackupError("git clone failed: "
+                                  + clean(r.stderr.strip())[:300])
             sql_file = target / SQL_REL
             if not sql_file.is_file():
                 raise BackupError(f"{SQL_REL} is not in that backup")
@@ -252,7 +409,7 @@ def _clone_remote(cfg: Config, dest: Path, branch: str | None = None) -> None:
     args = ["clone", "-q", "--depth", "1"]
     if branch:
         args += ["-b", branch]
-    _git_ok(dest.parent, *args, url, str(dest))
+    _git_ok(dest.parent, *args, "--", url, str(dest))
 
 
 def _push_month(cfg: Config, month: str) -> dict:
@@ -295,34 +452,89 @@ def _push_month(cfg: Config, month: str) -> dict:
                               f"{len(bad)} file(s), e.g. {bad[0]}")
         old = _read_marker(month_dir).get("files", {})
         return {"remote": ARCHIVE_REMOTE, "branch": branch, "commit": commit,
-                "moved_at": utcnow(), "files": {**old, **local}}
+                "moved_at": utcnow(), "files": {**old, **local},
+                "verified": local}
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def _remove_local(month_dir: Path, marker: dict) -> None:
+def _remove_local(month_dir: Path, marker: dict, verified: dict) -> bool:
+    """Write the marker, then remove only the files that were verified on the
+    remote, re-hashing each just before it goes. Anything else stays for the
+    next pass. Returns True when nothing but the marker is left."""
     part = month_dir / (MARKER + ".part")
     part.write_text(json.dumps(marker, indent=1, sort_keys=True) + "\n")
     os.replace(part, month_dir / MARKER)
-    for child in list(month_dir.iterdir()):
-        if child.name == MARKER:
+    for rel, blob in sorted(verified.items()):
+        p = month_dir / rel
+        if p.is_symlink() or not p.is_file():
             continue
-        if child.is_dir() and not child.is_symlink():
-            shutil.rmtree(child)
-        else:
-            child.unlink()
+        if _hash_local(month_dir, [rel]) == [blob]:
+            p.unlink()
+    for d in sorted((x for x in month_dir.rglob("*") if x.is_dir()),
+                    reverse=True):
+        try:
+            d.rmdir()  # only if empty
+        except OSError:
+            pass
+    return not _month_files(month_dir)
+
+
+def _signature(month_dir: Path) -> str | None:
+    files = _month_files(month_dir)
+    if not files:
+        return None
+    h = hashlib.sha256()
+    for rel, blob in zip(files, _hash_local(month_dir, files)):
+        h.update(f"{rel}\0{blob}\n".encode())
+    return h.hexdigest()
+
+
+def push_archive_months(cfg: Config, conn: sqlite3.Connection,
+                        now: str | None = None) -> list:
+    """Copy every closed archive month (older than the current one) to the
+    `archive` remote with a verified push, whatever the disk looks like. A
+    month is pushed again when its files changed since. Local files are not
+    touched here. Returns the months pushed."""
+    now = now or utcnow()
+    if ARCHIVE_REMOTE not in remotes(cfg):
+        return []
+    d = datetime.fromisoformat(now)
+    this = f"{d.year}-{d.month:02d}"
+    pushed = []
+    for month in _months(cfg):
+        if month >= this:
+            continue
+        try:
+            sig = _signature(cfg.archive_dir / month)
+            if sig is None or meta_get(
+                    conn, f"backup.archive_pushed:{month}") == sig:
+                continue
+            _push_month(cfg, month)
+            meta_set(conn, f"backup.archive_pushed:{month}", sig)
+        except BackupError as e:
+            _alert_admin(cfg, conn, f"archive-push-failed:{month}",
+                         "Copying archive off the server failed",
+                         f"Could not copy archive/{month} to the "
+                         f"'{ARCHIVE_REMOTE}' remote: {e}. Local files are "
+                         "kept; the next hour tries again.", now)
+            print(f"error: {e}", file=sys.stderr)
+            break
+        pushed.append(month)
+    return pushed
 
 
 def offsite_archive(cfg: Config, conn: sqlite3.Connection | None = None,
                     disk_usage_fn=shutil.disk_usage,
                     now: str | None = None) -> list:
-    """While the disk is over the limit, move the oldest archive months to the
+    """While the disk is over the limit, free space by removing the oldest
+    archive months from the server, each only after a verified push to the
     `archive` remote. The current and previous month always stay. Returns the
-    months moved. Local files are removed only after a verified push."""
+    months now fully off-server."""
     now = now or utcnow()
     if not archive.offsite_needed(cfg, disk_usage_fn):
         return []
-    if ARCHIVE_REMOTE not in _remotes(cfg):
+    if ARCHIVE_REMOTE not in remotes(cfg):
         _alert_admin(cfg, conn, "no-archive-remote", "Disk is filling up",
                      f"The disk is over {cfg.archive_offserver_pct}% full but "
                      f"there is no '{ARCHIVE_REMOTE}' remote to move old "
@@ -350,8 +562,8 @@ def offsite_archive(cfg: Config, conn: sqlite3.Connection | None = None,
                          "kept.", now)
             print(f"error: {e}", file=sys.stderr)
             break  # oldest first: do not skip ahead past a failure
-        _remove_local(month_dir, marker)
-        moved.append(month)
+        if _remove_local(month_dir, marker, marker.pop("verified")):
+            moved.append(month)
     return moved
 
 
@@ -388,22 +600,28 @@ def _cmd_now(args) -> int:
     cfg = Config.load()
     conn = connect(cfg)
     bad = False
+    steps = (
+        ("snapshot", lambda: (lambda sha: f"committed {sha[:8]}" if sha
+                              else "no changes")(snapshot(cfg, conn))),
+        ("push", lambda: push(cfg, conn)),
+        ("archive copy", lambda: ", ".join(push_archive_months(cfg, conn))
+         or "nothing new"),
+        ("off-server", lambda: ", ".join(offsite_archive(cfg, conn))
+         or "not needed"),
+    )
     try:
-        sha = snapshot(cfg, conn)
-        print(f"snapshot: {'committed ' + sha[:8] if sha else 'no changes'}")
-        result = push(cfg, conn)
-        print(f"push: {result}")
-        bad = result == "failed"
-        try:
-            moved = offsite_archive(cfg, conn)
-        except BackupError as e:
-            print(f"error: {e}", file=sys.stderr)
-            moved, bad = [], True
-        if moved:
-            print(f"moved off-server: {', '.join(moved)}")
-    except (BackupError, RuntimeError, OSError, sqlite3.Error) as e:
-        print(f"error: {e}", file=sys.stderr)
-        bad = True
+        for name, step in steps:
+            try:
+                result = step()
+            except (BackupError, RuntimeError, OSError, sqlite3.Error,
+                    subprocess.CalledProcessError) as e:
+                result = "FAILED"
+                msg = clean(str(e))[:300]
+                print(f"error: {name}: {msg}", file=sys.stderr)
+                _alert_admin(cfg, conn, f"{name.replace(' ', '-')}-error",
+                             f"Backup step failed: {name}", msg)
+            print(f"{name}: {result}")
+            bad = bad or result in ("FAILED", "failed", "blocked")
     finally:
         conn.close()
     print(SECRETS_NOTE)
