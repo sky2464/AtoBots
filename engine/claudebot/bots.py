@@ -276,8 +276,8 @@ def _run(fn):
     conn = connect(cfg)
     try:
         return fn(cfg, conn)
-    except (ValueError, KeyError) as e:
-        print(f"error: {e.args[0] if e.args else e}", file=sys.stderr)
+    except (ValueError, KeyError, OSError) as e:
+        print(f"error: {e}", file=sys.stderr)
         return 1
     finally:
         conn.close()
@@ -395,7 +395,8 @@ def register(subparsers) -> None:
     st.add_argument("--persona-file")
     st.add_argument("--decision")
     st.set_defaults(func=_cmd_set)
-    for word, status in (("pause", "paused"), ("retire", "retired")):
+    for word, status in (("pause", "paused"), ("resume", "active"),
+                         ("retire", "retired")):
         p = sub.add_parser(word)
         p.add_argument("name")
         p.set_defaults(func=_status_cmd(status))

@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "engine"))
 
@@ -142,9 +143,8 @@ class CheckTests(BotsBase):
         msgs = bots.check(self.cfg, self.conn)
         self.assertTrue(any("MEMORY.md" in m for m in msgs), msgs)
         self.assertTrue(any("PERSONA.md" in m for m in msgs), msgs)
-        bots.update(self.cfg, self.conn, "backend", "admin")  # no-op ok
         (d / "SOUL.md").write_text("s" * (4 * 1024 + 1))
-        self.assertTrue(any("SOUL.md" in m and "KB" in m or "bytes" in m
+        self.assertTrue(any("SOUL.md" in m and "over the" in m
                             for m in bots.check(self.cfg, self.conn)))
 
     def test_soul_change_detected(self):
@@ -221,11 +221,19 @@ class PromptTests(BotsBase):
 
 class CliTests(BotsBase):
     def run_cli(self, *argv):
-        os.environ["CLAUDEBOT_HOME"] = str(self.cfg.home)
         buf = io.StringIO()
-        with redirect_stdout(buf):
+        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.cfg.home)}), \
+                redirect_stdout(buf):
             rc = cli.main(list(argv))
         return rc, buf.getvalue()
+
+    def test_missing_soul_file_is_clean_error(self):
+        with mock.patch("sys.stderr", io.StringIO()) as err:
+            rc, _ = self.run_cli("bot", "new", "x", "--role", "r",
+                                 "--soul-file", "/nonexistent/s",
+                                 "--persona-file", "/nonexistent/p")
+        self.assertEqual(rc, 1)
+        self.assertIn("error:", err.getvalue())
 
     def test_new_list_show_set_pause_retire_check(self):
         home = Path(self._tmp.name)
@@ -243,6 +251,8 @@ class CliTests(BotsBase):
         self.assertEqual(bots.get(self.conn, "backend").model, "opus")
         self.run_cli("bot", "pause", "backend")
         self.assertEqual(bots.get(self.conn, "backend").status, "paused")
+        self.run_cli("bot", "resume", "backend")
+        self.assertEqual(bots.get(self.conn, "backend").status, "active")
         self.run_cli("bot", "retire", "backend")
         self.assertEqual(bots.get(self.conn, "backend").status, "retired")
         rc, out = self.run_cli("check")
