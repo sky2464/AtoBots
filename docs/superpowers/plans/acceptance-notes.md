@@ -1,32 +1,45 @@
-# Acceptance notes (Task 15)
+# Acceptance notes (Task 15, steps 1, 3 and checks)
 
-Date: 2026-11-09. Server: racknerd-5fc4050 (2 vCPU, 2 GB RAM, 4 GB swap), Debian 13.
+Date: 2026-11-09. Server: racknerd-5fc4050 (2 vCPU, 1973 MB RAM, 4 GB swap), Debian 13, Claude Code 2.1.319, Pro plan.
+Steps 2 and 4 to 12 of the brief need the Owner and were not run.
 
-## Status: STOPPED after step 1 (suite failed on the server). Nothing installed.
+## Step 1: Deploy and suite - PASS (after one allowed test edit)
+- `~/ClaudeBot` and `~/DTbyNavid` were empty before writing. rsync (no --delete) of `engine/` and `tests/`. The Owner's own claude process was not touched.
+- First suite run: 273 pass, 1 FAIL: `test_archive.ScaleTests.test_context_constant_over_years` hit its 25 s bulk-archive bound (72 s, repeat 71 s; the Mac needs 17.6 s). Load was under 1, so not noise.
+- Controller ruling: raise only that bound to 300 s (a 5-year one-shot archive does not occur in real use, as archiving runs daily; the spec needs constant context and `cb next` under 200 ms). Done, with a comment.
+- Re-run on server: Ran 274 tests in 118.6 s, OK. This includes the gpg tests against the final code.
+- Measured on the server: bulk archive of 200k messages, 5k runs and 20k items took **66.0 s**; `cb next` median **0.10 ms** (limit 200 ms). All other assertions unchanged and passing.
 
-## Step 1a: pre-checks - PASS
-- `~/ClaudeBot` and `~/DTbyNavid` both empty (no entries) before writing.
-- Owner's `claude --dangerously-skip-permissions` process (pid 10522, ~300 MB RSS) was running; not touched. No tmux server socket present.
-- Free before the run: 1973 MB total, 534 used, 1439 available, swap 0 used.
+## Install - PASS
+`bash engine/install.sh --start DTbyNavid /home/claude/DTbyNavid` (cb init created rules.md, admin, backend dir).
+- `systemctl is-active claudebot-dispatcher`: active. claudebot-backup.timer and claudebot-doctor.timer listed (next run in about 7 min).
+- `cb bot list`: only `admin  sonnet  active`. `cb status`: Running none, Queued 0, not paused, Stuck 0.
+- `cb doctor`: only the two expected findings: no `backup` remote, no `archive` remote.
+- `git -C ~/DTbyNavid log --oneline`: `20c650e Check setup` (author system).
+- ufw status and the sshd settings (permitrootlogin, passwordauthentication, allowusers) have identical hashes before and after. A fresh SSH login works. The install does not touch SSH or the firewall.
+- Note: non-interactive `ssh host 'claude ...'` has no `claude` on PATH (use `/home/claude/.local/bin/claude`); `cb` works via /usr/local/bin.
 
-## Step 1b: rsync engine/ and tests/ to ~/ClaudeBot/ (no --delete) - PASS
-Result: `~/ClaudeBot/engine`, `~/ClaudeBot/tests`. __pycache__ excluded.
+## Step 3: Measurements - PASS
+- Idle dispatcher RSS: **24.5 MB** (about 25 MB). Free memory idle: used 332 MB, available 1640 MB, swap 0.
+- One Admin run (Sonnet): total used RAM rose from 332 to a peak of about 471 MB (+140 MB, sampled every 3 s). Run took 19 s.
+- Two concurrent Haiku runs under the dispatcher's own systemd-run limits (MemoryMax=1200M, MemorySwapMax=0): cgroup peaks **125.2 MB and 119.7 MB**, 4.8 s and 5.1 s. Whole-system used RAM peaked at 578 MB (from 340), swap 0, after the runs 350. Two fit with a large margin. Keep `max_concurrent_runs=2`, `run_memory_max=1200M`, `memory_floor_mb=500`. No config was changed. Caveat: these are tiny runs; large tool output will use more. The real Admin run's own cgroup peak was not captured (the dispatcher swallows the systemd-run summary), so Admin figure is the system-wide delta.
+- Not measured: two concurrent runs of two different bots (only Admin exists).
 
-## Step 1c: full suite on the server - FAIL (273 pass, 1 fail)
-`cd ~/ClaudeBot && python3 -m unittest discover -s tests`: Ran 274 tests in 116.4 s, FAILED (failures=1).
-All gpg tests passed on the final code.
+## End-to-end through the dispatcher - PASS with one finding
+`cb send admin "Preflight" "Reply with a one-line note saying you are working, then finish." --from system`
+- runs row: id 1, bot admin, lane normal, exit_code 0, reason `ok`, input_tokens 95,234 (includes cache reads), output_tokens 587, 19 s. Message 1 status `done`.
+- Transcript moved to `archive/2026-11/admin-1.jsonl.gz` and the run's project dir under `~/.claude/projects/-home-claude-DTbyNavid-bots-admin` is empty. PASS.
+- `cb search Preflight` found both the message and the archived transcript. PASS.
+- git: no commit from the run (it changed no files); only the setup commit exists. Commit attribution by bot/item therefore not exercised here.
+- FINDING: Admin's `cb reply` failed with `'system' is reserved (used for actors in the record); pick another name`. Replying to a message sent `--from system` does not work. For tests use a real sender (for example `--from owner`) or confirm whether `--from system` is meant to be answerable. The run still ended `ok`.
 
-Failing test: `test_archive.ScaleTests.test_context_constant_over_years` (tests/test_archive.py:672),
-`self.assertLess(time.monotonic() - start, 25)`: archiving 200,000 messages, 5,000 runs and 20,000 items took
-72.1 s (first run) and 70.9 s (isolated re-run), against the 25 s budget.
+## Step 4: Unverified facts - from the archived transcript
+- `~/CLAUDE.md` loaded: PASS. The transcript has an `instructions` attachment listing `/home/claude/CLAUDE.md` (type Project) with its content ("This server ..."), even with `--setting-sources project,local` and the run's cwd being bots/admin.
+- Symlinked skills loaded: PASS. The `skill_listing` attachment contains cb-basics, work-tracking and create-bot (symlinks in bots/admin/.claude/skills point to engine/templates/skills).
+- Admin's actual model: `claude-sonnet-5-5` (Sonnet 5.5), from the transcript model attachment and every API response.
+- Opus: AVAILABLE. `claude -p --model opus "Reply OK"` returned OK, modelUsage `claude-opus-5-5`, cost $0.0525, cache creation 6,323 tokens.
+- Cache-creation tokens, Admin run: 9,171 on the first request, then 651, 338, 109, 113 (total about 10,382 across 5 requests) with 9,084 to 19,353 read from cache. Baseline was 7,052 for Haiku "Reply OK" with the same isolation (7,019 measured again here for the concurrency runs). Admin's first request is about 2,100 tokens (30%) above the baseline: identity prompt, ~/CLAUDE.md and the skill listing. Acceptable.
+- Cost of the isolated Haiku "Reply OK" run is 0.0015 USD, as in the preflight notes.
 
-Evidence it is a speed bound and not logic:
-- Re-run alone with server load average under 1 (only the Owner's idle claude process): 70.9 s, same failure. Not load noise.
-- Same test on the Mac: passes in 17.6 s total (also not far under 25 s).
-- The later assertions (row counts, constant context) were not reached, because the timing assertion comes first. Whether they hold on the server is unknown.
-- The 2 vCPU VPS disk and CPU are about 4x slower than the Mac for this bulk SQLite work.
-
-Decision for the controller: either relax the 25 s bound for slow hardware (for example an environment variable or 120 s), or confirm the bulk archive is genuinely too slow for the VPS. Per the brief, install was not run; no engine code was changed on the server or in the repo.
-
-## Steps 2 to 5: NOT RUN
-Install (`install.sh --start DTbyNavid /home/claude/DTbyNavid`), service/timer checks, idle RSS and memory, the end-to-end Admin run, ~/CLAUDE.md and skills loading checks, Opus availability, cache-creation comparison with the 7,052 baseline, and concurrency measurement were not run.
+## Real Claude calls used
+1 Admin Sonnet run, 2 Haiku runs, 1 Opus run (the first Opus attempt failed before reaching the API: claude not on PATH).
