@@ -112,7 +112,9 @@ class Dispatcher:
 
     def startup(self) -> None:
         """Runs recorded while the dispatcher was alive can be left open by a
-        crash. Close them as `crash` and requeue the messages they held."""
+        crash. Close them as `crash`. Their messages stay claimed: the old
+        session may still be alive in its systemd unit (up to RuntimeMaxSec),
+        so only the lease (longer than that) returns the work to the queue."""
         conn = self._db()
         now = self.clock()
         rows = conn.execute(
@@ -124,10 +126,6 @@ class Dispatcher:
                 activity.record(conn, "system", "run.crashed",
                                 f"{r['bot']} run {r['id']} was open at startup",
                                 str(r["id"]))
-            held = [m["id"] for m in conn.execute(
-                "SELECT id FROM messages WHERE status='claimed' AND run_id=?",
-                (r["id"],))]
-            self._release(conn, held, now)
 
     # ---- claim / release / finish ----
 
@@ -256,7 +254,19 @@ class Dispatcher:
     # ---- workers ----
 
     def _work(self, w: _Worker) -> None:
-        conn = self._db()
+        try:
+            self._work_body(w, self._db())
+        except Exception as e:  # noqa: BLE001
+            # e.g. no connection; the lease brings the messages back.
+            print(f"dispatcher: worker for {w.bot.name} failed: {e}",
+                  file=sys.stderr)
+        finally:
+            w.started.set()
+            with self._lock:
+                self._running.pop(w.bot.name, None)
+            self._drop_conn()
+
+    def _work_body(self, w: _Worker, conn) -> None:
         ids = [m["id"] for m in w.msgs]
 
         def on_start(run_id):
@@ -268,29 +278,23 @@ class Dispatcher:
 
         result = None
         try:
-            try:
-                result = self.run_fn(self.cfg, conn, w.bot, w.msgs, w.lane,
-                                     on_start=on_start)
-            except Exception as e:  # noqa: BLE001
-                _log(conn, "run.exception", f"{w.bot.name}: {type(e).__name__}"
-                     f": {e}", str(w.run_id) if w.run_id else None)
-                if w.run_id:
-                    conn.execute("UPDATE runs SET ended_at=?, reason='error'"
-                                 " WHERE id=? AND ended_at IS NULL",
-                                 (self.clock(), w.run_id))
-            run_id = result.run_id if result else w.run_id
-            try:
-                self.finish(run_id, result, w.msgs)
-            except Exception as e:  # noqa: BLE001
-                # Messages stay claimed; the lease brings them back.
-                _log(conn, "finish.failed", f"run {run_id}: {e}",
-                     str(run_id) if run_id else None)
-            self._commit(conn, w.bot.name, w.msgs, run_id)
-        finally:
-            w.started.set()
-            with self._lock:
-                self._running.pop(w.bot.name, None)
-            self._drop_conn()
+            result = self.run_fn(self.cfg, conn, w.bot, w.msgs, w.lane,
+                                 on_start=on_start)
+        except Exception as e:  # noqa: BLE001
+            _log(conn, "run.exception", f"{w.bot.name}: {type(e).__name__}"
+                 f": {e}", str(w.run_id) if w.run_id else None)
+            if w.run_id:
+                conn.execute("UPDATE runs SET ended_at=?, reason='error'"
+                             " WHERE id=? AND ended_at IS NULL",
+                             (self.clock(), w.run_id))
+        run_id = result.run_id if result else w.run_id
+        try:
+            self.finish(run_id, result, w.msgs)
+        except Exception as e:  # noqa: BLE001
+            # Messages stay claimed; the lease brings them back.
+            _log(conn, "finish.failed", f"run {run_id}: {e}",
+                 str(run_id) if run_id else None)
+        self._commit(conn, w.bot.name, w.msgs, run_id)
 
     # ---- the pass ----
 
@@ -298,11 +302,17 @@ class Dispatcher:
         """One pass. Returns the IDs of the runs it started."""
         conn = self._db()
         now = self.clock()
-        self.recover_expired()
-        self._call_routines(conn, now)
-        self._wake_assigned(conn, now)
-        self._wake_admin(conn, now)
-        self._reindex(conn)
+        for name, step in (("recover_expired", self.recover_expired),
+                           ("routines", lambda: self._call_routines(conn, now)),
+                           ("wake_assigned",
+                            lambda: self._wake_assigned(conn, now)),
+                           ("wake_admin", lambda: self._wake_admin(conn, now)),
+                           ("reindex", lambda: self._reindex(conn))):
+            try:
+                step()
+            except Exception as e:  # noqa: BLE001
+                _log(conn, "tick.step_failed",
+                     f"{name}: {type(e).__name__}: {e}")
         if self._paused(conn, now):
             return []
         try:

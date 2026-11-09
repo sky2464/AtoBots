@@ -3,7 +3,7 @@ import sys
 import tempfile
 import threading
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -436,7 +436,7 @@ class CommitAndRecoveryTests(Base):
         self.assertEqual(len(self.tick(d2)), 1)
         self.assertEqual(len(self.kinds("search.reindex_failed")), 1)
 
-    def test_startup_marks_open_runs_crashed_and_requeues_their_messages(self):
+    def test_startup_marks_open_runs_crashed_and_keeps_messages_claimed(self):
         a = self.send("backend")
         self.conn.execute("INSERT INTO runs(bot, started_at) VALUES"
                           " ('backend', ?)", (self.clock(),))
@@ -448,8 +448,82 @@ class CommitAndRecoveryTests(Base):
         r = self.conn.execute("SELECT * FROM runs WHERE id=1").fetchone()
         self.assertEqual(r["reason"], "crash")
         self.assertIsNotNone(r["ended_at"])
-        self.assertEqual(self.msg(a)["status"], "queued")
+        self.assertEqual(self.msg(a)["status"], "claimed")
         self.assertEqual(len(self.kinds("run.crashed")), 1)
+
+    def test_restart_does_not_rerun_live_work(self):
+        a = self.send("backend")
+        self.ready()
+        gate = threading.Event()
+        self.run_fn.gate = gate
+        d1 = self.make()
+        d1.tick()  # old dispatcher claims; session is "still alive"
+        # simulate the old process dying: its run row stays open
+        self.conn.execute("UPDATE runs SET ended_at=NULL, reason=NULL")
+        d2 = self.make()
+        d2.startup()
+        self.clock.advance(1800)
+        self.run_fn.gate = None
+        calls = len(self.run_fn.calls)
+        self.assertEqual(d2.tick(), [])
+        self.assertEqual(len(self.run_fn.calls), calls)
+        self.assertEqual(self.msg(a)["status"], "claimed")
+        self.clock.advance(301)  # lease (2100 s) is over
+        self.assertEqual(len(self.tick(d2)), 1)
+        self.assertEqual(len(self.run_fn.calls), calls + 1)
+        self.assertEqual(self.msg(a)["status"], "done")
+        gate.set()
+        d1.wait()
+
+    def test_long_run_outliving_lease_is_not_duplicated(self):
+        a = self.send("backend")
+        self.ready()
+        gate = threading.Event()
+        self.run_fn.gate = gate
+        d = self.make()
+        d.tick()
+        self.clock.advance(5000)
+        self.assertEqual(d.tick(), [])
+        self.assertEqual(len(self.run_fn.calls), 1)
+        self.assertEqual(self.msg(a)["status"], "claimed")
+        gate.set()
+        d.wait()
+        self.assertEqual(self.msg(a)["status"], "done")
+
+    def test_failing_optional_steps_do_not_starve_dispatch(self):
+        a = self.send("backend")
+        self.ready()
+        d = self.make()
+
+        def boom(*args):
+            raise RuntimeError("step broke")
+
+        d._wake_assigned = boom
+        d._wake_admin = boom
+        d.recover_expired = boom
+        self.assertEqual(len(self.tick(d)), 1)
+        self.assertEqual(self.msg(a)["status"], "done")
+        self.assertEqual(len(self.kinds("tick.step_failed")), 3)
+
+    def test_failed_connect_does_not_wedge_bot(self):
+        a = self.send("backend")
+        self.ready()
+        d = self.make()
+        real = d._db
+        main = threading.current_thread()
+
+        def db():
+            if threading.current_thread() is not main:
+                raise RuntimeError("cannot connect")
+            return real()
+
+        d._db = db
+        err = io.StringIO()
+        with redirect_stderr(err):
+            d.tick()
+            d.wait()
+        self.assertIn("cannot connect", err.getvalue())
+        self.assertEqual(d._running, {})
 
     def test_serve_runs_startup_then_stops(self):
         self.conn.execute("INSERT INTO runs(bot, started_at) VALUES"
