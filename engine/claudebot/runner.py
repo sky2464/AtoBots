@@ -81,7 +81,10 @@ def task_packet(cfg: Config, conn: sqlite3.Connection, bot, msgs) -> str:
     lines = [f"You are {bot.name}. New work for this run:", ""]
     item_ids = []
     for m in msgs:
-        lines.append(f"## Message {m['id']} from {m['from_bot']}: {m['subject']}")
+        lines.append(f"## Message {m['id']} ({m['kind']}) from {m['from_bot']}: "
+                     f"{m['subject']}")
+        if m["kind"] in ("answer", "note"):
+            lines.append("No reply needed unless this requires action.")
         if m["item_id"]:
             lines.append(f"Item: {m['item_id']}")
             if m["item_id"] not in item_ids:

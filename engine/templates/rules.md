@@ -47,6 +47,11 @@ Follow them even when no one is watching.
   `cb secret`. Secrets marked Owner's order only need his direct word.
 - Install tools only from sources the Owner approved. Ask first.
 
+## Messages
+
+- Do not reply to a reply or a note unless it needs something done. Never send
+  thanks or acknowledgements. Ending the run without replying is correct.
+
 ## Keeping the record
 
 - Every request becomes an item. Say what you did, and mark honestly what you

@@ -25,7 +25,9 @@ command. Everything you do through `cb` is recorded under your name.
 
 - `cb send NAME "subject" "body" --item T-0007` leaves a message and wakes the
   bot. Point to files (`work/T-0007/script.md`) instead of pasting them.
-  Bodies stay short. Do not send acknowledgement-only messages.
+  Bodies stay short. Never send thanks or acknowledgements.
+- Do not reply to a reply or a note unless it needs something done. Ending
+  the run without replying is correct.
 - `cb ask NAME T-0007 "question" --handoff-file PATH` asks and then ends your
   session. The handoff file says where you stopped and what to do on the
   answer. You are woken with the answer and your note.
