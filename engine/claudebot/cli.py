@@ -4,13 +4,13 @@ import shutil
 import sys
 from pathlib import Path
 
-from . import (archive, backup, bots, chat, dispatcher, doctor, gitlog, items,
-               messages, requests, routines, search, store)
+from . import (admin_live, archive, backup, bots, chat, dispatcher, doctor,
+               gitlog, items, messages, requests, routines, search, store)
 from .config import Config
 from .db import connect, init_db
 
 MODULES = [store, bots, items, messages, requests, search, routines,
-           dispatcher, archive, chat, doctor, backup]
+           dispatcher, archive, chat, doctor, backup, admin_live]
 
 
 TEMPLATES = Path(__file__).resolve().parent.parent / "templates"

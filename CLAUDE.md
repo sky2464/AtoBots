@@ -18,6 +18,13 @@ Owner: Navid (Atoosa). Goal: a fresh VPS that Claude Code is installed on and ma
 - Old entries `vps2` and `racknerd` in `~/.ssh/config` point to the same IP but are stale (user `adminuser` / port 4422 no longer exist). Ask Navid before removing them.
 - The old host key for 192.210.190.169 was removed from `known_hosts` and the new ed25519 key was added.
 
+## Always-on Admin with Telegram (set up 2026-11-09)
+- Runs as `claudebot-admin.service` (starts at boot once enabled), inside tmux session `admin-live`, as `cb admin serve`: Admin with `--channels plugin:telegram@claude-plugins-official --dangerously-skip-permissions`. It does not pause bots (only `cb chat` does). State is in `~/Atoosa/.admin-live/`.
+- Attach: `ssh atoosa-vps` then `tmux attach -t admin-live`. Detach without stopping it: Ctrl-b then d. Never press Ctrl-c or type `/exit` unless you want it restarted (it restarts after 10 s).
+- Check: `systemctl status claudebot-admin`, `tmux ls`, `cb doctor`.
+- Stop: `sudo systemctl stop claudebot-admin` (also ends the tmux session). Disable at boot: `sudo systemctl disable claudebot-admin`.
+- The Telegram plugin is installed at local scope for `~/Atoosa` (bun in `~/.bun/bin`); the bot token lives in `~/.claude/channels/telegram/.env`, access in `access.json` next to it. Pairing and allowlist changes are made only in the attached terminal.
+
 ## vps-bootstrap.sh (in this folder) — run once as root on the server
 Does: full-upgrade + tools (git, curl, ripgrep, jq, tmux, build-essential, python3), creates user `claude` with passwordless sudo,
 installs both public keys, adds 4 GB swap (RAM < 4 GB), ufw (only SSH open), fail2ban (systemd backend), unattended-upgrades,

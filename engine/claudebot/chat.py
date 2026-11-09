@@ -40,12 +40,17 @@ KILL_GRACE_SECONDS = 20
 DEFAULT_THRESHOLD = 100000
 NAG_STEP = 20000
 TOKEN_ENV = "CB_ROLLOVER_TOKEN"
+STATE_ENV = "CB_STATE_DIR"  # set by `cb admin serve`: its own state directory
 
 
 # ---- paths ----
 
 def chat_dir(cfg: Config) -> Path:
-    return cfg.home / ".chat"
+    """State of the running chat. The always-on Admin session sets
+    CB_STATE_DIR so the Stop hook and `cb chat-rollover` find its files, not
+    those of a `cb chat`."""
+    override = os.environ.get(STATE_ENV)
+    return Path(override) if override else cfg.home / ".chat"
 
 
 def lock_path(cfg: Config) -> Path:
@@ -148,15 +153,14 @@ def owner_connected(cfg: Config) -> bool:
 
 # ---- the brief ----
 
-def last_check(conn):
-    r = conn.execute("SELECT value FROM meta WHERE key=?",
-                     (LAST_CHECK_KEY,)).fetchone()
+def last_check(conn, key: str = LAST_CHECK_KEY):
+    r = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
     return r["value"] if r else None
 
 
-def mark_checked(conn, iso: str) -> None:
+def mark_checked(conn, iso: str, key: str = LAST_CHECK_KEY) -> None:
     conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?,?)",
-                 (LAST_CHECK_KEY, iso))
+                 (key, iso))
 
 
 def _clip(text: str, cap: int = LINE_CAP) -> str:
@@ -369,7 +373,7 @@ def rollover(cfg: Config, conn, summary: str, kill=os.kill) -> None:
     restart it. Raises ValueError when nothing can be rolled over."""
     if not isinstance(summary, str) or not summary.strip():
         raise ValueError("the summary is empty")
-    if not owner_connected(cfg):
+    if not os.environ.get(STATE_ENV) and not owner_connected(cfg):
         raise ValueError("no chat is open")
     try:
         pid = int(pid_path(cfg).read_text().strip())
@@ -420,12 +424,17 @@ def _compose_prompt(cfg, conn, brief_text: str, summary) -> str:
     return "\n\n".join(parts)
 
 
-def _command(cfg, bot, session_id, prompt_file, settings_file, mcp_file):
+def _command(cfg, bot, session_id, prompt_file, settings_file, mcp_file,
+             channels=None):
     cmd = [cfg.claude_bin,
            "--append-system-prompt-file", str(prompt_file),
            "--setting-sources", "project,local"]
-    if not bot.connectors:
+    # A channel plugin's server is an MCP server: --strict-mcp-config would
+    # drop it, so the always-on session runs without that flag.
+    if not bot.connectors and not channels:
         cmd.append("--strict-mcp-config")
+    if channels:
+        cmd += ["--channels", *channels]
     model = bot.model or cfg.default_model
     cmd += ["--model", model]
     if bot.effort:
@@ -442,15 +451,23 @@ def _launch(cmd, cwd, env):
     return subprocess.Popen(cmd, cwd=cwd, env=env)
 
 
-def _wait(proc, cfg, token=None) -> int:
+def _wait(proc, cfg, token=None, stop=None) -> int:
     """Wait for claude. Ctrl-C belongs to claude, not to us. If a rollover
-    was requested and claude ignores SIGTERM, kill it after a grace period."""
-    deadline = None
+    was requested (or `stop` is set) and claude ignores SIGTERM, kill it after
+    a grace period."""
+    deadline, termed = None, False
     while True:
         try:
             return proc.wait(timeout=1)
         except subprocess.TimeoutExpired:
-            if _read_token(cfg) not in (None, token):
+            if stop is not None and stop.is_set():
+                if not termed:
+                    termed = True
+                    proc.terminate()
+                deadline = deadline or time.monotonic() + KILL_GRACE_SECONDS
+                if time.monotonic() > deadline:
+                    proc.kill()
+            elif _read_token(cfg) not in (None, token):
                 deadline = deadline or time.monotonic() + KILL_GRACE_SECONDS
                 if time.monotonic() > deadline:
                     proc.kill()
@@ -465,54 +482,73 @@ def _unlink(path) -> None:
         pass
 
 
-def _one_session(cfg, conn, summary, token, first: bool) -> str:
-    """Run claude once. Returns 'rollover', 'ok' or 'error'."""
+def _one_session(cfg, conn, summary, token, first: bool, live=None) -> str:
+    """Run claude once. Returns 'rollover', 'ok', 'error' or (always-on
+    session only) 'stopped'. `live` is the always-on Admin's settings (see
+    admin_live.Live); None means an ordinary `cb chat`."""
     bot = bots.get(conn, BOT)
+    lane = live.lane if live else "chat"
+    prefix = "admin-live" if live else "chat"
     session_id = str(uuid.uuid4())
     with tx(conn):
         run_id = conn.execute(
             "INSERT INTO runs(bot, session_id, lane, started_at)"
-            " VALUES (?,?,?,?)", (BOT, session_id, "chat", utcnow())).lastrowid
-        activity.record(conn, BOT, "chat.start",
-                        f"chat session {session_id}", str(run_id))
+            " VALUES (?,?,?,?)", (BOT, session_id, lane, utcnow())).lastrowid
+        activity.record(conn, BOT, f"{prefix}.start" if live else "chat.start",
+                        f"{prefix} session {session_id}", str(run_id))
     temp, code, reason = [], None, "error"
     try:
         try:
-            text = brief(cfg, conn)
+            since = last_check(conn, live.check_key if live
+                               else LAST_CHECK_KEY)
+            if live and since is None:  # never fall back to the chat's mark
+                since = (datetime.now(timezone.utc) - timedelta(hours=24)
+                         ).isoformat(timespec="seconds")
+            text = brief(cfg, conn, since=since)
         except Exception as e:  # the chat matters more than the brief
             text = f"(The brief could not be built: {type(e).__name__}: {e})"
-        if first:
+        if first or live:
             with tx(conn):
-                mark_checked(conn, utcnow())
-        prompt = runner._private_file(_compose_prompt(cfg, conn, text, summary),
-                                      ".md")
+                mark_checked(conn, utcnow(),
+                             live.check_key if live else LAST_CHECK_KEY)
+        composed = (live.compose(cfg, conn, text, summary) if live
+                    else _compose_prompt(cfg, conn, text, summary))
+        prompt = runner._private_file(composed, ".md")
         temp.append(prompt)
-        settings = runner._private_file(json.dumps(settings_for_chat(cfg)),
-                                        ".json")
+        settings = runner._private_file(json.dumps(
+            live.settings(cfg) if live else settings_for_chat(cfg)), ".json")
         temp.append(settings)
         mcp_text = runner._mcp_text(cfg, bot)
         mcp = None
         if mcp_text:
             mcp = runner._private_file(mcp_text, ".json")
             temp.append(mcp)
-        cmd = _command(cfg, bot, session_id, prompt, settings, mcp)
+        cmd = _command(cfg, bot, session_id, prompt, settings, mcp,
+                       channels=live.channels if live else None)
         env = dict(os.environ, CB_BOT=BOT, CLAUDEBOT_HOME=str(cfg.home),
                    CB_SESSION_ID=session_id)
+        if live:
+            env.update(live.env)
         env.pop(TOKEN_ENV, None)
         if token:
             env[TOKEN_ENV] = token
         _unlink(last_block_path(cfg))
         if summary is not None:
             print("Continuing this chat in a fresh session.", flush=True)
+        elif live:
+            print(f"Starting Admin (always-on) as of {ct_display(utcnow())}.",
+                  flush=True)
         elif first:
             print(text, flush=True)  # on screen only; not sent as a prompt
         proc = _launch(cmd, str(cfg.bots_dir / BOT), env)
         # The marker stays until this session ends well; the summary file is
         # never deleted.
         _write_private(pid_path(cfg), f"{proc.pid}\n")
-        code = _wait(proc, cfg, token)
+        code = _wait(proc, cfg, token, live.stop if live else None)
         now_token = _read_token(cfg)
-        if now_token is not None and now_token != token:
+        if live and live.stop.is_set():
+            reason = "stopped"
+        elif now_token is not None and now_token != token:
             reason = "rollover"  # a new rollover was requested meanwhile
         else:
             reason = "ok" if code == 0 else "error"
@@ -526,8 +562,8 @@ def _one_session(cfg, conn, summary, token, first: bool) -> str:
             conn.execute(
                 "UPDATE runs SET ended_at=?, exit_code=?, reason=? WHERE id=?",
                 (utcnow(), code, reason, run_id))
-            activity.record(conn, BOT, "chat.end",
-                            f"chat session ended: {reason}", str(run_id))
+            activity.record(conn, BOT, f"{prefix}.end" if live else "chat.end",
+                            f"{prefix} session ended: {reason}", str(run_id))
     if reason == "rollover":
         try:
             archive.archive_transcript(cfg, conn, run_id)

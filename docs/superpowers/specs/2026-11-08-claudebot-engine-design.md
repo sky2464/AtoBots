@@ -116,6 +116,8 @@ Bot setup is stored in the bot list, and Admin can change it later, with each ch
 
 **Always on duty (Owner):** each bot keeps its identity and Memory forever. It sleeps when idle and wakes for a message, a routine or a trigger.
 
+**Admin also runs always-on, with Telegram (Owner, Nov 9, 2026).** Besides waking per message like every bot, Admin has one long-lived session (tmux `admin-live`, started at boot by `claudebot-admin.service`) with the official Telegram channel, so the Owner can talk to it from his phone. It restarts if it stops (back-off up to 5 minutes), keeps its own state in `.admin-live/` and does not hold the chat lock, so bots keep running while it is up.
+
 **Each bot has three identity parts (Owner). The definitions and edit rights are the Builder's call:**
 
 | Part | What it holds | Who may change it |
@@ -312,6 +314,8 @@ Messages carry **pointers, not copies**, so a long script is referenced as `work
 ## 9. How the Owner sees updates
 
 **The Owner talks to Admin. (Owner)** From his Mac, he opens a session with Admin on the VPS over SSH, either in a terminal or through a Claude app SSH environment. When he opens it, Admin gives a short summary since his last check: what got done, what's stuck and what needs his yes, then he can talk freely. (The content of the summary is the Builder's call.)
+
+**Mac and phone (Owner, Nov 9, 2026).** From the Mac, `cb chat` over SSH as above; it pauses new bot work while open. From the phone, Telegram talks to the always-on Admin session, which does not pause bot work. Only his paired Telegram account counts as his word, and pairing or allowlist changes are made only at the terminal, never by Telegram message. Attach to the session with `tmux attach -t admin-live`.
 
 Admin must be able to answer "what changed?" from the log and activity record. No dashboard, email or push notification is planned for now.
 

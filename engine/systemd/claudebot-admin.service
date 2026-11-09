@@ -1,0 +1,20 @@
+[Unit]
+Description=ClaudeBot always-on Admin (Telegram), in tmux session admin-live
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=claude
+Environment=CLAUDEBOT_HOME=@HOME@
+# The supervisor keeps tmux session "admin-live" alive and ends it on stop.
+# It must be the only process systemd kills: the tmux server may be the
+# Owner's own, shared with his sessions.
+ExecStart=@ENGINE@/bin/cb admin run
+ExecStopPost=-/usr/bin/tmux kill-session -t =admin-live
+KillMode=process
+Restart=always
+RestartSec=10
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

@@ -20,6 +20,7 @@ from .config import Config
 from .db import connect, utcnow
 
 DISPATCHER_UNIT = "claudebot-dispatcher.service"
+ADMIN_UNIT = "claudebot-admin.service"
 BACKEND = "backend"
 ADMIN = "admin"
 _NEVER_STOP = 10 ** 9
@@ -51,6 +52,20 @@ def dispatcher_active(unit: str = DISPATCHER_UNIT) -> bool | None:
     return r.returncode == 0
 
 
+def admin_live_enabled(unit: str = ADMIN_UNIT) -> bool:
+    try:
+        r = subprocess.run(["systemctl", "is-enabled", "--quiet", unit],
+                           timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 0
+
+
+def _admin_live_session() -> bool:
+    from . import admin_live  # late: it imports chat
+    return admin_live.has_session()
+
+
 def _memory_mb() -> int | None:
     return dispatcher.available_mb() if Path("/proc/meminfo").exists() else None
 
@@ -58,7 +73,8 @@ def _memory_mb() -> int | None:
 def checks(cfg: Config, conn: sqlite3.Connection | None = None,
            active_fn=dispatcher_active, mem_fn=_memory_mb,
            disk_usage_fn=shutil.disk_usage, now: str | None = None,
-           track: bool = True) -> list[Finding]:
+           track: bool = True, live_enabled_fn=admin_live_enabled,
+           live_session_fn=_admin_live_session) -> list[Finding]:
     """Everything wrong right now. Opens its own connection if none is given,
     so a database that cannot be opened is a finding, not a crash."""
     now = now or utcnow()
@@ -67,6 +83,10 @@ def checks(cfg: Config, conn: sqlite3.Connection | None = None,
         out.append(Finding("dispatcher", "The dispatcher is not running "
                            f"({DISPATCHER_UNIT}). No bot can be woken until "
                            "it is started."))
+    if live_enabled_fn() and not live_session_fn():
+        out.append(Finding("admin-live", "The always-on Admin is enabled "
+                           f"({ADMIN_UNIT}) but tmux session admin-live is "
+                           "missing, so Telegram messages get no answer."))
     try:
         total, used = disk_usage_fn(cfg.home if cfg.home.exists() else "/")[:2]
         pct = used * 100 / total if total else 0
@@ -198,7 +218,7 @@ def _db_checks(cfg: Config, conn: sqlite3.Connection, now: str
              - timedelta(seconds=cfg.lease_seconds)).isoformat(timespec="seconds")
     for r in conn.execute("SELECT id, bot, started_at FROM runs WHERE"
                           " ended_at IS NULL AND started_at < ?"
-                          " AND COALESCE(lane,'')!='chat' ORDER BY id",
+                          " AND COALESCE(lane,'') NOT IN ('chat','live') ORDER BY id",
                           (limit,)):
         out.append(Finding(f"run:{r['id']}",
                            f"Run {r['id']} of {r['bot']} has been going since "
@@ -268,13 +288,19 @@ def run(cfg: Config, conn: sqlite3.Connection, **kw) -> list[Finding]:
         if f.key in NO_WAKE:
             continue
         try:
-            if f.key.startswith("waiting:"):  # Admin's to chase, not backend's
+            if f.key.startswith("waiting:") or f.key == "admin-live":
+                # Admin's to chase, not backend's
                 if _due(conn, f.key, f.text, now):
                     tag = hashlib.sha256(f"{f.key}{now}".encode()).hexdigest()[:12]
+                    subject, hint = (
+                        ("The always-on Admin is not running", " Tell the "
+                         "Owner; he restarts it with sudo systemctl restart "
+                         + ADMIN_UNIT + ".") if f.key == "admin-live" else
+                        ("An item is waiting too long", " Nudge whoever it "
+                         "waits on or ask the Owner."))
                     messages.send(conn, "system", ADMIN,
-                                  "An item is waiting too long", f.text +
-                                  " Nudge whoever it waits on or ask the "
-                                  "Owner.", kind="alert", level="normal",
+                                  subject, f.text + hint,
+                                  kind="alert", level="normal",
                                   dedupe_key=f"doctor:{f.key}:{tag}",
                                   hop_limit=_NEVER_STOP, now=now)
                     _mark(conn, f.key, f.text, now)

@@ -3,6 +3,7 @@ anything else happens. A request stays open until every item linked to it is
 done or parked, so interrupted requests are not lost."""
 import json
 import os
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -69,6 +70,20 @@ def startup_brief(conn: sqlite3.Connection, limit: int = 20) -> str:
     return "\n".join(out)
 
 
+_CHANNEL = re.compile(r'<channel source="([^"]*)"[^>]*>\n(.*?)\n</channel>',
+                      re.DOTALL)
+
+
+def channel_messages(prompt: str):
+    """[(source, text)] when the prompt is made only of channel messages (what
+    Claude Code hands the hook for a Telegram message), else None. The text is
+    the sender's words without the <channel> wrapper."""
+    found = _CHANNEL.findall(prompt)
+    if not found or _CHANNEL.sub("", prompt).strip():
+        return None
+    return found
+
+
 def _hook_failed(raw: bytes, reason: str) -> None:
     """Record the raw hook input so nothing the Owner typed is lost."""
     text = raw.decode("utf-8", errors="replace")
@@ -103,7 +118,13 @@ def _cmd_hook_prompt(args) -> int:
         session = data.get("session_id") or ""
         conn = connect(Config.load())
         try:
-            capture(conn, text, str(session))
+            wrapped = channel_messages(text)
+            if wrapped is None:
+                capture(conn, text, str(session))
+            for source, inner in wrapped or ():
+                rid = capture(conn, inner, str(session))
+                activity.record(conn, "hook", "request.channel",
+                                f"request arrived through {source}", str(rid))
         finally:
             conn.close()
     except BaseException as e:

@@ -48,6 +48,10 @@ BASHRC=$HOME/.bashrc
 # Units to install and enable (started only with --start). Each timer needs a
 # matching .service next to it.
 SERVICES=(claudebot-dispatcher.service)
+# The always-on Admin (Telegram) is installed but enabled only once the bot
+# token is configured: enabling makes it start at every boot.
+ADMIN_UNIT=claudebot-admin.service
+TELEGRAM_ENV=$HOME/.claude/channels/telegram/.env
 TIMERS=(claudebot-backup.timer claudebot-doctor.timer)
 
 # 0. Check everything we need before changing anything, so this either does
@@ -59,6 +63,7 @@ if ! sudo -n true 2>/dev/null; then
     exit 1
 fi
 [ -x "$CLAUDE_BIN" ] || { echo "error: claude is not at $CLAUDE_BIN; install Claude Code first" >&2; exit 1; }
+[ -f "$UNIT_SRC/$ADMIN_UNIT" ] || { echo "error: missing unit $UNIT_SRC/$ADMIN_UNIT" >&2; exit 1; }
 for unit in "${SERVICES[@]}" "${TIMERS[@]}"; do
     [ -f "$UNIT_SRC/$unit" ] || { echo "error: missing unit $UNIT_SRC/$unit" >&2; exit 1; }
     case $unit in
@@ -100,7 +105,7 @@ render_unit() {
     echo "Installed $UNIT_DST/$name"
 }
 
-for unit in "${SERVICES[@]}"; do
+for unit in "${SERVICES[@]}" "$ADMIN_UNIT"; do
     render_unit "$unit"
 done
 for unit in "${TIMERS[@]}"; do
@@ -119,6 +124,23 @@ for unit in "${SERVICES[@]}" "${TIMERS[@]}"; do
         echo "Enabled $unit (not started)"
     fi
 done
+
+# The always-on Admin: only with a configured Telegram token (presence is
+# checked; the value is never read or printed).
+if grep -qs '^TELEGRAM_BOT_TOKEN=.' "$TELEGRAM_ENV"; then
+    sudo systemctl enable "$ADMIN_UNIT"
+    if [ "$START" -eq 1 ]; then
+        sudo systemctl restart "$ADMIN_UNIT"
+        echo "Started $ADMIN_UNIT (attach: tmux attach -t admin-live)"
+    else
+        echo "Enabled $ADMIN_UNIT (not started)"
+    fi
+else
+    echo "Not enabled: $ADMIN_UNIT (always-on Admin with Telegram). Missing:"
+    echo "  the bot token in $TELEGRAM_ENV (run /telegram:configure <token>"
+    echo "  in a claude session in $HOME_DIR/bots/admin, then pair; see CLAUDE.md)"
+    echo "  When ready: sudo systemctl enable --now $ADMIN_UNIT"
+fi
 
 echo "Done. Open a new shell (or run: source ~/.bashrc), then try: cb status"
 if [ "$START" -eq 0 ]; then
