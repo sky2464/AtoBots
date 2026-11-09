@@ -5,6 +5,8 @@ inside the 0700 `.secrets/` folder. This is a working rule plus file modes, not
 a technical lock: every bot runs as the same server user.
 """
 import argparse
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -88,8 +90,32 @@ def _key_path(cfg: Config):
     d = _dir(cfg)
     kp = d / "store.key"
     if not kp.exists():
-        _write_private(kp, secrets.token_hex(32).encode())
+        # Write a private temp file, then link it into place: link() is atomic
+        # and fails if another process won, so there is exactly one key.
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp-")
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                f.write(secrets.token_hex(32).encode())
+            try:
+                os.link(tmp, kp)
+            except FileExistsError:
+                pass
+        finally:
+            os.unlink(tmp)
     return kp
+
+
+@contextlib.contextmanager
+def _lock(cfg: Config):
+    """Exclusive lock for index and key changes (bots share one user)."""
+    d = _dir(cfg)
+    fd = os.open(d / ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
 
 
 def _gpg(cfg: Config, *args: str) -> list[str]:
@@ -129,13 +155,19 @@ def add(cfg: Config, name: str, kind: str, value: str,
     _check_name(name)
     if not value:
         raise ValueError("empty value")
-    _dir(cfg)
-    enc = _gpg_run(_gpg(cfg, "--symmetric", "--cipher-algo", "AES256"),
-                   value.encode())
-    _write_private(_item_path(cfg, name), enc)
-    idx = _read_index(cfg)
-    idx[name] = {"kind": kind, "owner_order_only": bool(owner_order_only)}
-    _write_index(cfg, idx)
+    if "\x00" in value:
+        raise ValueError("value must not contain NUL")
+    try:
+        data = value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError("value must be valid UTF-8") from None
+    with _lock(cfg):
+        enc = _gpg_run(_gpg(cfg, "--symmetric", "--cipher-algo", "AES256"),
+                       data)
+        _write_private(_item_path(cfg, name), enc)
+        idx = _read_index(cfg)
+        idx[name] = {"kind": kind, "owner_order_only": bool(owner_order_only)}
+        _write_index(cfg, idx)
 
 
 def list_items(cfg: Config, kind: str | None = None,
@@ -152,15 +184,16 @@ def list_items(cfg: Config, kind: str | None = None,
 
 
 def remove(cfg: Config, name: str) -> None:
-    idx = _read_index(cfg)
-    if name not in idx:
-        raise KeyError(name)
-    del idx[name]
-    _write_index(cfg, idx)
-    try:
-        _item_path(cfg, name).unlink()
-    except FileNotFoundError:
-        pass
+    with _lock(cfg):
+        idx = _read_index(cfg)
+        if name not in idx:
+            raise KeyError(name)
+        del idx[name]
+        _write_index(cfg, idx)
+        try:
+            _item_path(cfg, name).unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _reveal(cfg: Config, name: str) -> bytes:
@@ -208,13 +241,15 @@ def run_with(cfg: Config, conn, actor: str, env_map: dict, argv: list,
         v = _reveal(cfg, name)
         values.append(v)
         env[var] = v.decode()
-    for name in env_map.values():
-        activity.record(conn, actor, "secret.use", name, decision)
     try:
         proc = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except OSError:
+    except (OSError, ValueError):
+        for name in env_map.values():
+            activity.record(conn, actor, "secret.use_failed", name, decision)
         return 127
+    for name in env_map.values():
+        activity.record(conn, actor, "secret.use", name, decision)
     threads = [
         threading.Thread(target=_pump, args=(proc.stdout, out, Masker(values))),
         threading.Thread(target=_pump, args=(proc.stderr, err, Masker(values))),
@@ -288,7 +323,8 @@ def _cmd_run(args) -> int:
     conn = connect(cfg)
     try:
         return run_with(cfg, conn, _actor(), env_map, cmd, args.decision)
-    except (KeyError, PermissionError, RuntimeError) as e:
+    except (KeyError, PermissionError, RuntimeError, ValueError,
+            UnicodeDecodeError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
     finally:

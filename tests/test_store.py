@@ -1,4 +1,6 @@
 import io
+import multiprocessing
+import os
 import shutil
 import stat
 import subprocess
@@ -16,6 +18,12 @@ from claudebot.db import connect, init_db, utcnow  # noqa: E402
 
 VALUE = "s3cr3t-value"
 PRINT_X = ["python3", "-c", "import os; print(os.environ['X'])"]
+
+
+def _add_worker(args):
+    home, i = args
+    store.add(Config(Path(home)), f"item{i}", "token", f"value-{i}",
+              owner_order_only=(i % 2 == 0))
 
 
 class MaskerTests(unittest.TestCase):
@@ -163,6 +171,61 @@ class StoreTests(unittest.TestCase):
         rc, out, _ = self.run_x(["python3", "-c",
                                  "import os;print(os.environ['X'][:6])"])
         self.assertEqual(out, b"second\n")
+
+    def test_concurrent_add_keeps_all_items_and_key(self):
+        n = 6
+        with multiprocessing.get_context("fork").Pool(n) as pool:
+            pool.map(_add_worker, [(self.tmp.name, i) for i in range(n)])
+        items = {i["name"]: i for i in store.list_items(self.cfg)}
+        self.assertEqual(set(items), {f"item{i}" for i in range(n)})
+        for i in range(n):
+            self.assertEqual(items[f"item{i}"]["owner_order_only"], i % 2 == 0)
+            out = io.BytesIO()
+            self.conn.execute(
+                "INSERT OR IGNORE INTO decisions(id,title,quote,said_at,session,"
+                "recorded_by,created_at) VALUES('D-0001','t','q',?,?,?,?)",
+                (utcnow(), "s", "a", utcnow()))
+            store.run_with(self.cfg, self.conn, "a", {"X": f"item{i}"},
+                           ["python3", "-c",
+                            "import os;print(os.environ['X'][::-1])"],
+                           "D-0001", out=out, err=io.BytesIO())
+            self.assertEqual(out.getvalue(), f"{i}-eulav\n".encode())
+
+    def test_nul_value_rejected(self):
+        with self.assertRaises(ValueError):
+            store.add(self.cfg, "t", "token", "ab\x00cd")
+        with self.assertRaises(ValueError):
+            store.add(self.cfg, "t", "token", "bad\udcff")
+        self.assertEqual(store.list_items(self.cfg), [])
+
+    def test_failed_start_is_recorded_as_failed(self):
+        store.add(self.cfg, "t", "token", VALUE)
+        self.assertEqual(self.run_x(["/no/such/binary"])[0], 127)
+        self.assertEqual(self.run_x(["python3", "a\x00b"])[0], 127)
+        kinds = [r[0] for r in self.conn.execute(
+            "SELECT kind FROM activity ORDER BY id")]
+        self.assertEqual(kinds, ["secret.use_failed", "secret.use_failed"])
+
+    def test_cli_run_with_env_and_separator(self):
+        store.add(self.cfg, "t", "token", VALUE)
+        script = ("import os,sys;print(os.environ['X'][:2]);"
+                  "print(os.environ['X'],file=sys.stderr);sys.exit(4)")
+        env = dict(os.environ, CLAUDEBOT_HOME=self.tmp.name,
+                   CLAUDEBOT_BOT="admin")
+        cb = Path(__file__).resolve().parent.parent / "engine" / "bin" / "cb"
+        p = subprocess.run([sys.executable, str(cb), "secret", "run",
+                            "--env", "X=t", "--", "python3", "-c", script],
+                           env=env, capture_output=True)
+        self.assertEqual(p.returncode, 4)
+        self.assertEqual(p.stdout, b"s3\n")
+        self.assertEqual(p.stderr, b"***\n")
+        bad = subprocess.run([sys.executable, str(cb), "secret", "run",
+                              "--env", "NOEQUALS", "--", "true"],
+                             env=env, capture_output=True)
+        self.assertEqual(bad.returncode, 2)
+        row = self.conn.execute(
+            "SELECT actor, detail FROM activity WHERE kind='secret.use'").fetchone()
+        self.assertEqual(tuple(row), ("admin", "t"))
 
     def test_cli_add_list_rm_run(self):
         env = {"CLAUDEBOT_HOME": self.tmp.name}
