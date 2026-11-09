@@ -19,7 +19,8 @@ import re
 import shutil
 import sqlite3
 import sys
-from datetime import datetime, timedelta
+import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import activity, bots, messages, requests, search
@@ -32,6 +33,8 @@ _SID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,63}")
 _CLOSED = "('done','parked')"
 _NEVER_STOP = 10 ** 9
 DAILY_KEY = "archive.last_daily"
+DAILY_TRY_KEY = "archive.last_daily_try"
+_lock = threading.Lock()
 
 
 class ArchiveError(Exception):
@@ -108,6 +111,29 @@ def find_transcript(cfg: Config, session_id) -> Path | None:
     return None
 
 
+def _session_files(cfg: Config) -> dict:
+    """session id -> transcript path for every session file now on disk."""
+    out = {}
+    root = cfg.claude_projects_dir
+    if not root.is_dir():
+        return out
+    for d in sorted(root.iterdir()):
+        if d.is_symlink() or not d.is_dir():
+            continue
+        for p in d.glob("*.jsonl"):
+            if p.is_file() and not p.is_symlink() and _SID_RE.fullmatch(p.stem):
+                out.setdefault(p.stem, p)
+    return out
+
+
+def _note(conn, kind, detail, ref) -> None:
+    try:
+        with tx(conn):
+            activity.record(conn, "system", kind, detail, ref)
+    except sqlite3.Error:
+        pass
+
+
 def _message_text(msg) -> list:
     content = msg.get("content") if isinstance(msg, dict) else None
     if isinstance(content, str):
@@ -162,40 +188,91 @@ def archive_transcript(cfg: Config, conn: sqlite3.Connection,
                        run_id: int) -> Path | None:
     """Move a finished run's transcript into the archive. Returns the archive
     path, or None when the run left no transcript (recorded, not an error).
-    Raises ArchiveError (after telling Admin once) if the copy failed; the
-    original is then untouched."""
+
+    Three separate steps: (1) copy, verified; a failure here tells Admin once
+    and raises ArchiveError; (2) index; a failure raises ArchiveError but the
+    copy is good and the daily sweep retries; (3) remove the original; a
+    failure here is only logged (the copy is safe) and the sweep retries.
+    The original is never removed before step 1 has verified."""
+    with _lock:
+        return _archive_transcript(cfg, conn, run_id)
+
+
+def _archive_transcript(cfg, conn, run_id):
     run = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
     if run is None:
         raise KeyError(f"run {run_id}")
     src = find_transcript(cfg, run["session_id"])
     if src is None:
-        with tx(conn):
-            activity.record(conn, "system", "archive.transcript_missing",
-                            f"run {run_id} ({run['bot']}): no transcript found",
-                            str(run_id))
+        _note(conn, "archive.transcript_missing",
+              f"run {run_id} ({run['bot']}): no transcript found", str(run_id))
         return None
     month = (run["started_at"] or utcnow())[:7]
     dest = cfg.archive_dir / month / f"{run['bot']}-{run_id}.jsonl.gz"
-    try:
+    rel = dest.relative_to(cfg.home).as_posix()
+    try:  # 1. copy, verified
         before = src.stat()
-        _write_verified(dest, _read_chunks(src), hashlib.sha256())
-        after = src.stat()
-        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
-            dest.unlink()
-            raise ArchiveError("transcript changed while it was being copied")
-        search.index_doc(
-            cfg, "transcript", dest.relative_to(cfg.home).as_posix(),
-            run["bot"], f"{run['bot']} run {run_id}", extract_text(dest),
-            run["ended_at"] or run["started_at"])
-        os.unlink(src)
-    except (OSError, ArchiveError, sqlite3.Error) as e:
+        have = False
+        if dest.exists():  # left by an earlier attempt
+            try:
+                have = _digest_gz(dest) == _sha_file(src)
+            except (OSError, EOFError):
+                have = False
+        if not have:
+            _write_verified(dest, _read_chunks(src), hashlib.sha256())
+            after = src.stat()
+            if (before.st_size, before.st_mtime_ns) != (after.st_size,
+                                                        after.st_mtime_ns):
+                dest.unlink()
+                raise ArchiveError("transcript changed while it was being copied")
+    except (OSError, EOFError, ArchiveError) as e:
         _transcript_failed(cfg, conn, run, e)
         raise ArchiveError(str(e)) from e
-    with tx(conn):
-        activity.record(conn, "system", "archive.transcript",
-                        f"run {run_id} ({run['bot']}) -> "
-                        f"{dest.relative_to(cfg.home).as_posix()}", str(run_id))
+    try:  # 2. index
+        search.index_doc(cfg, "transcript", rel, run["bot"],
+                         f"{run['bot']} run {run_id}", extract_text(dest),
+                         run["ended_at"] or run["started_at"])
+    except (OSError, EOFError, ValueError, sqlite3.Error) as e:
+        _note(conn, "archive.index_failed",
+              f"run {run_id}: copy verified at {rel}, indexing failed: {e}",
+              str(run_id))
+        raise ArchiveError(f"copy verified, indexing failed (will retry): {e}"
+                           ) from e
+    try:  # 3. remove the original
+        os.unlink(src)
+    except OSError as e:
+        _note(conn, "archive.unlink_failed",
+              f"run {run_id}: copy verified at {rel}; original not removed: {e}",
+              str(run_id))
+        return dest
+    _note(conn, "archive.transcript", f"run {run_id} ({run['bot']}) -> {rel}",
+          str(run_id))
     return dest
+
+
+def _sha_file(path: Path) -> str:
+    h = hashlib.sha256()
+    for c in _read_chunks(path):
+        h.update(c)
+    return h.hexdigest()
+
+
+def sweep_transcripts(cfg: Config, conn: sqlite3.Connection) -> int:
+    """Retry every finished run of ours whose session file is still on disk
+    (a failed copy, index or removal). Returns how many were archived."""
+    n = 0
+    for sid in sorted(_session_files(cfg)):
+        run = conn.execute(
+            "SELECT id FROM runs WHERE session_id=? AND ended_at IS NOT NULL"
+            " ORDER BY id DESC LIMIT 1", (sid,)).fetchone()
+        if run is None:
+            continue
+        try:
+            if archive_transcript(cfg, conn, run["id"]):
+                n += 1
+        except ArchiveError:
+            pass  # already recorded; Admin was told once
+    return n
 
 
 # ---- records ----
@@ -267,11 +344,11 @@ def _plan_requests(conn, cutoff, open_req_ids, plan) -> None:
         plan.add("owner_requests", month, r, (r["id"],))
 
 
-def _plan_simple(conn, plan, table, sql, args, month_col) -> None:
+def _plan_simple(conn, plan, table, sql, args, month_col, skip=None) -> None:
     protect = None if _is_autoinc(conn, table) else conn.execute(
         f"SELECT MAX(id) FROM {table}").fetchone()[0]
     for r in conn.execute(sql, args):
-        if r["id"] != protect:
+        if r["id"] != protect and not (skip and skip(r)):
             plan.add(table, r[month_col][:7], r, (r["id"],))
 
 
@@ -303,6 +380,7 @@ def archive_old_records(cfg: Config, conn: sqlite3.Connection, now: str,
     cutoff = (datetime.fromisoformat(now) - timedelta(days=older_than_days)
               ).isoformat(timespec="seconds")
     open_ids = {r["id"] for r in requests._open_requests(conn)}
+    on_disk = _session_files(cfg)
     plan = _Plan()
     _plan_items(conn, cutoff, open_ids, plan)
     _plan_requests(conn, cutoff, open_ids, plan)
@@ -312,7 +390,8 @@ def archive_old_records(cfg: Config, conn: sqlite3.Connection, now: str,
                  "created_at")
     _plan_simple(conn, plan, "runs",
                  "SELECT * FROM runs WHERE ended_at IS NOT NULL AND ended_at < ?",
-                 (cutoff,), "started_at")
+                 (cutoff,), "started_at",
+                 skip=lambda r: r["session_id"] in on_disk)  # copy still pending
     result = {t: plan.count(t) for t in
               ("items", "messages", "runs", "owner_requests")}
     if not any(result.values()):
@@ -377,10 +456,71 @@ def check_memory_caps(cfg: Config, conn: sqlite3.Connection) -> list[str]:
 
 
 def daily(cfg: Config, conn: sqlite3.Connection, now: str) -> dict:
-    """What the dispatcher runs once a day."""
-    out = archive_old_records(cfg, conn, now)
-    out["memory_notes"] = len(check_memory_caps(cfg, conn))
+    """What the dispatcher runs once a day. Every step runs even if an earlier
+    one fails; the first failure is raised at the end."""
+    out, errors = {}, []
+    for name, fn in (
+            ("transcripts_retried", lambda: sweep_transcripts(cfg, conn)),
+            ("records", lambda: archive_old_records(cfg, conn, now)),
+            ("memory_notes", lambda: len(check_memory_caps(cfg, conn)))):
+        try:
+            r = fn()
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{name}: {type(e).__name__}: {e}")
+            continue
+        if isinstance(r, dict):
+            out.update(r)
+        else:
+            out[name] = r
+    if errors:
+        raise ArchiveError("; ".join(errors))
     return out
+
+
+# ---- rebuilding the search index from the archive ----
+
+def _archive_docs(cfg: Config):
+    """Index documents for everything in archive/, tolerating duplicates (a
+    later record of the same row wins)."""
+    if not cfg.archive_dir.is_dir():
+        return
+    for f in sorted(cfg.archive_dir.glob("*/records.jsonl.gz")):
+        try:
+            with gzip.open(f, "rt", encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    try:
+                        d = json.loads(line)
+                        t, r = d["table"], d["row"]
+                        if t == "items" and r.get("id"):
+                            body = "\n".join(x for x in (
+                                r.get("note"), r.get("status"),
+                                r.get("waiting_on")) if x)
+                            yield ("item", r["id"], r.get("owner"),
+                                   r.get("title") or "", body, r.get("updated_at"))
+                        elif t == "messages":
+                            yield ("message", str(r["id"]), r.get("from_bot"),
+                                   r.get("subject") or "", r.get("body") or "",
+                                   r.get("created_at"))
+                    except (ValueError, KeyError, TypeError, AttributeError):
+                        continue
+        except (OSError, EOFError):
+            continue
+    for f in sorted(cfg.archive_dir.glob("*/*.jsonl.gz")):
+        m = re.fullmatch(r"(.+)-(\d+)\.jsonl\.gz", f.name)
+        if f.is_symlink() or not m:
+            continue
+        try:
+            when = datetime.fromtimestamp(f.stat().st_mtime, timezone.utc
+                                          ).isoformat(timespec="seconds")
+            yield ("transcript", f.relative_to(cfg.home).as_posix(), m.group(1),
+                   f"{m.group(1)} run {m.group(2)}", extract_text(f), when)
+        except (OSError, EOFError):
+            continue
+
+
+def reindex_archive(cfg: Config) -> int:
+    """Re-read archive/ into search.db. Returns how many documents changed."""
+    return search.index_docs(cfg, _archive_docs(cfg))
 
 
 # ---- disk and retrieval ----
@@ -396,13 +536,11 @@ def archive_bytes(cfg: Config) -> tuple:
 
 
 def offsite_needed(cfg: Config, disk_usage_fn=shutil.disk_usage) -> bool:
-    """True when the archive takes `archive_offserver_pct` or more of the
-    disk. Only reports; Task 14 does the moving."""
+    """True when the disk holding the company home is `archive_offserver_pct`
+    percent full or more. Only reports; Task 14 does the moving."""
     cfg.home.mkdir(parents=True, exist_ok=True)
-    total = disk_usage_fn(cfg.home)[0]
-    if not total:
-        return False
-    return archive_bytes(cfg)[1] * 100 >= total * cfg.archive_offserver_pct
+    total, used = disk_usage_fn(cfg.home)[:2]
+    return bool(total) and used * 100 >= total * cfg.archive_offserver_pct
 
 
 def fetch(cfg: Config, ref: str) -> Path:

@@ -91,6 +91,21 @@ def index_doc(cfg: Config, kind: str, ref: str, bot: str | None, title: str,
         sc.close()
 
 
+def index_docs(cfg: Config, docs) -> int:
+    """index_doc for many (kind, ref, bot, title, body, when) tuples, opening
+    the index once. Returns how many documents changed."""
+    sc = _open(cfg)
+    n = 0
+    try:
+        for kind, ref, bot, title, body, when in docs:
+            _check_kind(kind)
+            n += _index(sc, kind, str(ref), bot, title or "", body or "",
+                        when or utcnow())
+    finally:
+        sc.close()
+    return n
+
+
 # ---- files ----
 
 def _iso(mtime_ns: int) -> str:
@@ -186,6 +201,9 @@ def reindex_records(cfg: Config, conn: sqlite3.Connection) -> int:
             for k in ("items", "messages", "decisions"):
                 conn.execute("DELETE FROM meta WHERE key=?", (f"search.{k}",))
             _set_wm(conn, "search.token", token)
+            # a fresh index: bring back what has left company.db
+            from . import archive
+            archive.reindex_archive(cfg)
         wm = _wm(conn, "search.items", "")
         rows = conn.execute(
             "SELECT * FROM items WHERE id IS NOT NULL AND updated_at >= ?"
@@ -310,6 +328,13 @@ def _run(fn):
 
 def _cmd_search(args):
     def go(cfg, conn):
+        if args.query == "reindex":  # cb search reindex [--archive]
+            from . import archive
+            n = reindex_files(cfg) + reindex_records(cfg, conn)
+            if args.archive:
+                n += archive.reindex_archive(cfg)
+            print(f"reindexed: {n}")
+            return 0
         reindex_files(cfg)
         reindex_records(cfg, conn)
         hits = search(cfg, args.query, kind=args.kind, bot=args.bot,
@@ -339,6 +364,8 @@ def register(subparsers) -> None:
     s.add_argument("--kind", choices=KINDS)
     s.add_argument("--bot")
     s.add_argument("--limit", type=int, default=10)
+    s.add_argument("--archive", action="store_true",
+                   help="with `reindex`: also re-read archive/")
     s.set_defaults(func=_cmd_search)
     n = subparsers.add_parser("note", help="company knowledge notes")
     nsub = n.add_subparsers(dest="note_command", required=True)

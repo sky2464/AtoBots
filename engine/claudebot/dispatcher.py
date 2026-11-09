@@ -313,19 +313,34 @@ class Dispatcher:
                  str(run_id))
 
     def _archive_daily(self, conn, now) -> None:
-        """Archive old records and check Memory caps once a day."""
+        """Archive old records, retry failed transcripts and check Memory caps
+        once a day. After a failure it tries again at most once an hour and
+        tells Admin once per day."""
         today = now[:10]
-        r = conn.execute("SELECT value FROM meta WHERE key=?",
-                         (archive.DAILY_KEY,)).fetchone()
+        get = lambda k: conn.execute(  # noqa: E731
+            "SELECT value FROM meta WHERE key=?", (k,)).fetchone()
+        r = get(archive.DAILY_KEY)
         if r is not None and r["value"] == today:
             return
-        # Marked first, so a failure is retried tomorrow, not every pass.
+        t = get(archive.DAILY_TRY_KEY)
+        if t is not None and not _before(_plus(t["value"], _HOUR), now):
+            return
         conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?,?)",
-                     (archive.DAILY_KEY, today))
+                     (archive.DAILY_TRY_KEY, now))
         try:
             self.daily_fn(self.cfg, conn, now)
         except Exception as e:  # noqa: BLE001
-            _log(conn, "archive.daily_failed", f"{type(e).__name__}: {e}")
+            detail = f"{type(e).__name__}: {e}"
+            _log(conn, "archive.daily_failed", detail)
+            self._system_send(
+                conn, "admin", "Daily archiving failed",
+                f"The daily archive step failed: {detail}. Nothing was deleted "
+                "without a verified copy. Check free disk space (df -h) and "
+                "`cb archive status`. It is retried hourly.",
+                f"archive-daily-fail:{today}", now=now)
+            return
+        conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?,?)",
+                     (archive.DAILY_KEY, today))
 
     # ---- the pass ----
 

@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS activity(
   kind TEXT NOT NULL, detail TEXT, ref TEXT
 );
 CREATE INDEX IF NOT EXISTS activity_at ON activity(at);
+CREATE INDEX IF NOT EXISTS activity_kind_ref ON activity(kind, ref);
 CREATE TRIGGER IF NOT EXISTS activity_no_update BEFORE UPDATE ON activity
 BEGIN SELECT RAISE(ABORT, 'append-only'); END;
 CREATE TRIGGER IF NOT EXISTS activity_no_delete BEFORE DELETE ON activity

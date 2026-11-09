@@ -210,6 +210,107 @@ class TranscriptTests(Base):
             "SELECT 1 FROM activity WHERE kind='archive.failed'").fetchone())
 
 
+class RetryTests(Base):
+    def full_disk(self):
+        real = gzip.open
+
+        def f(*a, **k):
+            mode = a[1] if len(a) > 1 else k.get("mode", "rb")
+            if "w" in mode or "a" in mode:
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return real(*a, **k)
+        return mock.patch.object(gzip, "open", f)
+
+    def admin_notes(self):
+        return self.conn.execute(
+            "SELECT * FROM messages WHERE to_bot='admin' AND from_bot='system'"
+        ).fetchall()
+
+    def test_failed_copy_is_retried_by_daily_step(self):
+        run_id, path = self.make_run(lines=CHAT)
+        with self.full_disk():
+            with self.assertRaises(archive.ArchiveError):
+                archive.archive_transcript(self.cfg, self.conn, run_id)
+            self.assertEqual(archive.daily(self.cfg, self.conn, iso(0))
+                             ["transcripts_retried"], 0)  # still failing
+        self.assertTrue(path.exists())
+        out = archive.daily(self.cfg, self.conn, iso(0))  # disk freed
+        self.assertEqual(out["transcripts_retried"], 1)
+        self.assertFalse(path.exists())
+        self.assertTrue(search.search(self.cfg, "zebrafish", kind="transcript"))
+        self.assertEqual(len(self.admin_notes()), 1)
+
+    def test_unlink_failure_is_not_a_lost_archive(self):
+        run_id, path = self.make_run(lines=CHAT)
+        with mock.patch.object(archive.os, "unlink", side_effect=OSError("busy")):
+            dest = archive.archive_transcript(self.cfg, self.conn, run_id)
+        self.assertTrue(dest.exists())
+        self.assertTrue(path.exists())
+        self.assertEqual(self.admin_notes(), [])
+        self.assertTrue(self.conn.execute(
+            "SELECT 1 FROM activity WHERE kind='archive.unlink_failed'").fetchone())
+        self.assertEqual(archive.sweep_transcripts(self.cfg, self.conn), 1)
+        self.assertFalse(path.exists())
+
+    def test_index_failure_keeps_original_and_is_retried(self):
+        run_id, path = self.make_run(lines=CHAT)
+        with mock.patch.object(search, "index_doc", side_effect=OSError("db busy")):
+            with self.assertRaises(archive.ArchiveError):
+                archive.archive_transcript(self.cfg, self.conn, run_id)
+        self.assertTrue(path.exists())
+        self.assertEqual(self.admin_notes(), [])
+        self.assertEqual(search.search(self.cfg, "zebrafish"), [])
+        self.assertEqual(archive.sweep_transcripts(self.cfg, self.conn), 1)
+        self.assertFalse(path.exists())
+        self.assertTrue(search.search(self.cfg, "zebrafish", kind="transcript"))
+
+    def test_run_with_pending_copy_is_not_archived_as_record(self):
+        run_id, path = self.make_run(lines=CHAT)
+        self.conn.execute("UPDATE runs SET started_at=?, ended_at=? WHERE id=?",
+                          (iso(60), iso(60), run_id))
+        self.assertEqual(archive.archive_old_records(self.cfg, self.conn, iso(0))["runs"], 0)
+        path.unlink()
+        self.assertEqual(archive.archive_old_records(self.cfg, self.conn, iso(0))["runs"], 1)
+
+
+class RebuildTests(Base):
+    def test_search_rebuilds_from_archive(self):
+        item = self.old_item("Quokka migration", days=60)
+        mid = messages.send(self.conn, "admin", "backend", "Wombat subject",
+                            "narwhal body", now=iso(60))
+        self.conn.execute("UPDATE messages SET status='done', done_at=? WHERE id=?",
+                          (iso(60), mid))
+        run_id, _ = self.make_run(lines=CHAT)
+        archive.archive_transcript(self.cfg, self.conn, run_id)
+        archive.archive_old_records(self.cfg, self.conn, iso(0))
+        self.assertEqual(self.count("items"), 0)
+        for suffix in ("", "-wal", "-shm"):
+            Path(str(self.cfg.search_path) + suffix).unlink(missing_ok=True)
+        search.reindex_records(self.cfg, self.conn)
+        self.assertEqual([h.ref for h in search.search(self.cfg, "Quokka", kind="item")], [item])
+        self.assertEqual([h.ref for h in search.search(self.cfg, "narwhal", kind="message")], [str(mid)])
+        self.assertEqual(len(search.search(self.cfg, "zebrafish", kind="transcript")), 1)
+
+    def test_duplicates_in_archive_are_tolerated(self):
+        self.old_item("dup", days=60)
+        archive.archive_old_records(self.cfg, self.conn, iso(0))
+        f = self.cfg.archive_dir / "2026-09" / "records.jsonl.gz"
+        data = gzip.open(f, "rb").read()
+        with gzip.open(f, "wb") as fh:
+            fh.write(data + b"not json\n" + data)
+        self.cfg.search_path.unlink()
+        self.assertEqual(archive.reindex_archive(self.cfg), 1)
+        self.assertEqual(len(search.search(self.cfg, "dup", kind="item")), 1)
+
+    def test_cli_reindex_archive(self):
+        self.old_item("Quokka", days=60)
+        archive.archive_old_records(self.cfg, self.conn, iso(0))
+        self.cfg.search_path.unlink()
+        rc, out, err = self.cb("search", "reindex", "--archive")
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(search.search(self.cfg, "Quokka", kind="item"))
+
+
 class RecordTests(Base):
     def test_done_items_leave_active_tables_after_30_days(self):
         old = self.old_item("Quokka migration", days=60)
@@ -357,9 +458,9 @@ class DailyAndCapTests(Base):
         d = self.cfg.archive_dir / "2026-01"
         d.mkdir(parents=True)
         (d / "a.gz").write_bytes(b"x" * 100)
-        mk = lambda total: (lambda p: (total, 0, 0))  # noqa: E731
-        self.assertTrue(archive.offsite_needed(self.cfg, disk_usage_fn=mk(140)))
-        self.assertFalse(archive.offsite_needed(self.cfg, disk_usage_fn=mk(1000)))
+        mk = lambda used: (lambda p: (100, used, 100 - used))  # noqa: E731
+        self.assertTrue(archive.offsite_needed(self.cfg, disk_usage_fn=mk(70)))
+        self.assertFalse(archive.offsite_needed(self.cfg, disk_usage_fn=mk(69)))
 
     def test_fetch(self):
         d = self.cfg.archive_dir / "2026-01"
@@ -414,6 +515,16 @@ class DailyAndCapTests(Base):
         self.assertEqual(d.tick(), [])
         self.assertTrue(self.conn.execute(
             "SELECT 1 FROM activity WHERE kind='archive.daily_failed'").fetchone())
+        notes = lambda: self.conn.execute(  # noqa: E731
+            "SELECT * FROM messages WHERE to_bot='admin' AND"
+            " subject='Daily archiving failed'").fetchall()
+        self.assertEqual(len(notes()), 1)
+        self.assertIsNone(self.conn.execute(
+            "SELECT 1 FROM meta WHERE key=?", (archive.DAILY_KEY,)).fetchone())
+        d.tick()  # within the hour: not retried
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM activity WHERE kind='archive.daily_failed'"
+        ).fetchone()[0], 1)
 
 
 class ScaleTests(Base):
