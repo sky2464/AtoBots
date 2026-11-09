@@ -13,7 +13,7 @@ import sys
 import threading
 from datetime import datetime, timedelta
 
-from . import (activity, archive, bots, gitlog, items, messages, requests, routines,
+from . import (activity, archive, bots, chat, gitlog, items, messages, requests, routines,
                runner, search)
 from .config import Config
 from .db import connect, ct_display, tx, utcnow
@@ -586,7 +586,9 @@ def status_text(conn, now: str | None = None) -> str:
 
 
 def _cmd_run(args) -> int:
-    Dispatcher(Config.load(), routines_fn=routines.due).serve()
+    cfg = Config.load()
+    Dispatcher(cfg, routines_fn=routines.due,
+               owner_fn=lambda: chat.owner_connected(cfg)).serve()
     return 0
 
 

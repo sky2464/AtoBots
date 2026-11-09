@@ -1,0 +1,539 @@
+"""How the Owner talks to Admin: the opening brief, the interactive chat, and
+rolling a long chat over into a fresh session.
+
+`chat_loop` runs `claude` interactively as Admin, directly (not through
+systemd-run: it needs the Owner's terminal). It holds an exclusive flock on
+`.chat.lock` for as long as the chat is open; the dispatcher reads that lock
+(`owner_connected`) and stays quiet while the Owner is talking.
+
+Rollover: when the chat gets long the Stop hook asks Admin for a summary and
+tells him to run `cb chat-rollover --summary-file F`. That command stores the
+summary, drops a marker and sends SIGTERM to the claude process named in the
+pid file (Admin's Bash tool is a child of claude, but not always its direct
+child, so the parent pid is not used). chat_loop sees the marker, archives the
+old transcript and starts claude again with the summary in its prompt.
+"""
+import fcntl
+import json
+import os
+import shlex
+import signal
+import subprocess
+import sys
+import time
+import uuid
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from . import activity, archive, bots, items, requests, runner
+from .config import Config
+from .db import connect, ct_display, tx, utcnow
+
+BOT = "admin"
+BRIEF_CAP = 2048
+LINE_CAP = 150
+MORE_RESERVE = 28
+LAST_CHECK_KEY = "chat.last_check"
+SUMMARY_PROMPT_CAP = 20000
+TRANSCRIPT_SCAN_CAP = 16 * 1024 * 1024
+KILL_GRACE_SECONDS = 20
+DEFAULT_THRESHOLD = 100000
+
+
+# ---- paths ----
+
+def chat_dir(cfg: Config) -> Path:
+    return cfg.home / ".chat"
+
+
+def lock_path(cfg: Config) -> Path:
+    return cfg.home / ".chat.lock"
+
+
+def pid_path(cfg: Config) -> Path:
+    return chat_dir(cfg) / "claude.pid"
+
+
+def rollover_path(cfg: Config) -> Path:
+    return chat_dir(cfg) / "rollover.md"
+
+
+def marker_path(cfg: Config) -> Path:
+    return chat_dir(cfg) / "rollover.pending"
+
+
+def _engine_cb() -> Path:
+    return Path(__file__).resolve().parent.parent / "bin" / "cb"
+
+
+# ---- the lock ----
+
+class ChatBusy(Exception):
+    """The lock is held; the message says by whom."""
+
+
+class ChatLock:
+    def __init__(self, fd: int):
+        self.fd = fd
+
+    def close(self) -> None:
+        if self.fd is not None:
+            try:
+                os.close(self.fd)  # closing releases the flock
+            finally:
+                self.fd = None
+
+
+def _holder(cfg: Config) -> str:
+    try:
+        pid, started = lock_path(cfg).read_text().split(maxsplit=1)
+        return f"pid {pid}, since {ct_display(started.strip())}"
+    except (OSError, ValueError):
+        return "another process"
+
+
+def acquire_lock(cfg: Config) -> ChatLock:
+    cfg.home.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock_path(cfg), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        raise ChatBusy(f"A chat with Admin is already open ({_holder(cfg)}). "
+                       f"Close it first.") from None
+    try:
+        os.ftruncate(fd, 0)
+        os.write(fd, f"{os.getpid()} {utcnow()}\n".encode())
+        chat_dir(cfg).mkdir(mode=0o700, exist_ok=True)
+    except BaseException:
+        os.close(fd)
+        raise
+    return ChatLock(fd)
+
+
+def owner_connected(cfg: Config) -> bool:
+    """True while a chat holds the lock. A crashed chat releases it."""
+    cfg.home.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock_path(cfg), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return True
+        return False
+    finally:
+        os.close(fd)  # drops the probe lock too
+
+
+# ---- the brief ----
+
+def last_check(conn):
+    r = conn.execute("SELECT value FROM meta WHERE key=?",
+                     (LAST_CHECK_KEY,)).fetchone()
+    return r["value"] if r else None
+
+
+def mark_checked(conn, iso: str) -> None:
+    conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?,?)",
+                 (LAST_CHECK_KEY, iso))
+
+
+def _clip(text: str, cap: int = LINE_CAP) -> str:
+    text = " ".join(str(text).split())
+    return text if len(text) <= cap else text[:cap - 1] + "…"
+
+
+def _sections(conn, since: str) -> list:
+    out = []
+    reqs = requests.unhandled(conn)
+    if reqs:
+        out.append(("Unhandled requests", [
+            _clip(f"R-{r['id']} {ct_display(r['received_at'])}: {r['text']}")
+            for r in reqs]))
+    need = [i for i in items.open_items(conn) if i["owner_waiting"]]
+    if need:
+        out.append(("Needs you", [
+            _clip(f"{i['id']} [{i['status']}] {i['title']}") for i in need]))
+    failed = conn.execute(
+        "SELECT * FROM messages WHERE status='failed' ORDER BY id").fetchall()
+    if failed:
+        out.append(("Stuck", [
+            _clip(f"message {m['id']} {m['from_bot']}->{m['to_bot']}: "
+                  f"{m['subject']}") for m in failed]))
+    done, seen = [], set()
+    for a in activity.since(conn, since):
+        if (a["kind"] == "item.status" and (a["detail"] or "").endswith("-> done")
+                and a["ref"] not in seen):
+            seen.add(a["ref"])
+            row = conn.execute("SELECT title FROM items WHERE id=?",
+                               (a["ref"],)).fetchone()
+            done.append(_clip(f"{a['ref']} {row['title'] if row else ''}"))
+    if done:
+        out.append((f"Done since {ct_display(since)}", done))
+    return out
+
+
+def brief(cfg: Config, conn, since: str | None = None,
+          now: str | None = None) -> str:
+    """What the Owner should know when a chat opens, in at most 2 KB."""
+    now = now or utcnow()
+    since = since or last_check(conn) or (
+        datetime.fromisoformat(now) - timedelta(hours=24)
+    ).isoformat(timespec="seconds")
+    head = f"Brief as of {ct_display(now)}"
+    foot = "Full lists: cb open, cb request unhandled."
+    sections = _sections(conn, since)
+    if not sections:
+        return (f"{head}\nNothing new: no open requests, nothing waiting on "
+                f"the Owner, nothing stuck.\n{foot}")
+
+    def size(s):
+        return len(s.encode()) + 1
+
+    titles = [f"{name} ({len(lines)}):" for name, lines in sections]
+    remaining = (BRIEF_CAP - size(head) - size(foot)
+                 - sum(size(t) for t in titles) - MORE_RESERVE * len(sections))
+    out = [head]
+    for (name, lines), title in zip(sections, titles):
+        out.append(title)
+        shown = 0
+        for line in lines:
+            if size(line) + 2 > remaining:
+                break
+            out.append("  " + line)
+            remaining -= size(line) + 2
+            shown += 1
+        if shown < len(lines):
+            out.append(f"  ... and {len(lines) - shown} more")
+    out.append(foot)
+    text = "\n".join(out)
+    return text.encode()[:BRIEF_CAP].decode("utf-8", errors="ignore")
+
+
+# ---- context size ----
+
+def _usage_total(line: bytes) -> int:
+    try:
+        d = json.loads(line)
+        msg = d["message"]
+        if d.get("isSidechain") or d.get("type") != "assistant":
+            return 0
+        u = msg["usage"]
+        return sum(int(u.get(k) or 0) for k in (
+            "input_tokens", "cache_creation_input_tokens",
+            "cache_read_input_tokens", "output_tokens"))
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return 0
+
+
+def context_tokens(transcript_path) -> int:
+    """Size of the conversation after the last assistant turn, from that
+    turn's usage. Missing file, no usage or garbage reads as 0."""
+    if not transcript_path:
+        return 0
+    try:
+        with open(transcript_path, "rb") as f:
+            pos = f.seek(0, os.SEEK_END)
+            scanned, buf = 0, b""
+            while pos > 0 and scanned < TRANSCRIPT_SCAN_CAP:
+                step = min(1 << 20, pos)
+                pos -= step
+                scanned += step
+                f.seek(pos)
+                buf = f.read(step) + buf
+                lines = buf.split(b"\n")
+                if pos > 0:  # the first line may be cut off
+                    buf = lines[0]
+                    lines = lines[1:]
+                else:
+                    buf = b""
+                for line in reversed(lines):
+                    n = _usage_total(line) if line.strip() else 0
+                    if n:
+                        return n
+        return 0
+    except (OSError, ValueError):
+        return 0
+
+
+# ---- settings and hooks ----
+
+def settings_for_chat(cfg: Config) -> dict:
+    cb = shlex.quote(str(_engine_cb()))
+
+    def hook(sub):
+        return [{"hooks": [{"type": "command", "command": f"{cb} hook {sub}",
+                            "timeout": 30}]}]
+    return {"hooks": {"UserPromptSubmit": hook("prompt"), "Stop": hook("stop")}}
+
+
+def _block_reason(cfg) -> str:
+    draft = (chat_dir(cfg) / "summary.md") if cfg else Path("summary.md")
+    cb = shlex.quote(str(_engine_cb()))
+    return (
+        "This chat has grown long and must continue in a fresh session. "
+        "Write a summary of the open thread: what the Owner asked, what is "
+        "done, what is still open, decisions made and anything he still has "
+        f"to answer. Save it to {draft}, then run: {cb} chat-rollover "
+        f"--summary-file {draft}\n"
+        "Tell the Owner in one short line that you are continuing in a "
+        "fresh session, then run the command.")
+
+
+def cmd_hook_stop(args) -> int:
+    """Stop hook. Silent below the threshold; at or over it, blocks once.
+    Any failure passes silently: it must never break the Owner's chat."""
+    try:
+        data = json.loads(sys.stdin.buffer.read().decode("utf-8"))
+        if data.get("stop_hook_active"):
+            return 0
+        cfg, threshold = None, DEFAULT_THRESHOLD
+        try:
+            cfg = Config.load()
+            threshold = cfg.chat_rollover_tokens
+        except Exception:
+            pass
+        if cfg is not None and marker_path(cfg).exists():
+            return 0  # a rollover is already on its way
+        if context_tokens(data.get("transcript_path")) < threshold:
+            return 0
+        print(json.dumps({"decision": "block", "reason": _block_reason(cfg)}))
+    except BaseException:
+        pass
+    return 0
+
+
+# ---- rollover ----
+
+def _write_private(path: Path, text: str) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def rollover(cfg: Config, conn, summary: str, kill=os.kill) -> None:
+    """Store the summary, mark the rollover and stop claude so chat_loop can
+    restart it. Raises ValueError when nothing can be rolled over."""
+    if not isinstance(summary, str) or not summary.strip():
+        raise ValueError("the summary is empty")
+    if not owner_connected(cfg):
+        raise ValueError("no chat is open")
+    try:
+        pid = int(pid_path(cfg).read_text().strip())
+    except (OSError, ValueError):
+        raise ValueError("the chat is not ready to roll over (no claude "
+                         "process recorded)") from None
+    chat_dir(cfg).mkdir(mode=0o700, exist_ok=True)
+    _write_private(rollover_path(cfg), summary)
+    _write_private(marker_path(cfg), utcnow() + "\n")
+    activity.record(conn, os.environ.get("CB_BOT", "cli"), "chat.rollover",
+                    "chat rollover requested")
+    try:
+        kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass  # already gone; the loop sees the marker and restarts anyway
+
+
+def _pending_summary(cfg: Config):
+    """The stored summary if a rollover is waiting to be consumed."""
+    if not marker_path(cfg).exists():
+        return None
+    try:
+        return rollover_path(cfg).read_text(errors="replace")
+    except OSError:
+        return None
+
+
+# ---- the loop ----
+
+def _have_terminal() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _compose_prompt(cfg, conn, brief_text: str, summary) -> str:
+    parts = [bots.identity_prompt(cfg, conn, BOT),
+             "# This chat\n\nYou are talking live with the Owner. Open with "
+             "a short plain summary of the brief below (skip it if he starts "
+             "with a request of his own).\n\n# Startup brief\n\n" + brief_text]
+    if summary is not None:
+        parts.append(
+            "# Continuing an earlier chat\n\nThe earlier chat grew long and "
+            "was restarted. Your own summary of it follows. Carry on from "
+            "it; do not greet the Owner as if this were new.\n\n"
+            + summary[:SUMMARY_PROMPT_CAP])
+    return "\n\n".join(parts)
+
+
+def _command(cfg, bot, session_id, prompt_file, settings_file, mcp_file):
+    cmd = [cfg.claude_bin,
+           "--append-system-prompt-file", str(prompt_file),
+           "--setting-sources", "project,local"]
+    if not bot.connectors:
+        cmd.append("--strict-mcp-config")
+    model = bot.model or cfg.default_model
+    cmd += ["--model", model]
+    if bot.effort:
+        cmd += ["--effort", bot.effort]
+    cmd += ["--settings", str(settings_file)]
+    if mcp_file:
+        cmd += ["--mcp-config", str(mcp_file)]
+    for d in runner._plugin_dirs(cfg, bot):
+        cmd += ["--plugin-dir", str(d)]
+    return cmd + ["--dangerously-skip-permissions", "--session-id", session_id]
+
+
+def _launch(cmd, cwd, env):
+    return subprocess.Popen(cmd, cwd=cwd, env=env)
+
+
+def _wait(proc, cfg) -> int:
+    """Wait for claude. Ctrl-C belongs to claude, not to us. If a rollover
+    was requested and claude ignores SIGTERM, kill it after a grace period."""
+    deadline = None
+    while True:
+        try:
+            return proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            if marker_path(cfg).exists():
+                deadline = deadline or time.monotonic() + KILL_GRACE_SECONDS
+                if time.monotonic() > deadline:
+                    proc.kill()
+        except KeyboardInterrupt:
+            continue
+
+
+def _unlink(path) -> None:
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
+def _one_session(cfg, conn, summary, first: bool) -> str:
+    """Run claude once. Returns 'rollover', 'ok' or 'error'."""
+    bot = bots.get(conn, BOT)
+    session_id = str(uuid.uuid4())
+    with tx(conn):
+        run_id = conn.execute(
+            "INSERT INTO runs(bot, session_id, lane, started_at)"
+            " VALUES (?,?,?,?)", (BOT, session_id, "chat", utcnow())).lastrowid
+        activity.record(conn, BOT, "chat.start",
+                        f"chat session {session_id}", str(run_id))
+    temp, code, reason = [], None, "error"
+    try:
+        try:
+            text = brief(cfg, conn)
+        except Exception as e:  # the chat matters more than the brief
+            text = f"(The brief could not be built: {type(e).__name__}: {e})"
+        if first:
+            with tx(conn):
+                mark_checked(conn, utcnow())
+        prompt = runner._private_file(_compose_prompt(cfg, conn, text, summary),
+                                      ".md")
+        temp.append(prompt)
+        settings = runner._private_file(json.dumps(settings_for_chat(cfg)),
+                                        ".json")
+        temp.append(settings)
+        mcp_text = runner._mcp_text(cfg, bot)
+        mcp = None
+        if mcp_text:
+            mcp = runner._private_file(mcp_text, ".json")
+            temp.append(mcp)
+        cmd = _command(cfg, bot, session_id, prompt, settings, mcp)
+        env = dict(os.environ, CB_BOT=BOT, CLAUDEBOT_HOME=str(cfg.home))
+        if summary is not None:
+            print("Continuing this chat in a fresh session.", flush=True)
+        proc = _launch(cmd, str(cfg.bots_dir / BOT), env)
+        # The summary is in claude's prompt now; only then is the marker done.
+        # The summary file itself is never deleted.
+        _unlink(marker_path(cfg))
+        _write_private(pid_path(cfg), f"{proc.pid}\n")
+        code = _wait(proc, cfg)
+        if marker_path(cfg).exists():
+            reason = "rollover"
+        else:
+            reason = "ok" if code == 0 else "error"
+    finally:
+        _unlink(pid_path(cfg))
+        for p in temp:
+            _unlink(p)
+        with tx(conn):
+            conn.execute(
+                "UPDATE runs SET ended_at=?, exit_code=?, reason=? WHERE id=?",
+                (utcnow(), code, reason, run_id))
+            activity.record(conn, BOT, "chat.end",
+                            f"chat session ended: {reason}", str(run_id))
+    if reason == "rollover":
+        try:
+            archive.archive_transcript(cfg, conn, run_id)
+        except Exception:
+            pass  # recorded by the archive module; the sweep retries
+    return reason
+
+
+def chat_loop(cfg: Config) -> None:
+    lock = acquire_lock(cfg)
+    try:
+        conn = connect(cfg)
+        try:
+            summary = _pending_summary(cfg)  # left by a loop that crashed
+            first = True
+            while True:
+                reason = _one_session(cfg, conn, summary, first)
+                first = False
+                if reason != "rollover":
+                    return
+                summary = _pending_summary(cfg)
+                if summary is None:
+                    return
+        finally:
+            conn.close()
+    finally:
+        lock.close()
+
+
+# ---- CLI ----
+
+def _cmd_chat(args) -> int:
+    if not _have_terminal():
+        print("error: cb chat needs a terminal", file=sys.stderr)
+        return 1
+    cfg = Config.load()
+    try:
+        chat_loop(cfg)
+    except ChatBusy as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    except (ValueError, KeyError, OSError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _cmd_rollover(args) -> int:
+    cfg = Config.load()
+    try:
+        summary = Path(args.summary_file).read_text()
+        conn = connect(cfg)
+        try:
+            rollover(cfg, conn, summary)
+        finally:
+            conn.close()
+    except (ValueError, OSError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print("Rolling over: the chat restarts in a moment with your summary.")
+    return 0
+
+
+def register(subparsers) -> None:
+    subparsers.add_parser("chat", help="talk to Admin (needs a terminal)"
+                          ).set_defaults(func=_cmd_chat)
+    r = subparsers.add_parser(
+        "chat-rollover", help="restart this chat with a summary (Admin runs it)")
+    r.add_argument("--summary-file", required=True)
+    r.set_defaults(func=_cmd_rollover)

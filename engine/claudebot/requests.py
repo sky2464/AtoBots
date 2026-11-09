@@ -113,6 +113,11 @@ def _cmd_hook_prompt(args) -> int:
     return 0
 
 
+def _cmd_hook_stop(args) -> int:
+    from . import chat  # imported late: chat itself imports this module
+    return chat.cmd_hook_stop(args)
+
+
 def _cmd_link(args):
     def go(cfg, conn):
         link(conn, args.request_id, args.items)
@@ -151,3 +156,5 @@ def register(subparsers) -> None:
     hs = h.add_subparsers(dest="hook_cmd", required=True)
     hp = hs.add_parser("prompt")
     hp.set_defaults(func=_cmd_hook_prompt)
+    hst = hs.add_parser("stop")
+    hst.set_defaults(func=_cmd_hook_stop)
