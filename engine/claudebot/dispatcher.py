@@ -13,7 +13,8 @@ import sys
 import threading
 from datetime import datetime, timedelta
 
-from . import activity, bots, gitlog, items, messages, requests, runner, search
+from . import (activity, bots, gitlog, items, messages, requests, routines,
+               runner, search)
 from .config import Config
 from .db import connect, ct_display, tx, utcnow
 
@@ -538,7 +539,7 @@ def status_text(conn, now: str | None = None) -> str:
 
 
 def _cmd_run(args) -> int:
-    Dispatcher(Config.load()).serve()
+    Dispatcher(Config.load(), routines_fn=routines.due).serve()
     return 0
 
 
