@@ -211,7 +211,10 @@ def _mcp_text(cfg: Config, bot: bots.Bot) -> str | None:
     return json.dumps({"mcpServers": servers})
 
 
-def run(cfg: Config, conn: sqlite3.Connection, bot, msgs, lane: str) -> RunResult:
+def run(cfg: Config, conn: sqlite3.Connection, bot, msgs, lane: str,
+        on_start=None) -> RunResult:
+    """`on_start(run_id)`, if given, is called once the run row is recorded and
+    before the session starts, so the dispatcher can link messages to the run."""
     bot = _bot(conn, bot)
     session_id = str(uuid.uuid4())
     with tx(conn):
@@ -221,6 +224,8 @@ def run(cfg: Config, conn: sqlite3.Connection, bot, msgs, lane: str) -> RunResul
         run_id = cur.lastrowid
         activity.record(conn, bot.name, "run.start",
                         f"{bot.name} run {run_id} ({lane})", str(run_id))
+    if on_start is not None:
+        on_start(run_id)
     temp, exit_code, output = [], 1, ""
     try:
         model, effort = settings_for(bot, msgs)

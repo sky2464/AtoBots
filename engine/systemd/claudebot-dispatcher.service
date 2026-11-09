@@ -1,0 +1,13 @@
+[Unit]
+Description=ClaudeBot dispatcher
+After=network.target
+
+[Service]
+User=claude
+Environment=CLAUDEBOT_HOME=@HOME@
+ExecStart=/home/claude/ClaudeBot/engine/bin/cb dispatcher run
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
