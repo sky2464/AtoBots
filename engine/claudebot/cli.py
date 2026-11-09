@@ -2,9 +2,9 @@
 import argparse
 import sys
 
-from . import bots, store
+from . import bots, items, requests, store
 
-MODULES = [store, bots]
+MODULES = [store, bots, items, requests]
 
 
 def build_parser() -> argparse.ArgumentParser:

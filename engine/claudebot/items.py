@@ -1,0 +1,347 @@
+"""Work items and decisions. IDs are T-0001 / D-0001 and are never reused
+(they come from AUTOINCREMENT row numbers, so archiving or deleting a row
+cannot free a number)."""
+import argparse
+import os
+import re
+import sqlite3
+import sys
+from pathlib import Path
+
+from . import activity, bots
+from .config import Config
+from .db import connect, ct_display, tx, utcnow
+
+STATUSES = ("pending", "todo", "next", "doing", "paused", "feature", "slice",
+            "finding", "done", "parked")
+_CLOSED = ("done", "parked")
+_ID_RE = re.compile(r"T-\d{4,}")
+_DONE_SQL = "('done','parked')"
+
+
+def _check_id(id) -> str:
+    if not isinstance(id, str) or not _ID_RE.fullmatch(id):
+        raise ValueError("item id must match ^T-\\d{4,}$")
+    return id
+
+
+def _check_status(status) -> str:
+    if status not in STATUSES:
+        raise ValueError(f"status must be one of: {', '.join(STATUSES)}")
+    return status
+
+
+def _get(conn: sqlite3.Connection, id: str) -> sqlite3.Row:
+    _check_id(id)
+    r = conn.execute("SELECT * FROM items WHERE id=?", (id,)).fetchone()
+    if r is None:
+        raise KeyError(id)
+    return r
+
+
+def get(conn: sqlite3.Connection, id: str) -> sqlite3.Row:
+    return _get(conn, id)
+
+
+def folder(cfg: Config, id: str) -> Path:
+    return cfg.work_dir / _check_id(id)
+
+
+def new(cfg: Config, conn: sqlite3.Connection, title: str, owner: str,
+        status: str = "todo", parent: str | None = None, priority: int = 0,
+        owner_waiting: bool = False, actor: str | None = None) -> str:
+    _check_status(status)
+    if not isinstance(title, str) or not title.strip():
+        raise ValueError("title is required")
+    bots.get(conn, owner)
+    now = utcnow()
+    with tx(conn):
+        if parent is not None:
+            _get(conn, parent)
+        cur = conn.execute(
+            "INSERT INTO items(status, owner, title, parent, priority,"
+            " owner_waiting, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+            (status, owner, title, parent, int(priority), int(bool(owner_waiting)),
+             now, now))
+        id = f"T-{cur.lastrowid:04d}"
+        conn.execute("UPDATE items SET id=? WHERE n=?", (id, cur.lastrowid))
+        activity.record(conn, actor or owner, "item.new", f"{id}: {title}", id)
+    folder(cfg, id).mkdir(parents=True, exist_ok=True)
+    return id
+
+
+def set_status(conn: sqlite3.Connection, id: str, status: str, actor: str) -> None:
+    _check_status(status)
+    with tx(conn):
+        old = _get(conn, id)["status"]
+        conn.execute("UPDATE items SET status=?, updated_at=? WHERE id=?",
+                     (status, utcnow(), id))
+        activity.record(conn, actor, "item.status", f"{id}: {old} -> {status}", id)
+
+
+def pause(cfg: Config, conn: sqlite3.Connection, id: str, note: str,
+          actor: str) -> None:
+    with tx(conn):
+        old = _get(conn, id)["status"]
+        conn.execute("UPDATE items SET status='paused', note=?, updated_at=?"
+                     " WHERE id=?", (note, utcnow(), id))
+        activity.record(conn, actor, "item.pause", f"{id}: {old} -> paused", id)
+
+
+def resume(conn: sqlite3.Connection, id: str, actor: str) -> str:
+    with tx(conn):
+        r = _get(conn, id)
+        if r["status"] != "paused":
+            raise ValueError(f"{id} is {r['status']}, not paused")
+        conn.execute("UPDATE items SET status='doing', updated_at=? WHERE id=?",
+                     (utcnow(), id))
+        activity.record(conn, actor, "item.resume", id, id)
+    return r["note"] or ""
+
+
+def assign(conn: sqlite3.Connection, id: str, to_bot: str, actor: str,
+           note: str | None = None) -> None:
+    bots.get(conn, to_bot)
+    with tx(conn):
+        r = _get(conn, id)
+        keep = r["note"]
+        if note:
+            keep = f"{keep}\n{note}" if keep else note
+        conn.execute("UPDATE items SET owner=?, status='todo', note=?,"
+                     " updated_at=? WHERE id=?", (to_bot, keep, utcnow(), id))
+        activity.record(conn, actor, "item.assign",
+                        f"{id}: {r['owner']} -> {to_bot}", id)
+
+
+def split(cfg: Config, conn: sqlite3.Connection, parent: str, titles: list,
+          owner: str) -> list:
+    _get(conn, parent)
+    return [new(cfg, conn, t, owner, status="slice", parent=parent)
+            for t in titles]
+
+
+_OPEN_ORDER = "ORDER BY owner_waiting DESC, priority DESC, n ASC"
+
+
+def next_items(conn: sqlite3.Connection, owner: str | None = None,
+               limit: int = 20) -> list:
+    sql = (f"SELECT * FROM items WHERE archived_at IS NULL"
+           f" AND status NOT IN {_DONE_SQL}")
+    args: list = []
+    if owner is not None:
+        sql += " AND owner=?"
+        args.append(owner)
+    return conn.execute(f"{sql} {_OPEN_ORDER} LIMIT ?", (*args, limit)).fetchall()
+
+
+def open_items(conn: sqlite3.Connection) -> list:
+    """Every item not done or parked, plus any parent that still has an
+    unfinished child, whatever its own status says."""
+    return conn.execute(
+        f"SELECT * FROM items i WHERE archived_at IS NULL AND (status NOT IN"
+        f" {_DONE_SQL} OR EXISTS (SELECT 1 FROM items c WHERE c.parent=i.id"
+        f" AND c.archived_at IS NULL AND c.status NOT IN {_DONE_SQL}))"
+        f" {_OPEN_ORDER}").fetchall()
+
+
+def decide(conn: sqlite3.Connection, title: str, quote: str, said_at: str,
+           session: str, actor: str) -> str:
+    if not isinstance(quote, str) or not quote.strip():
+        raise ValueError("a decision needs the Owner's exact words (quote)")
+    if not isinstance(title, str) or not title.strip():
+        raise ValueError("title is required")
+    with tx(conn):
+        cur = conn.execute(
+            "INSERT INTO decisions(title, quote, said_at, session, recorded_by,"
+            " created_at) VALUES (?,?,?,?,?,?)",
+            (title, quote, said_at, session, actor, utcnow()))
+        id = f"D-{cur.lastrowid:04d}"
+        conn.execute("UPDATE decisions SET id=? WHERE n=?", (id, cur.lastrowid))
+        activity.record(conn, actor, "decision.record", f"{id}: {title}", id)
+    return id
+
+
+# ---- CLI ----
+
+def _actor() -> str:
+    return os.environ.get("CLAUDEBOT_BOT", "cli")
+
+
+def _run(fn):
+    cfg = Config.load()
+    conn = connect(cfg)
+    try:
+        return fn(cfg, conn)
+    except (ValueError, KeyError, OSError, PermissionError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+
+
+def _line(r) -> str:
+    flag = "!" if r["owner_waiting"] else " "
+    return f"{r['id']}\t{flag}\t{r['status']}\t{r['owner']}\t{r['title']}"
+
+
+def _cmd_new(args):
+    def go(cfg, conn):
+        print(new(cfg, conn, args.title, args.owner, status=args.status,
+                  parent=args.parent, priority=args.priority,
+                  owner_waiting=args.owner_waiting, actor=_actor()))
+        return 0
+    return _run(go)
+
+
+def _cmd_status(args):
+    def go(cfg, conn):
+        set_status(conn, args.id, args.status, _actor())
+        return 0
+    return _run(go)
+
+
+def _cmd_pause(args):
+    def go(cfg, conn):
+        pause(cfg, conn, args.id, args.note, _actor())
+        return 0
+    return _run(go)
+
+
+def _cmd_resume(args):
+    def go(cfg, conn):
+        print(resume(conn, args.id, _actor()))
+        return 0
+    return _run(go)
+
+
+def _cmd_assign(args):
+    def go(cfg, conn):
+        assign(conn, args.id, args.to, _actor(), note=args.note)
+        return 0
+    return _run(go)
+
+
+def _cmd_split(args):
+    def go(cfg, conn):
+        owner = args.owner or _get(conn, args.parent)["owner"]
+        for i in split(cfg, conn, args.parent, args.titles, owner):
+            print(i)
+        return 0
+    return _run(go)
+
+
+def _cmd_show(args):
+    def go(cfg, conn):
+        r = _get(conn, args.id)
+        for k in ("id", "title", "status", "owner", "parent", "priority",
+                  "owner_waiting", "note"):
+            print(f"{k}: {r[k]}")
+        print(f"created: {ct_display(r['created_at'])}")
+        print(f"updated: {ct_display(r['updated_at'])}")
+        kids = conn.execute("SELECT id, status FROM items WHERE parent=? ORDER BY n",
+                            (args.id,)).fetchall()
+        if kids:
+            print("children: " + ", ".join(f"{k['id']} ({k['status']})" for k in kids))
+        return 0
+    return _run(go)
+
+
+def _cmd_next(args):
+    def go(cfg, conn):
+        for r in next_items(conn, args.owner, args.limit):
+            print(_line(r))
+        return 0
+    return _run(go)
+
+
+def _cmd_open(args):
+    def go(cfg, conn):
+        for r in open_items(conn):
+            print(_line(r))
+        return 0
+    return _run(go)
+
+
+def _cmd_decision_record(args):
+    def go(cfg, conn):
+        print(decide(conn, args.title, args.quote, args.said_at or utcnow(),
+                     args.session or "", _actor()))
+        return 0
+    return _run(go)
+
+
+def _cmd_decision_show(args):
+    def go(cfg, conn):
+        r = conn.execute("SELECT * FROM decisions WHERE id=?", (args.id,)).fetchone()
+        if r is None:
+            raise KeyError(args.id)
+        print(f"id: {r['id']}\ntitle: {r['title']}")
+        print(f"said: {ct_display(r['said_at'])}" if _is_iso(r["said_at"])
+              else f"said: {r['said_at']}")
+        print(f"session: {r['session']}\nrecorded by: {r['recorded_by']}")
+        print(f"quote: {r['quote']}")
+        return 0
+    return _run(go)
+
+
+def _is_iso(s) -> bool:
+    from datetime import datetime
+    try:
+        datetime.fromisoformat(s)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def register(subparsers) -> None:
+    sp = subparsers.add_parser("item", help="work items")
+    sub = sp.add_subparsers(dest="item_cmd", required=True)
+    n = sub.add_parser("new")
+    n.add_argument("title")
+    n.add_argument("--owner", default=_actor())
+    n.add_argument("--status", default="todo", choices=STATUSES)
+    n.add_argument("--parent")
+    n.add_argument("--priority", type=int, default=0)
+    n.add_argument("--owner-waiting", action="store_true")
+    n.set_defaults(func=_cmd_new)
+    s = sub.add_parser("status")
+    s.add_argument("id")
+    s.add_argument("status")
+    s.set_defaults(func=_cmd_status)
+    p = sub.add_parser("pause")
+    p.add_argument("id")
+    p.add_argument("note")
+    p.set_defaults(func=_cmd_pause)
+    r = sub.add_parser("resume")
+    r.add_argument("id")
+    r.set_defaults(func=_cmd_resume)
+    a = sub.add_parser("assign")
+    a.add_argument("id")
+    a.add_argument("to")
+    a.add_argument("--note")
+    a.set_defaults(func=_cmd_assign)
+    sl = sub.add_parser("split")
+    sl.add_argument("parent")
+    sl.add_argument("titles", nargs="+")
+    sl.add_argument("--owner")
+    sl.set_defaults(func=_cmd_split)
+    sh = sub.add_parser("show")
+    sh.add_argument("id")
+    sh.set_defaults(func=_cmd_show)
+    nx = subparsers.add_parser("next", help="what to work on next")
+    nx.add_argument("--owner")
+    nx.add_argument("--limit", type=int, default=20)
+    nx.set_defaults(func=_cmd_next)
+    op = subparsers.add_parser("open", help="all open items")
+    op.set_defaults(func=_cmd_open)
+    d = subparsers.add_parser("decision", help="Owner decisions")
+    dsub = d.add_subparsers(dest="decision_cmd", required=True)
+    rec = dsub.add_parser("record")
+    rec.add_argument("title")
+    rec.add_argument("--quote", required=True, help="the Owner's exact words")
+    rec.add_argument("--said-at", help="ISO 8601; default now")
+    rec.add_argument("--session")
+    rec.set_defaults(func=_cmd_decision_record)
+    shw = dsub.add_parser("show")
+    shw.add_argument("id")
+    shw.set_defaults(func=_cmd_decision_show)
