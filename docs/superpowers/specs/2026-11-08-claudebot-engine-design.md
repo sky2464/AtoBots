@@ -14,7 +14,7 @@ Labels used below: **(Owner)** was decided by Navid. **(Builder's call)** is Cla
 
 **ClaudeBot is the main engine.** It creates and runs teams of permanent AI employees. The final product is the Owner using ClaudeBot to build bot teams for different companies and customers. (Owner) For now, only the Owner runs it. (Owner)
 
-**DecisionTreeByNavid is the first company.** This VPS *is* that company: multiple bots manage the DecisionTreeByNavid YouTube business from the server, 24/7 when needed. (Owner) The Owner's Mac is not part of how the company runs. (Owner)
+**Atoosa is the first company, and DecisionTreeByNavid is one of its products. (Owner, Nov 9, 2026: "I will use the vps for Atoosa business and one of my product is decision tree by navid", the same way his Grok bots are set up.)** This VPS *is* that company: bots manage the Atoosa business from the server, 24/7 when needed, including the DecisionTreeByNavid YouTube channel. (Owner) The Owner's Mac is not part of how the company runs. (Owner) Where this document says DecisionTreeByNavid is the company or install, read it as Atoosa. Backup repos are `atoosa-hub/backup` and `atoosa-hub/archive`.
 
 **The product ships with one bot: Admin. (Owner)** If Admin can handle everything, that's all there is. When the Owner asks for a new agent or bot, Admin works with him to define it, creates it with its own Soul, Memory and persona, and remembers it. That's how Grok bots work, and how ClaudeBot should work. (Owner)
 
