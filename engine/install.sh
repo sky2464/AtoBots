@@ -29,6 +29,10 @@ if [ "$(id -u)" -eq 0 ]; then
 fi
 
 ENGINE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+if ! [[ $ENGINE_DIR =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+    echo "error: the engine path may only use letters, digits, . _ - and /" >&2
+    exit 2
+fi
 UNIT_SRC=$ENGINE_DIR/systemd
 UNIT_DST=/etc/systemd/system
 BIN_DIR=$HOME/.local/bin
@@ -39,7 +43,21 @@ BASHRC=$HOME/.bashrc
 SERVICES=(claudebot-dispatcher.service)
 TIMERS=()
 
+# 0. Check everything we need before changing anything, so this either does
+# the whole job or stops here with a clear message.
+CLAUDE_BIN=/home/claude/.local/bin/claude
 [ -x "$ENGINE_DIR/bin/cb" ] || { echo "error: $ENGINE_DIR/bin/cb is missing" >&2; exit 1; }
+if ! sudo -n true 2>/dev/null; then
+    echo "error: this user needs passwordless sudo (sudo -n true failed)" >&2
+    exit 1
+fi
+[ -x "$CLAUDE_BIN" ] || { echo "error: claude is not at $CLAUDE_BIN; install Claude Code first" >&2; exit 1; }
+for unit in "${SERVICES[@]}" "${TIMERS[@]}"; do
+    [ -f "$UNIT_SRC/$unit" ] || { echo "error: missing unit $UNIT_SRC/$unit" >&2; exit 1; }
+    case $unit in
+        *.timer) [ -f "$UNIT_SRC/${unit%.timer}.service" ] || { echo "error: missing unit $UNIT_SRC/${unit%.timer}.service" >&2; exit 1; } ;;
+    esac
+done
 
 # 1. Set up the company first. If this fails, nothing below runs.
 echo "Setting up $COMPANY at $HOME_DIR ..."
@@ -49,6 +67,11 @@ CLAUDEBOT_HOME=$HOME_DIR "$ENGINE_DIR/bin/cb" init --company "$COMPANY"
 mkdir -p "$BIN_DIR"
 ln -sfn "$ENGINE_DIR/bin/cb" "$BIN_DIR/cb"
 echo "Linked $BIN_DIR/cb"
+# Also on the default PATH and in an env file, for `ssh host 'cb ...'`, which
+# never reads ~/.bashrc.
+sudo ln -sfn "$ENGINE_DIR/bin/cb" /usr/local/bin/cb
+echo "CLAUDEBOT_HOME=$HOME_DIR" | sudo tee /etc/claudebot.env > /dev/null
+echo "Linked /usr/local/bin/cb and wrote /etc/claudebot.env"
 
 # 3. Shell settings, added only if absent.
 touch "$BASHRC"
@@ -62,11 +85,11 @@ if ! grep -q 'claudebot-path' "$BASHRC"; then
     echo "Added ~/.local/bin to PATH in $BASHRC"
 fi
 
-# 4. Systemd units, with @HOME@ filled in.
+# 4. Systemd units, with @HOME@ and @ENGINE@ filled in.
 render_unit() {
     local name=$1
     [ -f "$UNIT_SRC/$name" ] || { echo "error: missing unit $UNIT_SRC/$name" >&2; exit 1; }
-    sed "s|@HOME@|$HOME_DIR|g" "$UNIT_SRC/$name" | sudo tee "$UNIT_DST/$name" > /dev/null
+    sed -e "s|@HOME@|$HOME_DIR|g" -e "s|@ENGINE@|$ENGINE_DIR|g" "$UNIT_SRC/$name" | sudo tee "$UNIT_DST/$name" > /dev/null
     echo "Installed $UNIT_DST/$name"
 }
 

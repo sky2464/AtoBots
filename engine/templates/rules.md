@@ -12,7 +12,9 @@ Follow them even when no one is watching.
 
 - Publishing and spending are Owner-only.
 - Admin publishes only on the Owner's direct word. Before publishing, Admin runs
-  `cb decision record "<what>" --quote "<his exact words>"`. No record, no publish.
+  `cb decision record "<what>" --quote "<his exact words>" --session "<session>"`.
+  The record holds his exact words, the CT time and the session. No record, no
+  publish.
 - Spending has no exception. No payment details are stored here. Bots prepare
   the steps and the Owner pays.
 

@@ -115,6 +115,26 @@ class InitTest(unittest.TestCase):
         self.assertEqual(self.names(), ["admin"])
 
 
+class EnvFileTest(unittest.TestCase):
+    def test_home_falls_back_to_env_file(self):
+        import os
+        from unittest import mock
+        from claudebot import config
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "claudebot.env"
+            f.write_text("CLAUDEBOT_HOME=/srv/co\n")
+            env = {k: v for k, v in os.environ.items() if k != "CLAUDEBOT_HOME"}
+            with mock.patch.object(config, "ENV_FILE", f), \
+                    mock.patch.dict(os.environ, env, clear=True):
+                self.assertEqual(Config.load().home, Path("/srv/co"))
+                os.environ["CLAUDEBOT_HOME"] = "/other"
+                self.assertEqual(Config.load().home, Path("/other"))
+                del os.environ["CLAUDEBOT_HOME"]
+                f.unlink()
+                with self.assertRaises(RuntimeError):
+                    Config.load()
+
+
 class TemplatesTest(unittest.TestCase):
     def test_engine_has_no_company_text(self):
         banned = ("DecisionTree", "DTbyNavid", "Navid", "Atoosa")
@@ -159,6 +179,12 @@ class TemplatesTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         text = (ROOT / "engine" / "install.sh").read_text()
         self.assertIn("set -euo pipefail", text)
+        self.assertIn("sudo -n true", text)
+        self.assertLess(text.index("sudo -n true"), text.index(" init --company"))
+        self.assertIn("/etc/claudebot.env", text)
+        unit = (ROOT / "engine" / "systemd" / "claudebot-dispatcher.service").read_text()
+        self.assertIn("@ENGINE@", unit)
+        self.assertNotIn("/home/", unit)
         for forbidden in ("sshd", "ufw", "sudoers"):
             self.assertNotIn(forbidden, text)
 

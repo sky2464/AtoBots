@@ -4,6 +4,21 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+ENV_FILE = Path("/etc/claudebot.env")  # written by install.sh: CLAUDEBOT_HOME=...
+
+
+def _home_from_file() -> str | None:
+    """Fallback for shells that never read ~/.bashrc (ssh host 'cb ...')."""
+    try:
+        for line in ENV_FILE.read_text().splitlines():
+            key, _, value = line.partition("=")
+            if key.strip() == "CLAUDEBOT_HOME" and value.strip():
+                return value.strip()
+    except OSError:
+        pass
+    return None
+
+
 @dataclass
 class Config:
     home: Path
@@ -38,9 +53,9 @@ class Config:
 
     @classmethod
     def load(cls) -> "Config":
-        home = os.environ.get("CLAUDEBOT_HOME")
+        home = os.environ.get("CLAUDEBOT_HOME") or _home_from_file()
         if not home:
-            raise RuntimeError("CLAUDEBOT_HOME is not set")
+            raise RuntimeError(f"CLAUDEBOT_HOME is not set (and {ENV_FILE} has none)")
         return cls(Path(home))
 
     @property

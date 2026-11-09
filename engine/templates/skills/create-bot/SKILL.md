@@ -15,7 +15,8 @@ Ask only one short question at a time, each with your recommended answer. Cover:
 
 1. What the bot is for.
 2. Its name: lowercase letters, digits and hyphens, starting with a letter,
-   30 characters at most. Check `cb bot list` so it is not taken.
+   30 characters at most. Check `cb bot list` (and `--status paused`, `--status retired`) so it is
+   not taken. `cb bot new` also refuses a name already used.
 3. Who it reports to (usually admin).
 4. Its values and voice.
 

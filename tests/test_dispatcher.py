@@ -674,7 +674,7 @@ class ServiceFileTests(unittest.TestCase):
         text = (ENGINE / "systemd" / "claudebot-dispatcher.service").read_text()
         for line in ("User=claude", "Environment=CLAUDEBOT_HOME=@HOME@",
                      "Restart=always", "RestartSec=5",
-                     "ExecStart=/home/claude/ClaudeBot/engine/bin/cb "
+                     "ExecStart=@ENGINE@/bin/cb "
                      "dispatcher run"):
             self.assertIn(line, text.split("\n"))
 

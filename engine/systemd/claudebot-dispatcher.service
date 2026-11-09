@@ -5,7 +5,7 @@ After=network.target
 [Service]
 User=claude
 Environment=CLAUDEBOT_HOME=@HOME@
-ExecStart=/home/claude/ClaudeBot/engine/bin/cb dispatcher run
+ExecStart=@ENGINE@/bin/cb dispatcher run
 Restart=always
 RestartSec=5
 
