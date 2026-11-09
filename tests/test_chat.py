@@ -52,6 +52,8 @@ if n == 0 and os.environ.get("FAKE_ROLLOVER"):
                     "--summary-file", d + "/summary.md"], check=True,
                    capture_output=True)
     time.sleep(30)
+if n >= 1 and os.environ.get("FAKE_EXIT_AFTER"):
+    sys.exit(int(os.environ["FAKE_EXIT_AFTER"]))
 sys.exit(int(os.environ.get("FAKE_EXIT", "0")))
 """
 
@@ -194,6 +196,14 @@ class StopHookTests(Base):
         rc, out = self.run_hook({"stop_hook_active": True}, 150000)
         self.assertEqual((rc, out), (0, ""))
 
+    def test_stop_hook_does_not_nag_until_20k_more_tokens(self):
+        rc, out = self.run_hook({"stop_hook_active": False}, 100000)
+        self.assertEqual(json.loads(out)["decision"], "block")
+        rc, out = self.run_hook({"stop_hook_active": False}, 119999)
+        self.assertEqual((rc, out), (0, ""))
+        rc, out = self.run_hook({"stop_hook_active": False}, 120000)
+        self.assertEqual(json.loads(out)["decision"], "block")
+
     def test_stop_hook_never_breaks_the_chat(self):
         out = io.StringIO()
         stdin = types.SimpleNamespace(buffer=io.BytesIO(b"{broken"))
@@ -231,6 +241,14 @@ class LockTests(Base):
         self.assertIn(str(os.getpid()), str(cm.exception))
         lock.close()
         self.assertFalse(chat.owner_connected(self.cfg))
+
+    def test_acquire_rides_out_a_short_probe(self):
+        import threading
+        probe = chat.acquire_lock(self.cfg)
+        threading.Timer(0.1, probe.close).start()
+        lock = chat.acquire_lock(self.cfg, retries=3, delay=0.2)
+        self.assertTrue(chat.owner_connected(self.cfg))
+        lock.close()
 
     def test_lock_is_released_on_a_crash(self):
         code = ("import sys, os; sys.path.insert(0, %r);"
@@ -323,6 +341,29 @@ class LoopTests(Base):
         self.assertEqual(len(archived), 1)
         self.assertFalse(
             (self.cfg.claude_projects_dir / "proj" / f"{sid0}.jsonl").exists())
+
+    def test_failed_restart_keeps_the_summary_for_the_next_chat(self):
+        with mock.patch.dict(os.environ, {"FAKE_ROLLOVER": "1",
+                                          "FAKE_EXIT_AFTER": "1"}):
+            self.run_loop()
+        self.assertEqual(len(self.calls()), 2)
+        self.assertTrue(chat.marker_path(self.cfg).exists())
+        self.run_loop()  # the next `cb chat`
+        calls = self.calls()
+        self.assertEqual(len(calls), 3)
+        self.assertIn("SUMMARY: the Owner wants the invoice report",
+                      calls[2]["prompt"])
+        self.assertFalse(chat.marker_path(self.cfg).exists())  # ended well
+
+    def test_consumed_summary_does_not_silence_the_stop_hook_forever(self):
+        # marker with the token this session was started with: hook may block
+        chat.chat_dir(self.cfg).mkdir(parents=True, exist_ok=True)
+        chat.marker_path(self.cfg).write_text("tok1\n")
+        h = StopHookTests("test_stop_hook_below_threshold_passes")
+        h.cfg, h.root = self.cfg, self.root
+        with mock.patch.dict(os.environ, {chat.TOKEN_ENV: "tok1"}):
+            rc, out = h.run_hook({"stop_hook_active": False}, 150000)
+        self.assertEqual(json.loads(out)["decision"], "block")
 
     def test_nonzero_exit_without_marker_ends_the_loop(self):
         with mock.patch.dict(os.environ, {"FAKE_EXIT": "3"}):

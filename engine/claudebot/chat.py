@@ -38,6 +38,8 @@ SUMMARY_PROMPT_CAP = 20000
 TRANSCRIPT_SCAN_CAP = 16 * 1024 * 1024
 KILL_GRACE_SECONDS = 20
 DEFAULT_THRESHOLD = 100000
+NAG_STEP = 20000
+TOKEN_ENV = "CB_ROLLOVER_TOKEN"
 
 
 # ---- paths ----
@@ -60,6 +62,17 @@ def rollover_path(cfg: Config) -> Path:
 
 def marker_path(cfg: Config) -> Path:
     return chat_dir(cfg) / "rollover.pending"
+
+
+def last_block_path(cfg: Config) -> Path:
+    return chat_dir(cfg) / "last_block"
+
+
+def _read_token(cfg: Config):
+    try:
+        return marker_path(cfg).read_text().strip() or None
+    except OSError:
+        return None
 
 
 def _engine_cb() -> Path:
@@ -92,9 +105,17 @@ def _holder(cfg: Config) -> str:
         return "another process"
 
 
-def acquire_lock(cfg: Config) -> ChatLock:
+def acquire_lock(cfg: Config, retries: int = 0, delay: float = 0.2) -> ChatLock:
+    """Take the chat lock. `retries` extra tries, `delay` apart, ride out the
+    dispatcher's brief probe of the same lock."""
     cfg.home.mkdir(parents=True, exist_ok=True)
     fd = os.open(lock_path(cfg), os.O_RDWR | os.O_CREAT, 0o600)
+    for _ in range(retries):
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            time.sleep(delay)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -293,10 +314,25 @@ def cmd_hook_stop(args) -> int:
             threshold = cfg.chat_rollover_tokens
         except Exception:
             pass
-        if cfg is not None and marker_path(cfg).exists():
-            return 0  # a rollover is already on its way
-        if context_tokens(data.get("transcript_path")) < threshold:
+        if cfg is not None:
+            tok = _read_token(cfg)
+            if tok is not None and tok != os.environ.get(TOKEN_ENV):
+                return 0  # a newer rollover is already on its way
+        tokens = context_tokens(data.get("transcript_path"))
+        if tokens < threshold:
             return 0
+        if cfg is not None:  # do not nag if the last request went unanswered
+            try:
+                last = int(last_block_path(cfg).read_text().strip())
+            except (OSError, ValueError):
+                last = None
+            if last is not None and tokens < last + NAG_STEP:
+                return 0
+            try:
+                chat_dir(cfg).mkdir(mode=0o700, exist_ok=True)
+                last_block_path(cfg).write_text(str(tokens))
+            except OSError:
+                pass
         print(json.dumps({"decision": "block", "reason": _block_reason(cfg)}))
     except BaseException:
         pass
@@ -329,7 +365,7 @@ def rollover(cfg: Config, conn, summary: str, kill=os.kill) -> None:
                          "process recorded)") from None
     chat_dir(cfg).mkdir(mode=0o700, exist_ok=True)
     _write_private(rollover_path(cfg), summary)
-    _write_private(marker_path(cfg), utcnow() + "\n")
+    _write_private(marker_path(cfg), uuid.uuid4().hex + "\n")
     activity.record(conn, os.environ.get("CB_BOT", "cli"), "chat.rollover",
                     "chat rollover requested")
     try:
@@ -338,14 +374,15 @@ def rollover(cfg: Config, conn, summary: str, kill=os.kill) -> None:
         pass  # already gone; the loop sees the marker and restarts anyway
 
 
-def _pending_summary(cfg: Config):
-    """The stored summary if a rollover is waiting to be consumed."""
-    if not marker_path(cfg).exists():
-        return None
+def _pending(cfg: Config):
+    """(summary, token) if a rollover is waiting, else (None, None)."""
+    token = _read_token(cfg)
+    if token is None:
+        return None, None
     try:
-        return rollover_path(cfg).read_text(errors="replace")
+        return rollover_path(cfg).read_text(errors="replace"), token
     except OSError:
-        return None
+        return None, None
 
 
 # ---- the loop ----
@@ -390,7 +427,7 @@ def _launch(cmd, cwd, env):
     return subprocess.Popen(cmd, cwd=cwd, env=env)
 
 
-def _wait(proc, cfg) -> int:
+def _wait(proc, cfg, token=None) -> int:
     """Wait for claude. Ctrl-C belongs to claude, not to us. If a rollover
     was requested and claude ignores SIGTERM, kill it after a grace period."""
     deadline = None
@@ -398,7 +435,7 @@ def _wait(proc, cfg) -> int:
         try:
             return proc.wait(timeout=1)
         except subprocess.TimeoutExpired:
-            if marker_path(cfg).exists():
+            if _read_token(cfg) not in (None, token):
                 deadline = deadline or time.monotonic() + KILL_GRACE_SECONDS
                 if time.monotonic() > deadline:
                     proc.kill()
@@ -413,7 +450,7 @@ def _unlink(path) -> None:
         pass
 
 
-def _one_session(cfg, conn, summary, first: bool) -> str:
+def _one_session(cfg, conn, summary, token, first: bool) -> str:
     """Run claude once. Returns 'rollover', 'ok' or 'error'."""
     bot = bots.get(conn, BOT)
     session_id = str(uuid.uuid4())
@@ -445,18 +482,24 @@ def _one_session(cfg, conn, summary, first: bool) -> str:
             temp.append(mcp)
         cmd = _command(cfg, bot, session_id, prompt, settings, mcp)
         env = dict(os.environ, CB_BOT=BOT, CLAUDEBOT_HOME=str(cfg.home))
+        env.pop(TOKEN_ENV, None)
+        if token:
+            env[TOKEN_ENV] = token
+        _unlink(last_block_path(cfg))
         if summary is not None:
             print("Continuing this chat in a fresh session.", flush=True)
         proc = _launch(cmd, str(cfg.bots_dir / BOT), env)
-        # The summary is in claude's prompt now; only then is the marker done.
-        # The summary file itself is never deleted.
-        _unlink(marker_path(cfg))
+        # The marker stays until this session ends well; the summary file is
+        # never deleted.
         _write_private(pid_path(cfg), f"{proc.pid}\n")
-        code = _wait(proc, cfg)
-        if marker_path(cfg).exists():
-            reason = "rollover"
+        code = _wait(proc, cfg, token)
+        now_token = _read_token(cfg)
+        if now_token is not None and now_token != token:
+            reason = "rollover"  # a new rollover was requested meanwhile
         else:
             reason = "ok" if code == 0 else "error"
+            if reason == "ok" and token is not None:
+                _unlink(marker_path(cfg))  # the summary did its job
     finally:
         _unlink(pid_path(cfg))
         for p in temp:
@@ -476,18 +519,18 @@ def _one_session(cfg, conn, summary, first: bool) -> str:
 
 
 def chat_loop(cfg: Config) -> None:
-    lock = acquire_lock(cfg)
+    lock = acquire_lock(cfg, retries=3)
     try:
         conn = connect(cfg)
         try:
-            summary = _pending_summary(cfg)  # left by a loop that crashed
+            summary, token = _pending(cfg)  # left by an earlier chat
             first = True
             while True:
-                reason = _one_session(cfg, conn, summary, first)
+                reason = _one_session(cfg, conn, summary, token, first)
                 first = False
                 if reason != "rollover":
                     return
-                summary = _pending_summary(cfg)
+                summary, token = _pending(cfg)
                 if summary is None:
                     return
         finally:
