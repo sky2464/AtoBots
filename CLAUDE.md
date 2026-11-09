@@ -7,6 +7,9 @@ Owner: Navid (Atoosa). Goal: a fresh VPS that Claude Code is installed on and ma
 - IP: 192.210.190.169, SSH port 22
 - Debian 13 (trixie) 64-bit, 2 vCPU, 2 GB RAM, 35 GB disk
 - Freshly reset on 2026-11-08 (all old data and the old `adminuser` are gone)
+- Company home: `~/Atoosa` (company Atoosa; renamed from DTbyNavid on 2026-11-09). DecisionTreeByNavid is one product of the company
+- Engine: `~/ClaudeBot` (`engine/`); `cb` is linked into `/usr/local/bin`, `CLAUDEBOT_HOME=/home/claude/Atoosa` (also in `/etc/claudebot.env`)
+- Navid talks to Admin with `cb chat`
 
 ## Access from this Mac
 - SSH alias: `ssh atoosa-vps` → user `claude`, key `~/.ssh/claude_vps_ed25519` (dedicated key for Claude; revoke it by deleting its line in the server's `~/.ssh/authorized_keys`)
