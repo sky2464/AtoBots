@@ -137,8 +137,8 @@ if grep -qs '^TELEGRAM_BOT_TOKEN=.' "$TELEGRAM_ENV"; then
     fi
 else
     echo "Not enabled: $ADMIN_UNIT (always-on Admin with Telegram). Missing:"
-    echo "  the bot token in $TELEGRAM_ENV (run /telegram:configure <token>"
-    echo "  in a claude session in $HOME_DIR/bots/admin, then pair; see CLAUDE.md)"
+    echo "  the bot token in $TELEGRAM_ENV. Save it from a plain shell (never"
+    echo "  inside a claude session); the exact command is in CLAUDE.md."
     echo "  When ready: sudo systemctl enable --now $ADMIN_UNIT"
 fi
 
