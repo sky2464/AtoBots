@@ -51,7 +51,6 @@ SERVICES=(claudebot-dispatcher.service)
 # The always-on Admin (Telegram) is installed but enabled only once the bot
 # token is configured: enabling makes it start at every boot.
 ADMIN_UNIT=claudebot-admin.service
-TELEGRAM_ENV=$HOME/.claude/channels/telegram/.env
 TIMERS=(claudebot-backup.timer claudebot-doctor.timer)
 
 # 0. Check everything we need before changing anything, so this either does
@@ -125,21 +124,18 @@ for unit in "${SERVICES[@]}" "${TIMERS[@]}"; do
     fi
 done
 
-# The always-on Admin: only with a configured Telegram token (presence is
-# checked; the value is never read or printed).
-if grep -qs '^TELEGRAM_BOT_TOKEN=.' "$TELEGRAM_ENV"; then
+# The always-on Admin (Telegram). Enabling makes it start at every boot, so it
+# is enabled and started only with --start and only when the bot token is in
+# the secure store (name only is checked; the value is never read here).
+if [ "$START" -eq 1 ] && "$ENGINE_DIR/bin/cb" secret list 2>/dev/null | grep -q '^telegram-bot[[:space:]]'; then
     sudo systemctl enable "$ADMIN_UNIT"
-    if [ "$START" -eq 1 ]; then
-        sudo systemctl restart "$ADMIN_UNIT"
-        echo "Started $ADMIN_UNIT (attach: tmux attach -t admin-live)"
-    else
-        echo "Enabled $ADMIN_UNIT (not started)"
-    fi
+    sudo systemctl restart "$ADMIN_UNIT"
+    echo "Started $ADMIN_UNIT (attach: tmux attach -t admin-live)"
 else
-    echo "Not enabled: $ADMIN_UNIT (always-on Admin with Telegram). Missing:"
-    echo "  the bot token in $TELEGRAM_ENV. Save it from a plain shell (never"
-    echo "  inside a claude session); the exact command is in CLAUDE.md."
-    echo "  When ready: sudo systemctl enable --now $ADMIN_UNIT"
+    echo "Not enabled or started: $ADMIN_UNIT (always-on Admin with Telegram)."
+    echo "  Needs the bot token in the secure store: cb secret add telegram-bot --kind token"
+    echo "  and pairing done (see CLAUDE.md). Then: $0 --start ... or"
+    echo "  sudo systemctl enable --now $ADMIN_UNIT"
 fi
 
 echo "Done. Open a new shell (or run: source ~/.bashrc), then try: cb status"

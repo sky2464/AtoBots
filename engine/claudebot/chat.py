@@ -528,7 +528,7 @@ def _one_session(cfg, conn, summary, token, first: bool, live=None) -> str:
         env = dict(os.environ, CB_BOT=BOT, CLAUDEBOT_HOME=str(cfg.home),
                    CB_SESSION_ID=session_id)
         if live:
-            env.update(live.env)
+            env.update(live.session_env(cfg, conn))
         env.pop(TOKEN_ENV, None)
         if token:
             env[TOKEN_ENV] = token
@@ -555,6 +555,8 @@ def _one_session(cfg, conn, summary, token, first: bool, live=None) -> str:
             if reason == "ok" and token is not None:
                 _unlink(marker_path(cfg))  # the summary did its job
     finally:
+        if live:
+            live.cleanup()
         _unlink(pid_path(cfg))
         for p in temp:
             _unlink(p)

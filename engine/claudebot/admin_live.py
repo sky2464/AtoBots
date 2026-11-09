@@ -22,12 +22,14 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import activity, bots, chat
+from . import activity, bots, chat, store
 from .config import Config
 from .db import connect, utcnow
 
 SESSION = "admin-live"
 CHANNEL = "plugin:telegram@claude-plugins-official"
+TOKEN_VAR = "TELEGRAM_BOT_TOKEN"
+TOKEN_SECRET = "telegram-bot"  # name in the secure store (cb secret add)
 CHECK_KEY = "admin_live.last_check"
 STATE_DIRNAME = ".admin-live"
 RESTART_DELAY = 10          # seconds before claude is started again
@@ -70,6 +72,36 @@ class Live:
     channels: list = field(default_factory=lambda: [CHANNEL])
     env: dict = field(default_factory=dict)
     stop: threading.Event = field(default_factory=threading.Event)
+    token_path: Path | None = None
+
+    def session_env(self, cfg, conn) -> dict:
+        """Called before each claude start. The bot token comes from the
+        secure store into the plugin's own .env file, mode 600, for as long
+        as the session runs (`cleanup` removes it); the plugin does not get
+        it from claude's environment. The use is recorded by name. Without
+        the secret, an .env the Owner made by hand is left alone."""
+        try:
+            got = store.use_env(cfg, conn, chat.BOT,
+                                {TOKEN_VAR: TOKEN_SECRET})
+            path = token_file()
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            chat._write_private(path, f"{TOKEN_VAR}={got[TOKEN_VAR]}\n")
+            self.token_path = path
+        except (KeyError, PermissionError, RuntimeError, ValueError, OSError,
+                UnicodeDecodeError) as e:
+            activity.record(conn, chat.BOT, "admin-live.no-token",
+                            f"{TOKEN_SECRET} not read from the store "
+                            f"({type(e).__name__})")
+        return dict(self.env)
+
+    def cleanup(self) -> None:
+        """Remove the token file this process wrote."""
+        path, self.token_path = self.token_path, None
+        if path is not None:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
 
     def compose(self, cfg, conn, brief_text: str, summary) -> str:
         parts = [bots.identity_prompt(cfg, conn, chat.BOT), LIVE_PROMPT
@@ -87,7 +119,18 @@ class Live:
         # The user-level settings are not read (--setting-sources), so the
         # bypass warning would otherwise wait for a keypress on every start.
         d["skipDangerousModePermissionPrompt"] = True
+        # Enabled for this session only: regular Admin runs do not load it.
+        d["enabledPlugins"] = {CHANNEL.removeprefix("plugin:"): True}
         return d
+
+
+def token_file() -> Path:
+    """Where the Telegram plugin reads its token (same rule as the plugin)."""
+    d = os.environ.get("TELEGRAM_STATE_DIR")
+    if d:
+        return Path(d) / ".env"
+    base = os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude")
+    return Path(base) / "channels" / "telegram" / ".env"
 
 
 def state_dir(cfg: Config) -> Path:
@@ -161,6 +204,7 @@ def serve(cfg: Config) -> int:
     try:
         serve_loop(cfg, live, conn)
     finally:
+        live.cleanup()
         conn.close()
         os.close(lock)
     return 0

@@ -264,6 +264,31 @@ def run_with(cfg: Config, conn, actor: str, env_map: dict, argv: list,
     return rc
 
 
+def use_env(cfg: Config, conn, actor: str, env_map: dict,
+            decision: str | None = None) -> dict:
+    """Decrypt secrets into an env dict for a child process that must keep
+    its terminal (the always-on Admin), so output cannot be masked. Same
+    checks and the same `secret.use` record, by name, as run_with. Raises
+    KeyError for an unknown name."""
+    idx = _read_index(cfg)
+    for var, name in env_map.items():
+        if name not in idx:
+            raise KeyError(name)
+    for name in env_map.values():
+        if idx[name]["owner_order_only"]:
+            ok = bool(decision) and conn.execute(
+                "SELECT 1 FROM decisions WHERE id=?", (decision,)).fetchone()
+            if not ok:
+                activity.record(conn, actor, "secret.refused", name, decision)
+                raise PermissionError(
+                    f"{name} is owner-order-only: a recorded decision is "
+                    "needed")
+    out = {var: _reveal(cfg, name).decode() for var, name in env_map.items()}
+    for name in env_map.values():
+        activity.record(conn, actor, "secret.use", name, decision)
+    return out
+
+
 # ---- CLI wiring -----------------------------------------------------------
 
 def _actor() -> str:
