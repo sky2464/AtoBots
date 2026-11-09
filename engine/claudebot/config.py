@@ -27,9 +27,14 @@ class Config:
     archive_offserver_pct: int = 70
     default_model: str = "sonnet"
     claude_bin: str = "/home/claude/.local/bin/claude"
+    claude_projects_dir: Path | None = None
 
     def __post_init__(self):
         self.home = Path(self.home)
+        if self.claude_projects_dir is None:
+            # where Claude Code keeps session transcripts for the claude user
+            self.claude_projects_dir = Path.home() / ".claude" / "projects"
+        self.claude_projects_dir = Path(self.claude_projects_dir)
 
     @classmethod
     def load(cls) -> "Config":

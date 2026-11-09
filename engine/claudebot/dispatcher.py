@@ -13,7 +13,7 @@ import sys
 import threading
 from datetime import datetime, timedelta
 
-from . import (activity, bots, gitlog, items, messages, requests, routines,
+from . import (activity, archive, bots, gitlog, items, messages, requests, routines,
                runner, search)
 from .config import Config
 from .db import connect, ct_display, tx, utcnow
@@ -65,7 +65,9 @@ class Dispatcher:
     def __init__(self, cfg: Config, run_fn=runner.run, mem_fn=available_mb,
                  clock=utcnow, owner_fn=lambda: False, routines_fn=None,
                  commit_fn=gitlog.commit_run,
-                 reindex_fn=search.reindex_records):
+                 reindex_fn=search.reindex_records,
+                 archive_fn=archive.archive_transcript,
+                 daily_fn=archive.daily):
         """`routines_fn(cfg, conn, now)` fires due routines by queueing
         messages (Task 10). `owner_fn()` says whether the Owner is connected
         to a chat (Task 12)."""
@@ -74,6 +76,7 @@ class Dispatcher:
         self.owner_fn = owner_fn
         self.routines_fn = routines_fn
         self.commit_fn, self.reindex_fn = commit_fn, reindex_fn
+        self.archive_fn, self.daily_fn = archive_fn, daily_fn
         self._tl = threading.local()
         self._lock = threading.Lock()
         self._running: dict[str, _Worker] = {}
@@ -296,6 +299,33 @@ class Dispatcher:
             _log(conn, "finish.failed", f"run {run_id}: {e}",
                  str(run_id) if run_id else None)
         self._commit(conn, w.bot.name, w.msgs, run_id)
+        self._archive(conn, run_id)
+
+    def _archive(self, conn, run_id) -> None:
+        """Move the run's transcript to the archive; a failure is logged, never
+        fails the run."""
+        if not run_id:
+            return
+        try:
+            self.archive_fn(self.cfg, conn, run_id)
+        except Exception as e:  # noqa: BLE001
+            _log(conn, "archive.failed", f"run {run_id}: {type(e).__name__}: {e}",
+                 str(run_id))
+
+    def _archive_daily(self, conn, now) -> None:
+        """Archive old records and check Memory caps once a day."""
+        today = now[:10]
+        r = conn.execute("SELECT value FROM meta WHERE key=?",
+                         (archive.DAILY_KEY,)).fetchone()
+        if r is not None and r["value"] == today:
+            return
+        # Marked first, so a failure is retried tomorrow, not every pass.
+        conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?,?)",
+                     (archive.DAILY_KEY, today))
+        try:
+            self.daily_fn(self.cfg, conn, now)
+        except Exception as e:  # noqa: BLE001
+            _log(conn, "archive.daily_failed", f"{type(e).__name__}: {e}")
 
     # ---- the pass ----
 
@@ -308,6 +338,8 @@ class Dispatcher:
                            ("wake_assigned",
                             lambda: self._wake_assigned(conn, now)),
                            ("wake_admin", lambda: self._wake_admin(conn, now)),
+                           ("archive_daily",
+                            lambda: self._archive_daily(conn, now)),
                            ("reindex", lambda: self._reindex(conn))):
             try:
                 step()

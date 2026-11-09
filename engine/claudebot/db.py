@@ -20,13 +20,13 @@ CREATE TABLE IF NOT EXISTS items(
   archived_at TEXT
 );
 CREATE TABLE IF NOT EXISTS messages(
-  id INTEGER PRIMARY KEY, from_bot TEXT, to_bot TEXT, item_id TEXT, kind TEXT,
+  id INTEGER PRIMARY KEY AUTOINCREMENT, from_bot TEXT, to_bot TEXT, item_id TEXT, kind TEXT,
   subject TEXT, body TEXT, priority TEXT, level TEXT, effort TEXT, hop INT,
   chain_id TEXT, dedupe_key TEXT UNIQUE, status TEXT, attempts INT DEFAULT 0,
   lease_until TEXT, run_id INT, created_at TEXT, done_at TEXT
 );
 CREATE TABLE IF NOT EXISTS owner_requests(
-  id INTEGER PRIMARY KEY, text TEXT, session_id TEXT, received_at TEXT
+  id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT, session_id TEXT, received_at TEXT
 );
 CREATE TABLE IF NOT EXISTS request_items(
   request_id INT, item_id TEXT, PRIMARY KEY(request_id, item_id)
@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS decisions(
   said_at TEXT, session TEXT, recorded_by TEXT, created_at TEXT
 );
 CREATE TABLE IF NOT EXISTS runs(
-  id INTEGER PRIMARY KEY, bot TEXT, session_id TEXT, lane TEXT, started_at TEXT,
+  id INTEGER PRIMARY KEY AUTOINCREMENT, bot TEXT, session_id TEXT, lane TEXT, started_at TEXT,
   ended_at TEXT, exit_code INT, reason TEXT, input_tokens INT, output_tokens INT,
   commit_sha TEXT
 );

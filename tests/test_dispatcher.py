@@ -93,7 +93,9 @@ class Base(unittest.TestCase):
             mem_fn=lambda: self.mem, clock=self.clock,
             owner_fn=lambda: self.owner,
             commit_fn=kw.pop("commit_fn", commit),
-            reindex_fn=kw.pop("reindex_fn", reindex), **kw)
+            reindex_fn=kw.pop("reindex_fn", reindex),
+            archive_fn=kw.pop("archive_fn", lambda *a: None),
+            daily_fn=kw.pop("daily_fn", lambda *a: None), **kw)
         self.addCleanup(d.close)
         return d
 
