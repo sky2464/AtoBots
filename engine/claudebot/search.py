@@ -246,7 +246,7 @@ def search(cfg: Config, query: str, kind: str | None = None,
         sql += " AND bot=?"
         args.append(bot)
     sql += " ORDER BY rank LIMIT ?"
-    args.append(int(limit))
+    args.append(max(1, int(limit)))
     sc = _open(cfg)
     try:
         rows = sc.execute(sql, args).fetchall()

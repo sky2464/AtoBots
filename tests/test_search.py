@@ -107,9 +107,11 @@ class SearchTests(SearchBase):
         self.write(".secrets/k.md", "hiddentoken")
         self.write("bots/backend/SOUL.md", "hiddentoken")
         self.write("bots/backend/PERSONA.md", "hiddentoken")
-        self.write("knowledge/.secrets/x.md", "visibletoken-ok")
+        self.write("knowledge/.secrets/x.md", "hiddentoken")
+        self.write("knowledge/ok.md", "# Ok\n\nvisibletoken")
         search.reindex_files(self.cfg)
         self.assertEqual(search.search(self.cfg, "hiddentoken"), [])
+        self.assertEqual(len(search.search(self.cfg, "visibletoken")), 1)
 
     def test_index_doc_replaces_same_ref_and_survives_missing_source(self):
         search.index_doc(self.cfg, "transcript", "t1", "backend", "Chat", "alpha")
@@ -118,6 +120,13 @@ class SearchTests(SearchBase):
         self.assertEqual(len(search.search(self.cfg, "beta")), 1)
         with self.assertRaises(ValueError):
             search.index_doc(self.cfg, "nope", "x", None, "t", "b")
+
+    def test_limit_is_clamped_to_at_least_one(self):
+        self.write("knowledge/a.md", "# A\n\nsame")
+        self.write("knowledge/b.md", "# B\n\nsame")
+        search.reindex_files(self.cfg)
+        self.assertEqual(len(search.search(self.cfg, "same", limit=-1)), 1)
+        self.assertEqual(len(search.search(self.cfg, "same", limit=0)), 1)
 
     def test_deleted_file_row_removed(self):
         p = self.write("knowledge/a.md", "# A\n\ngonetoken")
@@ -142,7 +151,6 @@ class RecordTests(SearchBase):
         self.assertEqual(search.search(self.cfg, "sqlite",
                                        kind="decision")[0].ref, d)
         # an edited item is re-indexed, not duplicated
-        time.sleep(1.1)
         self.conn.execute("UPDATE items SET title='Calibrate gadget',"
                           " updated_at=? WHERE id=?",
                           ("2099-01-01T00:00:00+00:00", t))
