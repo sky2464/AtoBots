@@ -79,26 +79,36 @@ def checks(cfg: Config, conn: sqlite3.Connection | None = None,
             conn = connect(cfg)
         out.extend(_db_checks(cfg, conn, now))
         out.extend(_backup_checks(cfg, conn, now))
-        if mb is not None:
-            out.extend(_memory_check(cfg, conn, mb, track))
     except sqlite3.Error as e:
         out.append(Finding("database", f"The database could not be opened or "
                            f"read: {e}"))
     finally:
         if own and conn is not None:
             conn.close()
+    if mb is not None:
+        out.extend(_memory_check(cfg, conn, mb, track, own))
     return out
 
 
-def _memory_check(cfg, conn, mb: int, track: bool) -> list[Finding]:
-    """Low memory is a finding only after MEM_READINGS low readings in a row."""
+def _memory_check(cfg, conn, mb: int, track: bool, own: bool
+                  ) -> list[Finding]:
+    """Low memory is a finding only after MEM_READINGS low readings in a row.
+    The count lives in the database; if that is unusable, one low reading
+    counts at once, so a broken database cannot hide the problem."""
+    low = mb < cfg.memory_floor_mb
     try:
-        n = int(backup.meta_get(conn, "doctor.mem_low") or 0)
-    except ValueError:
-        n = 0
-    n = n + 1 if mb < cfg.memory_floor_mb else 0
-    if track:
-        backup.meta_set(conn, "doctor.mem_low", str(n))
+        if own:
+            conn = connect(cfg)
+        try:
+            n = int(backup.meta_get(conn, "doctor.mem_low") or 0)
+            n = n + 1 if low else 0
+            if track:
+                backup.meta_set(conn, "doctor.mem_low", str(n))
+        finally:
+            if own:
+                conn.close()
+    except (sqlite3.Error, ValueError):
+        n = MEM_READINGS if low else 0
     if n >= MEM_READINGS:
         return [Finding("memory", "Available memory has been below the "
                         f"{cfg.memory_floor_mb} MB floor for "

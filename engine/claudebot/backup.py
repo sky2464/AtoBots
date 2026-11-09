@@ -168,21 +168,29 @@ def snapshot(cfg: Config, conn: sqlite3.Connection) -> str | None:
     or None when nothing changed since the last snapshot."""
     gitlog.ensure_repo(cfg)
     export_sql(cfg, conn)
-    held = _hold_back_unsafe(cfg)
-    if held:
-        _alert_admin(cfg, conn, "unsafe-files",
-                     "Files left out of the backup",
-                     "These files were not added to the backup (over 50 MB or "
-                     "named like a secret): " + ", ".join(held[:20])
-                     + (f" and {len(held) - 20} more" if len(held) > 20 else "")
-                     + ". They stay on the server only.")
+    held, tracked = _hold_back_unsafe(cfg)
+    kept = [h for h in held if h not in tracked]
+    for names, key, subject, text in (
+            (kept, "unsafe-files", "Files left out of the backup",
+             "These files were not added to the backup (over 50 MB or named "
+             "like a secret); they stay on the server only: "),
+            (tracked, "unsafe-tracked", "Large or secret-looking files ARE in "
+             "the backup",
+             "These files are already tracked in Git, so they are still being "
+             "committed and pushed (over 50 MB or named like a secret). Admin "
+             "needs to act, for example `git rm --cached` and then tell the "
+             "Owner: ")):
+        if names:
+            _alert_admin(cfg, conn, key, subject, text + ", ".join(names[:20])
+                         + (f" and {len(names) - 20} more"
+                            if len(names) > 20 else "") + ".")
     sha = gitlog.commit_sweep(cfg, "Hourly snapshot")
     _git(cfg.home, "gc", "--auto", "-q")
     meta_set(conn, "backup.last_snapshot_ok", utcnow())
     return sha
 
 
-def _hold_back_unsafe(cfg: Config) -> list:
+def _hold_back_unsafe(cfg: Config) -> tuple:
     """Keep files over 50 MB or named like secrets out of the commit: they go
     in .git/info/exclude (local, never pushed). Returns their paths."""
     exclude = cfg.home / ".git" / "info" / "exclude"
@@ -192,6 +200,9 @@ def _hold_back_unsafe(cfg: Config) -> list:
         a, b = lines.index(_EXCLUDE_BEGIN), lines.index(_EXCLUDE_END)
         lines = lines[:a] + lines[b + 1:]
     lines = [x for x in lines if x]
+    # Clear our block on disk first: while it is there, git no longer lists
+    # the files it names, and they would drop out of `held` and get committed.
+    exclude.write_text("\n".join(lines) + "\n" if lines else "")
     out = _git_ok(cfg.home, "ls-files", "-z", "--others", "--modified",
                   "--exclude-standard")
     held, tracked = [], set(_git_ok(cfg.home, "ls-files", "-z").split("\0"))
@@ -212,7 +223,7 @@ def _hold_back_unsafe(cfg: Config) -> list:
             block.append("/" + re.sub(r"([*?\[\]!#\\])", r"\\\1", rel))
     block.append(_EXCLUDE_END)
     exclude.write_text("\n".join(lines + block) + "\n")
-    return held
+    return held, sorted(set(held) & tracked)
 
 
 def _secret_values(cfg: Config) -> dict:
