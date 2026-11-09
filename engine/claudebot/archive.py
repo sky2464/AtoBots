@@ -19,6 +19,7 @@ import re
 import shutil
 import sqlite3
 import sys
+import tarfile
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -225,7 +226,13 @@ def _archive_transcript(cfg, conn, run_id):
                                                         after.st_mtime_ns):
                 dest.unlink()
                 raise ArchiveError("transcript changed while it was being copied")
-    except (OSError, EOFError, ArchiveError) as e:
+        sdir = src.parent / src.stem  # subagent files, if the session has any
+        if sdir.is_dir() and not sdir.is_symlink():
+            _archive_session_dir(sdir, dest.with_name(
+                f"{run['bot']}-{run_id}.subagents.tar.gz"))
+        else:
+            sdir = None
+    except (OSError, EOFError, tarfile.TarError, ArchiveError) as e:
         _transcript_failed(cfg, conn, run, e)
         raise ArchiveError(str(e)) from e
     try:  # 2. index
@@ -238,7 +245,10 @@ def _archive_transcript(cfg, conn, run_id):
               str(run_id))
         raise ArchiveError(f"copy verified, indexing failed (will retry): {e}"
                            ) from e
-    try:  # 3. remove the original
+    try:  # 3. remove the originals (directory first: the session file is what
+        # the retry sweep looks for)
+        if sdir is not None:
+            shutil.rmtree(sdir)
         os.unlink(src)
     except OSError as e:
         _note(conn, "archive.unlink_failed",
@@ -248,6 +258,56 @@ def _archive_transcript(cfg, conn, run_id):
     _note(conn, "archive.transcript", f"run {run_id} ({run['bot']}) -> {rel}",
           str(run_id))
     return dest
+
+
+def _dir_manifest(root: Path) -> list:
+    """(relative path, sha256 or None for a directory) for everything under
+    root. Links and special files are refused, not followed."""
+    out = []
+    for p in sorted(root.rglob("*")):
+        rel = p.relative_to(root).as_posix()
+        if p.is_symlink() or not (p.is_dir() or p.is_file()):
+            raise ArchiveError(f"{rel}: not a plain file or directory")
+        out.append((rel, None if p.is_dir() else _sha_file(p)))
+    return out
+
+
+def _tar_manifest(path: Path, top: str) -> list:
+    out = []
+    with tarfile.open(path, "r:gz") as t:
+        for m in sorted(t.getmembers(), key=lambda m: m.name):
+            if m.name == top:
+                continue
+            if not (m.isdir() or m.isfile()):
+                raise ArchiveError(f"{m.name}: unexpected entry in archive")
+            h = None
+            if m.isfile():
+                h = hashlib.sha256(t.extractfile(m).read()).hexdigest()
+            out.append((m.name[len(top) + 1:], h))
+    return sorted(out)
+
+
+def _archive_session_dir(src_dir: Path, dest: Path) -> None:
+    """Tar+gzip the session's directory (subagent files) to dest and verify
+    every entry against the source before dest is put in place."""
+    top = src_dir.name
+    before = _dir_manifest(src_dir)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".tmp")
+    try:
+        with tarfile.open(tmp, "w:gz") as t:
+            t.add(src_dir, arcname=top)
+        _fsync_path(tmp)
+        if _tar_manifest(tmp, top) != before or _dir_manifest(src_dir) != before:
+            raise ArchiveError(f"copy of {dest.name} did not match the original")
+        os.replace(tmp, dest)
+        _fsync_path(dest.parent)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def _sha_file(path: Path) -> str:
@@ -523,6 +583,12 @@ def reindex_archive(cfg: Config) -> int:
     return search.index_docs(cfg, _archive_docs(cfg))
 
 
+def reindex_all(cfg: Config, conn: sqlite3.Connection) -> int:
+    """Rebuild search.db completely: notes, live records and the archive."""
+    return (search.reindex_files(cfg) + search.reindex_records(cfg, conn)
+            + reindex_archive(cfg))
+
+
 # ---- disk and retrieval ----
 
 def archive_bytes(cfg: Config) -> tuple:
@@ -597,6 +663,13 @@ def _cmd_status(args):
     return _run(go)
 
 
+def _cmd_reindex(args):
+    def go(cfg, conn):
+        print(f"reindexed: {reindex_all(cfg, conn)}")
+        return 0
+    return _run(go)
+
+
 def _cmd_fetch(args):
     def go(cfg, conn):
         print(fetch(cfg, args.ref))
@@ -611,6 +684,8 @@ def register(subparsers) -> None:
                    ).set_defaults(func=_cmd_run)
     sub.add_parser("status", help="archive size and off-server need"
                    ).set_defaults(func=_cmd_status)
+    sub.add_parser("reindex", help="rebuild the search index, archive included"
+                   ).set_defaults(func=_cmd_reindex)
     f = sub.add_parser("fetch", help="local path of an archived file")
     f.add_argument("ref")
     f.set_defaults(func=_cmd_fetch)

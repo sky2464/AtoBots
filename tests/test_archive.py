@@ -273,6 +273,68 @@ class RetryTests(Base):
         self.assertEqual(archive.archive_old_records(self.cfg, self.conn, iso(0))["runs"], 1)
 
 
+class SubagentDirTests(Base):
+    SID = "11111111-2222-3333-4444-555555555555"
+
+    def make_dir(self, path):
+        d = path.parent / self.SID
+        (d / "subagents").mkdir(parents=True)
+        (d / "subagents" / "agent-1.jsonl").write_text('{"x":"platypus secret"}\n')
+        (d / "note.txt").write_text("hello")
+        return d
+
+    def test_session_directory_is_archived_and_removed(self):
+        import tarfile
+        run_id, path = self.make_run(lines=CHAT)
+        d = self.make_dir(path)
+        dest = archive.archive_transcript(self.cfg, self.conn, run_id)
+        tar = dest.with_name(f"backend-{run_id}.subagents.tar.gz")
+        self.assertTrue(tar.is_file())
+        with tarfile.open(tar) as t:
+            names = t.getnames()
+            self.assertIn(f"{self.SID}/subagents/agent-1.jsonl", names)
+            self.assertIn("platypus", t.extractfile(
+                f"{self.SID}/subagents/agent-1.jsonl").read().decode())
+        self.assertFalse(d.exists())
+        self.assertFalse(path.exists())
+        self.assertEqual(search.search(self.cfg, "platypus"), [])  # not indexed
+        self.assertEqual(self.admin_notes(), [])
+
+    def admin_notes(self):
+        return self.conn.execute(
+            "SELECT * FROM messages WHERE to_bot='admin'").fetchall()
+
+    def test_failed_tar_keeps_everything_and_is_retried(self):
+        import tarfile
+        run_id, path = self.make_run(lines=CHAT)
+        d = self.make_dir(path)
+        with mock.patch.object(tarfile, "open", side_effect=OSError("disk full")):
+            with self.assertRaises(archive.ArchiveError):
+                archive.archive_transcript(self.cfg, self.conn, run_id)
+        self.assertTrue(d.exists() and path.exists())
+        self.assertEqual(list(self.cfg.archive_dir.rglob("*.tmp")), [])
+        self.assertEqual(len(self.admin_notes()), 1)
+        self.assertEqual(archive.sweep_transcripts(self.cfg, self.conn), 1)
+        self.assertFalse(d.exists() or path.exists())
+
+    def test_symlink_in_directory_is_refused(self):
+        run_id, path = self.make_run(lines=CHAT)
+        d = self.make_dir(path)
+        os.symlink("/etc/hosts", d / "link")
+        with self.assertRaises(archive.ArchiveError):
+            archive.archive_transcript(self.cfg, self.conn, run_id)
+        self.assertTrue(d.exists() and path.exists())
+
+    def test_rebuild_ignores_subagent_archives(self):
+        run_id, path = self.make_run(lines=CHAT)
+        self.make_dir(path)
+        archive.archive_transcript(self.cfg, self.conn, run_id)
+        self.cfg.search_path.unlink()
+        archive.reindex_archive(self.cfg)
+        self.assertEqual(search.search(self.cfg, "platypus"), [])
+        self.assertEqual(len(search.search(self.cfg, "zebrafish")), 1)
+
+
 class RebuildTests(Base):
     def test_search_rebuilds_from_archive(self):
         item = self.old_item("Quokka migration", days=60)
@@ -306,9 +368,16 @@ class RebuildTests(Base):
         self.old_item("Quokka", days=60)
         archive.archive_old_records(self.cfg, self.conn, iso(0))
         self.cfg.search_path.unlink()
-        rc, out, err = self.cb("search", "reindex", "--archive")
+        rc, out, err = self.cb("archive", "reindex")
         self.assertEqual(rc, 0, err)
         self.assertTrue(search.search(self.cfg, "Quokka", kind="item"))
+
+    def test_search_for_the_word_reindex_is_a_plain_search(self):
+        id = items.new(self.cfg, self.conn, "Reindex the widgets", "backend")
+        rc, out, err = self.cb("search", "reindex")
+        self.assertEqual(rc, 0, err)
+        self.assertIn(id, out)
+        self.assertNotIn("reindexed:", out)
 
 
 class RecordTests(Base):

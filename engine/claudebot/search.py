@@ -328,13 +328,6 @@ def _run(fn):
 
 def _cmd_search(args):
     def go(cfg, conn):
-        if args.query == "reindex":  # cb search reindex [--archive]
-            from . import archive
-            n = reindex_files(cfg) + reindex_records(cfg, conn)
-            if args.archive:
-                n += archive.reindex_archive(cfg)
-            print(f"reindexed: {n}")
-            return 0
         reindex_files(cfg)
         reindex_records(cfg, conn)
         hits = search(cfg, args.query, kind=args.kind, bot=args.bot,
@@ -364,8 +357,6 @@ def register(subparsers) -> None:
     s.add_argument("--kind", choices=KINDS)
     s.add_argument("--bot")
     s.add_argument("--limit", type=int, default=10)
-    s.add_argument("--archive", action="store_true",
-                   help="with `reindex`: also re-read archive/")
     s.set_defaults(func=_cmd_search)
     n = subparsers.add_parser("note", help="company knowledge notes")
     nsub = n.add_subparsers(dest="note_command", required=True)
