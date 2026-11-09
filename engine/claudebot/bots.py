@@ -95,6 +95,28 @@ def _link_skills(cfg: Config, name: str, skills) -> None:
         (d / s).symlink_to(src)
 
 
+def write_settings(cfg: Config, name: str) -> None:
+    """Keep ancestor CLAUDE.md files (for example ~/CLAUDE.md, meant for the
+    Owner's own server Claude) out of this bot's runs and chats, by listing
+    them in `claudeMdExcludes` in the bot's project settings. Other keys in
+    the file are kept. Safe to repeat."""
+    d = _bot_dir(cfg, name)
+    path = d / ".claude" / "settings.json"
+    try:
+        data = json.loads(path.read_text()) if path.is_file() else {}
+    except ValueError:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    ancestors = [str(p / f) for p in d.resolve().parents
+                 for f in ("CLAUDE.md", "CLAUDE.local.md")]
+    if data.get("claudeMdExcludes") == ancestors:
+        return
+    data["claudeMdExcludes"] = ancestors
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n")
+
+
 def get(conn: sqlite3.Connection, name: str) -> Bot:
     _check_name(name)
     r = conn.execute("SELECT * FROM bots WHERE name=?", (name,)).fetchone()
@@ -133,6 +155,7 @@ def create(cfg: Config, conn: sqlite3.Connection, name: str, role: str,
         (d / "PERSONA.md").write_text(persona)
         (d / "MEMORY.md").write_text("# Memory\n")
         _link_skills(cfg, name, skills)
+        write_settings(cfg, name)
         with tx(conn):
             conn.execute(
                 "INSERT INTO bots(name, role, org, reports_to, model, effort, "

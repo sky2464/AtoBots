@@ -157,6 +157,14 @@ def reply(conn: sqlite3.Connection, frm: str, message_id: int, body: str,
         if m["to_bot"] != frm:
             raise ValueError(f"message {message_id} was not sent to {frm}")
         _check_body(body)
+        if m["from_bot"] == SYSTEM:
+            # Nobody to answer: note it in activity, mark it answered, send nothing.
+            conn.execute("UPDATE messages SET status='done', done_at=COALESCE("
+                         "done_at, ?), lease_until=NULL WHERE id=?",
+                         (utcnow(), message_id))
+            activity.record(conn, frm, "message.reply_to_system",
+                            f"{message_id}: {body[:200]}", str(message_id))
+            return 0
         text = body
         if file:
             text += f"\n\nAnswer file: {file}"

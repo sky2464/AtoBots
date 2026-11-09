@@ -63,6 +63,9 @@ def init_company(cfg: Config, company: str) -> list[str]:
             shutil.copyfile(be / "MEMORY.md",
                             cfg.bots_dir / "backend" / "MEMORY.md")
             done.append("backend")
+        for st in bots.STATUSES:  # existing bots too
+            for b in bots.list_bots(conn, st, include_reserved=True):
+                bots.write_settings(cfg, b.name)
     finally:
         conn.close()
     gitlog.commit_sweep(cfg, f"Set up {company}" if not existed
