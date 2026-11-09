@@ -43,3 +43,23 @@ Steps 2 and 4 to 12 of the brief need the Owner and were not run.
 
 ## Real Claude calls used
 1 Admin Sonnet run, 2 Haiku runs, 1 Opus run (the first Opus attempt failed before reaching the API: claude not on PATH).
+
+## Controller rulings round (2026-11-09)
+
+### 1. `cb reply` to a `system` message - PASS
+`messages.reply` now, for a message from `system`, marks it done, records activity `message.reply_to_system` and sends nothing; `cb reply` exits 0 and prints 0. Checked locally on a temp company (exit 0, status done, activity row). Test sender on the server was `backend`, not `system`.
+
+### 2. Ancestor CLAUDE.md excluded - PASS
+- Docs (https://code.claude.com/docs/en/memory): `claudeMdExcludes` can be set at any settings layer including project; patterns are absolute-path globs. The page does not say how `--setting-sources project,local` interacts, so it was tested.
+- `bots.write_settings` writes `claudeMdExcludes` (CLAUDE.md and CLAUDE.local.md of every ancestor of the bot folder) into each bot's `.claude/settings.json`, keeping other keys. `bots.create` calls it, and `cb init` re-applies it to all existing bots. `cb chat` runs in admin's folder so it is covered by the same file.
+- Server proof: run 1 (before) had an `instructions` attachment listing /home/claude/CLAUDE.md; run 2 (after, same prompt) has no instructions attachment and the text "This server" is gone from the transcript.
+- Cache-creation tokens, first request: 9,171 before, **8,702 after** (-469). Whole run: about 10,382 before, 10,134 after (8,702 + 1,270 + 97 + 65).
+- Suite: 274 of 274 OK on the server (113 s) after the change; no tests needed updating. Dispatcher restarted with `sudo systemctl restart claudebot-dispatcher`; active.
+- Side effect of the test: Admin and backend answered each other's "Preflight2" messages until the hop limit stopped the chain (runs 2 to 11, all exit 0, reason ok). The hop limit worked, but a test message to a bot that replies starts a conversation. The backend bot also filed item T-0001 (no off-server backup) from `cb doctor`, which is real.
+
+### 3. Backup access prepared (no GitHub access used, no remotes added) - PASS
+- Created passphrase-free ed25519 keys ~/.ssh/claudebot_backup and ~/.ssh/claudebot_archive (mode 600) with comments claudebot-backup@ and claudebot-archive@racknerd-5fc4050. Backup of config: ~/.ssh/config.bak-claudebot.
+- Appended Host blocks `github-claudebot-backup` and `github-claudebot-archive` (HostName github.com, User git, IdentityFile, IdentitiesOnly yes) to ~/.ssh/config; existing lines untouched (an older `id_ed25519_github` entry was already there). `ssh -G` confirms both resolve.
+- github.com host keys added to known_hosts with ssh-keyscan. Fingerprints (ED25519 +DiY3wvv..., ECDSA p2QAMXNI..., RSA uNiVztks...) match GitHub's published list as served by https://api.github.com/meta (`ssh_key_fingerprints`, the data behind the docs page; the docs page itself was not fetched).
+- sshd/ufw hashes unchanged, fresh login OK. authorized_keys not touched.
+- Deploy keys: the Owner must add each .pub as a deploy key with write access on the matching repo (one key per repo).
