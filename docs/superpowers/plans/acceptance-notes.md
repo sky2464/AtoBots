@@ -63,3 +63,7 @@ Steps 2 and 4 to 12 of the brief need the Owner and were not run.
 - github.com host keys added to known_hosts with ssh-keyscan. Fingerprints (ED25519 +DiY3wvv..., ECDSA p2QAMXNI..., RSA uNiVztks...) match GitHub's published list as served by https://api.github.com/meta (`ssh_key_fingerprints`, the data behind the docs page; the docs page itself was not fetched).
 - sshd/ufw hashes unchanged, fresh login OK. authorized_keys not touched.
 - Deploy keys: the Owner must add each .pub as a deploy key with write access on the matching repo (one key per repo).
+
+## Task 15 round 2 (2026-11-09) - STOPPED at step 2
+- Step 1 PASS: atoosa-hub/backup and atoosa-hub/archive exist, private, empty (no branches; commits API returns 409 "Git Repository is empty"). No deploy keys present on either.
+- Step 2 FAIL: POST /repos/atoosa-hub/{backup,archive}/keys (as atoosa-bots) returned 422 "Deploy keys are disabled for this repository" for both. This is an organization-level policy (Settings > Deploy keys / Member privileges), so the Owner must enable deploy keys for atoosa-hub, or choose another auth method. Nothing changed on GitHub or on the server; steps 3 to 9 not run.
