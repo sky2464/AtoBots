@@ -1,0 +1,24 @@
+"""The `cb` command line. Each module adds its commands via register()."""
+import argparse
+import sys
+
+from . import store
+
+MODULES = [store]
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="cb")
+    sub = p.add_subparsers(dest="command", required=True)
+    for m in MODULES:
+        m.register(sub)
+    return p
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
