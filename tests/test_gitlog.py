@@ -32,48 +32,94 @@ class GitlogTests(unittest.TestCase):
         self.assertEqual(git(self.cfg, "config", "--local", "user.name").strip(),
                          "claudebot")
 
+    def write(self, rel, text="x"):
+        p = self.cfg.home / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+
     def test_commit_names_bot_and_item(self):
-        (self.cfg.home / "work" / "T-0001").mkdir(parents=True)
-        (self.cfg.home / "work" / "T-0001" / "a.md").write_text("x")
+        self.write("work/T-0001/a.md")
         sha = gitlog.commit_run(self.cfg, "backend", ["T-0001"], 7)
         self.assertEqual(sha, git(self.cfg, "rev-parse", "HEAD").strip())
         log = git(self.cfg, "log", "-1", "--format=%an <%ae>%n%cn%n%B")
         self.assertIn("backend <backend@claudebot.local>", log)
         self.assertIn("T-0001", log)
-        self.assertIn("7", log)
+        self.assertIn("run 7", log)
+
+    def test_commits_own_folders(self):
+        self.write("bots/admin/MEMORY.md")
+        self.write("knowledge/admin/n.md")
+        self.write("work/T-0002/x.md")
+        self.write("work/T-0003/y.md")
+        self.write("shared.md")
+        gitlog.commit_run(self.cfg, "admin", ["T-0002"], 1)
+        files = git(self.cfg, "ls-files").split()
+        for f in ("bots/admin/MEMORY.md", "knowledge/admin/n.md",
+                  "work/T-0002/x.md"):
+            self.assertIn(f, files)
+        self.assertNotIn("work/T-0003/y.md", files)
+        self.assertNotIn("shared.md", files)
+
+    def test_deletion_is_committed(self):
+        self.write("work/T-0001/a.md")
+        gitlog.commit_run(self.cfg, "admin", ["T-0001"], 1)
+        (self.cfg.home / "work/T-0001/a.md").unlink()
+        self.assertIsNotNone(gitlog.commit_run(self.cfg, "admin", ["T-0001"], 2))
+        self.assertNotIn("work/T-0001/a.md", git(self.cfg, "ls-files"))
 
     def test_no_changes_no_commit(self):
-        (self.cfg.home / "a.md").write_text("x")
+        self.write("bots/admin/a.md")
         self.assertIsNotNone(gitlog.commit_run(self.cfg, "admin", [], 1))
         self.assertIsNone(gitlog.commit_run(self.cfg, "admin", [], 2))
-        self.assertEqual(len(git(self.cfg, "log", "--oneline").split("\n")) - 1, 1)
+        self.assertIsNone(gitlog.commit_run(self.cfg, "nobody", ["T-9999"], 3))
+        self.assertEqual(len(git(self.cfg, "log", "--oneline").splitlines()), 1)
+
+    def test_in_progress_work_of_other_bot_not_committed(self):
+        self.write("bots/a/mine.md")
+        self.write("bots/b/wip.md")
+        gitlog.commit_run(self.cfg, "a", [], 1)
+        self.assertEqual(git(self.cfg, "ls-files").split(), ["bots/a/mine.md"])
+        self.assertIn("?? bots/b/", git(self.cfg, "status", "--porcelain"))
+        self.assertIsNotNone(gitlog.commit_run(self.cfg, "b", [], 2))
+        self.assertEqual(git(self.cfg, "log", "-1", "--format=%an",
+                             "--", "bots/b/wip.md").strip(), "b")
+
+    def test_sweep_commits_remaining_as_system(self):
+        self.write("bots/a/mine.md")
+        self.write("shared.md")
+        self.write(".secrets/token", "s3cret")
+        gitlog.commit_run(self.cfg, "a", [], 1)
+        sha = gitlog.commit_sweep(self.cfg, "snapshot")
+        self.assertEqual(sha, git(self.cfg, "rev-parse", "HEAD").strip())
+        log = git(self.cfg, "log", "-1", "--format=%an <%ae>|%s")
+        self.assertEqual(log.strip(), "system <system@claudebot.local>|snapshot")
+        files = git(self.cfg, "ls-files").split()
+        self.assertIn("shared.md", files)
+        self.assertNotIn(".secrets/token", files)
+        self.assertIsNone(gitlog.commit_sweep(self.cfg, "again"))
 
     def test_secrets_never_staged(self):
-        (self.cfg.home / ".secrets").mkdir()
-        (self.cfg.home / ".secrets" / "token").write_text("s3cret")
-        (self.cfg.home / "company.db").write_text("db")
-        (self.cfg.home / "archive").mkdir()
-        (self.cfg.home / "archive" / "t.jsonl").write_text("x")
-        (self.cfg.home / "keep.md").write_text("k")
-        gitlog.commit_run(self.cfg, "admin", [], 1)
+        self.write(".secrets/token", "s3cret")
+        self.write("company.db", "db")
+        self.write("archive/t.jsonl")
+        self.write("work/T-0001/keep.md")
+        gitlog.commit_run(self.cfg, "admin", ["T-0001"], 1)
+        gitlog.commit_sweep(self.cfg, "s")
         files = git(self.cfg, "ls-files").split()
-        self.assertIn("keep.md", files)
+        self.assertIn("work/T-0001/keep.md", files)
         for f in files:
             self.assertFalse(f.startswith((".secrets", "archive")), f)
             self.assertNotEqual(f, "company.db")
 
     def test_secrets_not_staged_even_if_gitignore_edited(self):
-        (self.cfg.home / ".gitignore").write_text("")
-        (self.cfg.home / ".secrets").mkdir()
-        (self.cfg.home / ".secrets" / "token").write_text("s3cret")
-        (self.cfg.home / "keep.md").write_text("k")
-        gitlog.commit_run(self.cfg, "admin", [], 1)
+        self.write(".gitignore", "")
+        self.write(".secrets/token", "s3cret")
+        self.write("work/T-0001/keep.md")
+        gitlog.commit_run(self.cfg, "admin", ["T-0001"], 1)
+        gitlog.commit_sweep(self.cfg, "s")
         self.assertNotIn(".secrets/token", git(self.cfg, "ls-files"))
 
     def test_parallel_commits_no_conflict(self):
-        # Both files exist before either process commits, so "stage all
-        # changes" lets the first committer take both and the second find
-        # nothing. What must hold: no git error, linear history, no change lost.
         code = (
             "import sys, time\n"
             f"sys.path.insert(0, {str(ENGINE)!r})\n"
@@ -81,26 +127,28 @@ class GitlogTests(unittest.TestCase):
             "from claudebot import gitlog\n"
             "from claudebot.config import Config\n"
             f"cfg = Config(Path({str(self.cfg.home)!r}))\n"
-            "bot = sys.argv[1]\n"
-            "(cfg.home / (bot + '.md')).write_text(bot)\n"
-            "while not ((cfg.home / 'a.md').exists() and (cfg.home / 'b.md').exists()):\n"
+            "bot, item = sys.argv[1], sys.argv[2]\n"
+            "d = cfg.home / 'work' / item\n"
+            "d.mkdir(parents=True)\n"
+            "(d / 'f.md').write_text(bot)\n"
+            "while not all((cfg.home / 'work' / i / 'f.md').exists()\n"
+            "              for i in ('T-0001', 'T-0002')):\n"
             "    time.sleep(0.01)\n"
-            "print(gitlog.commit_run(cfg, bot, ['T-0001'], 1))\n")
-        procs = [subprocess.Popen([sys.executable, "-c", code, b],
+            "print(gitlog.commit_run(cfg, bot, [item], int(item[-1])))\n")
+        procs = [subprocess.Popen([sys.executable, "-c", code, b, i],
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                  text=True) for b in ("a", "b")]
+                                  text=True)
+                 for b, i in (("a", "T-0001"), ("b", "T-0002"))]
         outs = [p.communicate(timeout=60) for p in procs]
         for p, (_, err) in zip(procs, outs):
             self.assertEqual(p.returncode, 0, err)
-        shas = [o.strip() for o, _ in outs if o.strip() != "None"]
-        self.assertGreaterEqual(len(shas), 1)
         self.assertEqual(git(self.cfg, "log", "--merges", "--oneline"), "")
-        self.assertEqual(git(self.cfg, "status", "--porcelain"), "")
-        files = git(self.cfg, "ls-files").split()
-        self.assertIn("a.md", files)
-        self.assertIn("b.md", files)
-        self.assertEqual(len(git(self.cfg, "rev-list", "HEAD").split()),
-                         len(shas))
+        self.assertEqual(git(self.cfg, "status", "--porcelain"), "?? .gitignore\n")
+        self.assertEqual(len(git(self.cfg, "rev-list", "HEAD").split()), 2)
+        for bot, item, run in (("a", "T-0001", "1"), ("b", "T-0002", "2")):
+            out = git(self.cfg, "log", "--format=%an|%s", "--",
+                      f"work/{item}/f.md").strip()
+            self.assertEqual(out, f"{bot}|{bot}: {item} (run {run})")
 
 
 if __name__ == "__main__":
