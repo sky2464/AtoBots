@@ -269,7 +269,7 @@ def _dir_manifest(root: Path) -> list:
         if p.is_symlink() or not (p.is_dir() or p.is_file()):
             raise ArchiveError(f"{rel}: not a plain file or directory")
         out.append((rel, None if p.is_dir() else _sha_file(p)))
-    return out
+    return sorted(out, key=lambda e: e[0])
 
 
 def _tar_manifest(path: Path, top: str) -> list:
@@ -284,7 +284,7 @@ def _tar_manifest(path: Path, top: str) -> list:
             if m.isfile():
                 h = hashlib.sha256(t.extractfile(m).read()).hexdigest()
             out.append((m.name[len(top) + 1:], h))
-    return sorted(out)
+    return sorted(out, key=lambda e: e[0])
 
 
 def _archive_session_dir(src_dir: Path, dest: Path) -> None:
@@ -292,6 +292,18 @@ def _archive_session_dir(src_dir: Path, dest: Path) -> None:
     every entry against the source before dest is put in place."""
     top = src_dir.name
     before = _dir_manifest(src_dir)
+    if dest.exists():
+        # A tar from an earlier attempt is never replaced (the directory may
+        # since have lost files it holds). Reuse it if it reads cleanly and
+        # covers everything still in the directory.
+        try:
+            have = set(_tar_manifest(dest, top))
+        except (OSError, EOFError, tarfile.TarError, ArchiveError) as e:
+            raise ArchiveError(f"existing {dest.name} is unreadable: {e}")
+        if not set(before) <= have:
+            raise ArchiveError(f"existing {dest.name} lacks files now in "
+                               f"{top}/; left alone")
+        return
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_name(dest.name + ".tmp")
     try:

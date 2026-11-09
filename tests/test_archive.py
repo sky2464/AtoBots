@@ -317,6 +317,40 @@ class SubagentDirTests(Base):
         self.assertEqual(archive.sweep_transcripts(self.cfg, self.conn), 1)
         self.assertFalse(d.exists() or path.exists())
 
+    def test_partial_rmtree_never_shrinks_the_tar(self):
+        import shutil
+        import tarfile
+        run_id, path = self.make_run(lines=CHAT)
+        d = self.make_dir(path)
+
+        def partial(p):
+            (Path(p) / "subagents" / "agent-1.jsonl").unlink()
+            raise OSError("busy")
+
+        with mock.patch.object(archive.shutil, "rmtree", side_effect=partial):
+            archive.archive_transcript(self.cfg, self.conn, run_id)
+        self.assertTrue(path.exists())  # sweep will retry
+        self.assertFalse((d / "subagents" / "agent-1.jsonl").exists())
+        tar = next(self.cfg.archive_dir.rglob("*.subagents.tar.gz"))
+        self.assertEqual(archive.sweep_transcripts(self.cfg, self.conn), 1)
+        self.assertFalse(d.exists() or path.exists())
+        with tarfile.open(tar) as t:
+            self.assertIn(f"{self.SID}/subagents/agent-1.jsonl", t.getnames())
+
+    def test_manifests_sort_the_same(self):
+        import tarfile
+        root = self.cfg.home / "sess"
+        (root / "a").mkdir(parents=True)
+        (root / "a" / "x").write_text("1")
+        (root / "a-b").write_text("2")
+        tar = self.cfg.home / "t.tar.gz"
+        with tarfile.open(tar, "w:gz") as t:
+            t.add(root, arcname="sess")
+        self.assertEqual(archive._dir_manifest(root),
+                         archive._tar_manifest(tar, "sess"))
+        self.assertEqual([e[0] for e in archive._dir_manifest(root)],
+                         ["a", "a-b", "a/x"])
+
     def test_symlink_in_directory_is_refused(self):
         run_id, path = self.make_run(lines=CHAT)
         d = self.make_dir(path)
