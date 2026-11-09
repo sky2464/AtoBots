@@ -1,0 +1,9 @@
+[Unit]
+Description=ClaudeBot health check (no AI unless something is wrong)
+
+[Service]
+Type=oneshot
+User=claude
+Environment=CLAUDEBOT_HOME=@HOME@
+# Exit 1 means "findings were reported", not a unit failure.
+ExecStart=-@ENGINE@/bin/cb doctor --notify

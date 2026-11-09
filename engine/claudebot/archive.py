@@ -615,7 +615,7 @@ def archive_bytes(cfg: Config) -> tuple:
 
 def offsite_needed(cfg: Config, disk_usage_fn=shutil.disk_usage) -> bool:
     """True when the disk holding the company home is `archive_offserver_pct`
-    percent full or more. Only reports; Task 14 does the moving."""
+    percent full or more. Only reports; backup.offsite_archive does the moving."""
     cfg.home.mkdir(parents=True, exist_ok=True)
     total, used = disk_usage_fn(cfg.home)[:2]
     return bool(total) and used * 100 >= total * cfg.archive_offserver_pct
@@ -623,7 +623,8 @@ def offsite_needed(cfg: Config, disk_usage_fn=shutil.disk_usage) -> bool:
 
 def fetch(cfg: Config, ref: str) -> Path:
     """Local path of an archive file, named like `archive/2026-09/records.jsonl.gz`
-    or `2026-09/records.jsonl.gz`. Off-server retrieval arrives with Task 14."""
+    or `2026-09/records.jsonl.gz`. A month that was moved off-server (it has an
+    OFFSITE marker) is pulled back from the `archive` remote first."""
     rel = Path((ref or "").strip())
     parts = rel.parts
     if parts[:1] == ("archive",):
@@ -636,9 +637,16 @@ def fetch(cfg: Config, ref: str) -> Path:
         raise ValueError(f"not an archive reference: {ref!r}")
     if p.is_file():
         return p
-    raise FileNotFoundError(
-        f"{ref} is not on this server. If it was moved off-server, retrieving "
-        "it is not available yet.")
+    from . import backup  # late: backup imports this module
+    try:
+        got = backup.fetch_offsite(cfg, p)
+    except backup.BackupError as e:
+        raise FileNotFoundError(f"{ref} is off-server and could not be "
+                                f"fetched: {e}") from e
+    if got:
+        return got
+    raise FileNotFoundError(f"{ref} is not on this server and was not moved "
+                            "off-server.")
 
 
 # ---- CLI ----

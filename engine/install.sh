@@ -38,10 +38,10 @@ UNIT_DST=/etc/systemd/system
 BIN_DIR=$HOME/.local/bin
 BASHRC=$HOME/.bashrc
 
-# Units to start now. Task 14 adds the backup and doctor timers: list them in
-# TIMERS and the loop below installs, enables and starts them.
+# Units to start now. Each timer needs a matching .service next to it; the
+# loops below install, enable and start them.
 SERVICES=(claudebot-dispatcher.service)
-TIMERS=()
+TIMERS=(claudebot-backup.timer claudebot-doctor.timer)
 
 # 0. Check everything we need before changing anything, so this either does
 # the whole job or stops here with a clear message.

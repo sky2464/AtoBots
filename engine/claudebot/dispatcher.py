@@ -417,7 +417,7 @@ class Dispatcher:
     def _wake_assigned(self, conn, now) -> None:
         """An item that is todo or next, waiting on nobody, wakes its owner
         once per assignment."""
-        active = {b.name for b in bots.list_bots(conn)}
+        active = {b.name for b in bots.list_bots(conn, include_reserved=True)}
         rows = conn.execute(
             "SELECT i.id, i.owner, i.title, (SELECT COUNT(*) FROM activity a"
             " WHERE a.kind='item.assign' AND a.ref=i.id) AS assigns FROM items i"
@@ -441,7 +441,7 @@ class Dispatcher:
         """Admin goes back to open work at most once an hour, when nothing
         is queued for it and the Owner is not in a chat."""
         bot = "admin"
-        if bot not in {b.name for b in bots.list_bots(conn)}:
+        if bot not in {b.name for b in bots.list_bots(conn, include_reserved=True)}:
             return
         with self._lock:
             if bot in self._running:
@@ -494,7 +494,7 @@ class Dispatcher:
         return True
 
     def _start_ready(self, conn, now) -> list:
-        active = {b.name: b for b in bots.list_bots(conn)}
+        active = {b.name: b for b in bots.list_bots(conn, include_reserved=True)}
         groups: dict[str, list] = {}
         for m in conn.execute("SELECT * FROM messages WHERE status='queued'"
                               " ORDER BY id"):

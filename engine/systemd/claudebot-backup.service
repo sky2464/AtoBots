@@ -1,0 +1,9 @@
+[Unit]
+Description=ClaudeBot hourly backup snapshot and push
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=claude
+Environment=CLAUDEBOT_HOME=@HOME@
+ExecStart=@ENGINE@/bin/cb backup now

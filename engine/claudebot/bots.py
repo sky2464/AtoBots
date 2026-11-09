@@ -25,6 +25,9 @@ _FILES = ("SOUL.md", "PERSONA.md", "MEMORY.md")
 _TEMPLATE_SKILLS = Path(__file__).resolve().parent.parent / "templates" / "skills"
 _LIST_FIELDS = ("skills", "mcp", "plugins")
 _PLAIN_FIELDS = ("role", "org", "reports_to", "model", "effort")
+# Reserved infrastructure roles (the backend) carry this `org`. They are not
+# company bots: hidden from lists unless asked for, never created by hand.
+RESERVED_ORG = "reserved"
 
 
 @dataclass
@@ -95,10 +98,14 @@ def get(conn: sqlite3.Connection, name: str) -> Bot:
     return _row_to_bot(r)
 
 
-def list_bots(conn: sqlite3.Connection, status: str = "active") -> list[Bot]:
+def list_bots(conn: sqlite3.Connection, status: str = "active",
+              include_reserved: bool = False) -> list[Bot]:
+    """Bots with this status. Reserved infrastructure roles (the backend) are
+    left out unless `include_reserved` is true."""
     rows = conn.execute("SELECT * FROM bots WHERE status=? ORDER BY name",
                         (status,)).fetchall()
-    return [_row_to_bot(r) for r in rows]
+    return [b for b in map(_row_to_bot, rows)
+            if include_reserved or b.org != RESERVED_ORG]
 
 
 def create(cfg: Config, conn: sqlite3.Connection, name: str, role: str,
@@ -106,6 +113,8 @@ def create(cfg: Config, conn: sqlite3.Connection, name: str, role: str,
            model="sonnet", effort=None, skills=(), mcp=(), plugins=(),
            actor="admin", connectors: bool = False) -> Bot:
     _check_name(name)
+    if org == RESERVED_ORG and actor != "system":
+        raise ValueError(f"org {RESERVED_ORG!r} is for infrastructure roles")
     skills, mcp, plugins = tuple(skills), tuple(mcp), tuple(plugins)
     for s in skills:
         _skill_source(cfg, s)
@@ -236,7 +245,7 @@ def check(cfg: Config, conn: sqlite3.Connection) -> list[str]:
     caps = {"SOUL.md": cfg.soul_cap_bytes, "PERSONA.md": cfg.persona_cap_bytes,
             "MEMORY.md": cfg.memory_cap_bytes}
     for status in STATUSES:
-        for b in list_bots(conn, status):
+        for b in list_bots(conn, status, include_reserved=True):
             d = _bot_dir(cfg, b.name)
             for f in _FILES:
                 p = d / f

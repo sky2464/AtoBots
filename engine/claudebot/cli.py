@@ -4,18 +4,20 @@ import shutil
 import sys
 from pathlib import Path
 
-from . import (archive, bots, chat, dispatcher, gitlog, items, messages, requests,
-               routines, search, store)
+from . import (archive, backup, bots, chat, dispatcher, doctor, gitlog, items,
+               messages, requests, routines, search, store)
 from .config import Config
 from .db import connect, init_db
 
 MODULES = [store, bots, items, messages, requests, search, routines,
-           dispatcher, archive, chat]
+           dispatcher, archive, chat, doctor, backup]
 
 
 TEMPLATES = Path(__file__).resolve().parent.parent / "templates"
 ADMIN_SKILLS = ("cb-basics", "work-tracking", "create-bot")
 ADMIN_MODEL = "opus"
+BACKEND_SKILLS = ("cb-basics",)
+BACKEND_MODEL = "sonnet"
 
 
 def init_company(cfg: Config, company: str) -> list[str]:
@@ -48,6 +50,19 @@ def init_company(cfg: Config, company: str) -> list[str]:
             shutil.copyfile(admin / "MEMORY.md",
                             cfg.bots_dir / "admin" / "MEMORY.md")
             done.append("admin")
+        if not any(b.name == "backend" for st in bots.STATUSES
+                   for b in bots.list_bots(conn, st, include_reserved=True)):
+            be = TEMPLATES / "backend"
+            bots.create(cfg, conn, "backend",
+                        "Server health and backups (reserved, no company work)",
+                        (be / "SOUL.md").read_text(),
+                        (be / "PERSONA.md").read_text(),
+                        org=bots.RESERVED_ORG, reports_to=None,
+                        model=BACKEND_MODEL, skills=BACKEND_SKILLS,
+                        actor="system")
+            shutil.copyfile(be / "MEMORY.md",
+                            cfg.bots_dir / "backend" / "MEMORY.md")
+            done.append("backend")
     finally:
         conn.close()
     gitlog.commit_sweep(cfg, f"Set up {company}" if not existed
