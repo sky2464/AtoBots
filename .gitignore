@@ -7,10 +7,4 @@ __pycache__/
 *.pem
 backups/
 .venv/
-venv/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
 .superpowers/

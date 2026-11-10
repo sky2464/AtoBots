@@ -8,26 +8,24 @@ Source plan: Task 15 Owner steps in `docs/superpowers/plans/2026-11-08-claudebot
 
 ## 1. GitHub hardening
 
-### Backup and archive repos (see server inventory)
+### `atoosa-hub/backup` and `atoosa-hub/archive`
 
 - [ ] Enable branch protection on default branch (`main`) for both repos.
 - [ ] Block force-pushes to the default branch (and to any other long-lived branch you keep).
 - [ ] Prefer requiring a pull request (or at least disallowing direct force-push) so a bad push cannot rewrite history.
 - [ ] Confirm deploy keys remain write-only as intended; do not grant org-admin credentials to the VPS.
 
-### Engine repo (`sky2464/claudebot`)
+### `sky2464/claudebot` (engine)
 
-- [ ] Enable **Automatically delete head branches** (Settings → General → Pull Requests → “Automatically delete head branches”). **Done on GitHub:** only `main` remains (2026-11-10).
+- [ ] Enable **Automatically delete head branches** (Settings → General → Pull Requests → “Automatically delete head branches”).
 - [ ] Optionally add branch protection on `main` (required reviews / status checks) once CI is in place.
 
-### Backup deploy key
+### Pending backup deploy key
 
-Evidence: [acceptance-notes.md](superpowers/plans/acceptance-notes.md) — *Fresh start: backups confirmed (2026-11-09)*.
-
-- [x] On the VPS, confirm the public key still exists: `~/.ssh/claudebot_backup.pub` (comment `claudebot-backup@…`).
-- [x] In GitHub → backup repo → Settings → Deploy keys: added `.pub` with **Allow write access** (was pending on first fresh start; Owner completed 2026-11-09).
-- [x] From the company home on the VPS: `git ls-remote backup` succeeds; `cb backup now` pushes; `cb doctor` clean for remotes.
-- [x] Do **not** paste the private key or the secret values into chat or a ticket.
+- [ ] On the VPS, confirm the public key still exists: `~/.ssh/claudebot_backup.pub` (comment `claudebot-backup@…`).
+- [ ] In GitHub → `atoosa-hub/backup` → Settings → Deploy keys: add that `.pub` with **Allow write access** if it is still pending or missing.
+- [ ] From the company home on the VPS: `git ls-remote backup` succeeds; `cb backup now` pushes; `cb doctor` is clean for remotes.
+- [ ] Do **not** paste the private key or the secret values into chat or a ticket.
 
 ---
 
@@ -46,10 +44,10 @@ Record the date checked and a one-line conclusion in `acceptance-notes.md`.
 
 ## 3. After engine PRs merge — deploy tagged engine to VPS
 
-Do this only after the review-backlog engine PRs are on `main` and a release tag exists (for example `v0.0.1`).
+Do this only after the review-backlog engine PRs are on `main` and a release tag exists (for example `v0.0.1` or the tag you cut).
 
 - [ ] On the Mac (or CI): confirm the tag points at the intended commit (`git rev-parse <tag>`).
-- [ ] On the VPS: in the **Git clone** at the engine path, run `engine/update.sh` or `engine/update.sh --tag <tag>` (see [deploy.md](deploy.md)). Do not rsync `--delete` into the checkout.
+- [ ] On the VPS: update `~/ClaudeBot` to that tagged tree (preferred: `engine/update.sh` if present; otherwise a tagged checkout / rsync that matches the commit, including `--delete` or the documented equivalent so leftover files do not linger).
 - [ ] Run the test suite on the VPS; expect all PASS.
 - [ ] Restart / verify services as the update guide says (`claudebot-dispatcher`, timers, `claudebot-admin` if enabled). Keep an existing SSH session open; verify a **second** login still works.
 - [ ] `cb doctor` and `cb status` look healthy; always-on Admin (tmux `admin-live`) is up if you expect Telegram.
@@ -58,7 +56,7 @@ Do this only after the review-backlog engine PRs are on `main` and a release tag
 
 ## 4. Re-run Owner acceptance (steps 2 and 4–12)
 
-Use `CLAUDEBOT_HOME` and the company home from your [server-inventory](templates/server-inventory.md) template. Adapt any older path names in the brief using acceptance-notes.
+Company home is now `~/AtoosaDev` (`CLAUDEBOT_HOME=/home/claude/AtoosaDev`). Adapt any older `DTbyNavid` / `Atoosa` paths from the brief.
 
 Mark each step pass/fail with evidence in `docs/superpowers/plans/acceptance-notes.md`.
 
@@ -118,11 +116,11 @@ Mark each step pass/fail with evidence in `docs/superpowers/plans/acceptance-not
 
 ## 5. Optional — Mac SSH aliases
 
-Stale entries in `~/.ssh/config` may point at the same host with old user/port. Keep the current alias from your server inventory.
+Stale entries `vps2` and `racknerd` in `~/.ssh/config` point at the same host but use the old user/port. Current alias: `atoosa-vps`.
 
-- [ ] **Ask the Owner before removing** old Host blocks.
-- [ ] Only after OK: remove or comment stale blocks; keep the current alias and a backup of `~/.ssh/config` if you edit it.
-- [ ] Confirm SSH still works from a second terminal.
+- [ ] **Ask the Owner before removing** `vps2` / `racknerd`.
+- [ ] Only after OK: remove or comment those Host blocks; keep `atoosa-vps` and a backup of `~/.ssh/config` if you edit it.
+- [ ] Confirm `ssh atoosa-vps` still works from a second terminal.
 
 ---
 
@@ -130,11 +128,10 @@ Stale entries in `~/.ssh/config` may point at the same host with old user/port. 
 
 | Item | Where |
 | --- | --- |
-| Engine repo | `sky2464/claudebot` (GitHub: `main` only) |
-| Backup / archive | Names in Owner server inventory |
-| VPS SSH | Alias in Owner server inventory |
-| Company home | `CLAUDEBOT_HOME` in server inventory |
+| Engine repo | `sky2464/claudebot` |
+| Backup / archive | `atoosa-hub/backup`, `atoosa-hub/archive` |
+| VPS SSH | `ssh atoosa-vps` |
+| Company home | `~/AtoosaDev` |
 | Always-on Admin | `claudebot-admin.service` / tmux `admin-live` |
 | Acceptance evidence | `docs/superpowers/plans/acceptance-notes.md` |
-| Deploy | `docs/deploy.md` + `engine/update.sh` |
 | Full step text | `docs/superpowers/plans/2026-11-08-claudebot-engine.md` (Task 15) |

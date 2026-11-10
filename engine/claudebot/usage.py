@@ -123,15 +123,6 @@ def _meta_get(conn, key):
     return row[0] if row else None
 
 
-def _session_lane(conn, session_id: str) -> str:
-    row = conn.execute(
-        "SELECT lane FROM runs WHERE session_id=? ORDER BY id DESC LIMIT 1",
-        (session_id,)).fetchone()
-    if row and row["lane"]:
-        return row["lane"]
-    return TRANSCRIPT_LANE
-
-
 def _ingest_file(conn, path: Path, bot: str) -> int:
     """Caller holds the transaction: the stored offset is read and written
     under the same lock, so two concurrent calls cannot both insert."""
@@ -161,9 +152,8 @@ def _ingest_file(conn, path: Path, bot: str) -> int:
             continue
         last_id = msg_id if msg_id is not None else last_id
         rows.append(row)
-    lane = _session_lane(conn, path.stem)
     for row in rows:
-        record(conn, bot=bot, lane=lane, trigger="session",
+        record(conn, bot=bot, lane=TRANSCRIPT_LANE, trigger="session",
                ref=path.stem, **row)
     conn.execute("INSERT INTO meta(key, value) VALUES(?,?) ON CONFLICT(key)"
                  " DO UPDATE SET value=excluded.value",
@@ -188,8 +178,7 @@ def ingest_transcripts(cfg: Config, conn: sqlite3.Connection,
     count = 0
     with tx(conn):
         recorded = {r[0] for r in conn.execute(
-            "SELECT session_id FROM runs WHERE session_id IS NOT NULL"
-            " AND COALESCE(lane,'') NOT IN ('chat','live')")}
+            "SELECT session_id FROM runs WHERE session_id IS NOT NULL")}
         for path in sorted(folder.glob("*.jsonl")):
             if (path.is_symlink() or not path.is_file()
                     or path.stem in recorded):
@@ -271,11 +260,6 @@ def _mismatches(conn, since_iso: str) -> list[str]:
     return out
 
 
-def _worker_gaps(conn) -> list[str]:
-    from . import bots  # local: avoid import cycle at module load
-    return [f"  {b}: {why}" for b, why in bots.thinkers_missing_worker(conn)]
-
-
 def report(conn: sqlite3.Connection, since: str = "24h",
            by: str = "bot") -> str:
     if by not in GROUPS:
@@ -288,10 +272,6 @@ def report(conn: sqlite3.Connection, since: str = "24h",
     if mismatches:
         lines += ["", "Model mismatch (the served model is not the configured one;"
                   " a mismatch does not fail a run):"] + mismatches
-    gaps = _worker_gaps(conn)
-    if gaps:
-        lines += ["", "Thinker bots with no active worker (routine work runs on"
-                  " the thinker until fixed):"] + gaps
     return "\n".join(lines)
 
 

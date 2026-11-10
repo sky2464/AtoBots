@@ -104,6 +104,61 @@ class HookTests(RequestsBase):
         r = self.conn.execute("SELECT * FROM owner_requests").fetchone()
         self.assertEqual((r["text"], r["session_id"]), ("hello\nworld é", "abc"))
 
+    def ack(self, text, transcript=None):
+        d = {"session_id": "s", "prompt": text}
+        if transcript is not None:
+            d["transcript_path"] = str(transcript)
+        return self.run_hook(json.dumps(d).encode())
+
+    def said(self, text):
+        p = self.cfg.home / "t.jsonl"
+        p.write_text(json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": text}]}}) + "\n")
+        return p
+
+    def count(self):
+        return self.conn.execute(
+            "SELECT COUNT(*) FROM owner_requests").fetchone()[0]
+
+    def test_is_bare_ack_true_cases(self):
+        for t in ("yes", "Yes.", " ok ", "OK!", "k", "thanks", "thx", "\U0001F44D",
+                  "ok thanks \U0001F44D", "Got it", "\U0001F64F\U0001F44C",
+                  "\U0001F44D\U0001F3FD"):
+            self.assertTrue(requests.is_bare_ack(t), t)
+
+    def test_is_bare_ack_false_cases(self):
+        for t in ("yes please publish it", "ok do the second one", "no",
+                  "", "   ", "yes?", "ok T-0007", None, "what", "stop"):
+            self.assertFalse(requests.is_bare_ack(t), t)
+
+    def test_hook_blocks_ack_when_nothing_was_asked(self):
+        rc, out, _ = self.ack("\U0001F44D", self.said("Done. The report is filed."))
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(out),
+                         {"decision": "block", "reason": requests.ACK_REASON})
+        self.assertEqual(self.count(), 0)
+
+    def test_hook_keeps_ack_when_question_open(self):
+        requests.open_question(self.conn, "Publish tomorrow?")
+        rc, out, _ = self.ack("yes", self.said("Working on it."))
+        self.assertEqual((rc, out), (0, ""))
+        self.assertEqual(self.count(), 1)
+        self.assertFalse(requests.has_open_question(self.conn))  # answered
+
+    def test_hook_keeps_ack_when_last_reply_asked_or_is_unknown(self):
+        rc, out, _ = self.ack("ok", self.said("Shall I send it? I'd say yes."))
+        self.assertEqual((rc, out), (0, ""))
+        rc, out, _ = self.ack("ok")  # no transcript to look at
+        self.assertEqual((rc, out), (0, ""))
+        self.assertEqual(self.count(), 2)
+
+    def test_channel_ack_is_blocked_too(self):
+        wrapped = ('<channel source="plugin:telegram:x" user_id="1" '
+                   'chat_id="1">\nok\n</channel>')
+        rc, out, _ = self.ack(wrapped, self.said("Filed."))
+        self.assertEqual(json.loads(out)["decision"], "block")
+        self.assertEqual(self.count(), 0)
+
     def test_hook_never_fails(self):
         for raw in (b"not json {", b"", b'{"session_id":"s"}', b"\xff\xfe",
                     b'["list"]'):

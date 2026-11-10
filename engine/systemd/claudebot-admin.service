@@ -4,7 +4,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-User=claude
+User=@USER@
 Environment=CLAUDEBOT_HOME=@HOME@
 # Cap the always-on Admin tree so a live session cannot overcommit the
 # 2 GB host alongside a chat. Interactive claude is also wrapped with

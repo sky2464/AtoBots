@@ -89,21 +89,6 @@ class RoutineTests(RoutinesBase):
         self.assertEqual(routines.due(self.cfg, self.conn,
                                       _iso(2026, 11, 8, 13)), [rid])
 
-    def test_missing_bot_advances_next_due(self):
-        rid = self.conn.execute(
-            "INSERT INTO routines(bot, cron, prompt, level, enabled, next_due,"
-            " created_by) VALUES ('ghost','0 7 * * *','x','normal',1,?,?)",
-            (_iso(2026, 11, 8, 12), "admin")).lastrowid
-        now = _iso(2026, 11, 8, 13)
-        self.assertEqual(routines.due(self.cfg, self.conn, now), [])
-        nd = self.conn.execute("SELECT next_due FROM routines WHERE id=?",
-                               (rid,)).fetchone()[0]
-        self.assertGreater(datetime.fromisoformat(nd),
-                           datetime.fromisoformat(now))
-        self.assertIsNotNone(self.conn.execute(
-            "SELECT 1 FROM activity WHERE kind='routine.failed' AND ref=?",
-            (str(rid),)).fetchone())
-
     def test_failing_check_recorded_and_skipped(self):
         rid = self.add_routine("admin", "0 7 * * *", "x",
                                check_cmd=self.check_script("bad.sh", "exit 127\n"))

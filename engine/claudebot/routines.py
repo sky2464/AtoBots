@@ -1,4 +1,5 @@
-"""Routines: a prompt sent to a bot on a 5-field cron schedule (America/Chicago).
+"""Routines: a prompt sent to a bot on a 5-field cron schedule, in the
+company's zone (`timezone` in config.json; Central Time by default).
 
 A routine may carry a check command. It exits 0 when there is work and 1 when
 there is none; anything else is a failed check, which is recorded and skipped.
@@ -23,10 +24,9 @@ from zoneinfo import ZoneInfo
 
 from . import activity, bots, messages
 from .config import Config
-from .db import connect, ct_display, tx, utcnow
+from .db import connect, ct_display, tx, utcnow, zone_name
 
 CHECK_TIMEOUT = 60  # seconds, per check
-CT = "America/Chicago"
 _NEVER_STOP = 10 ** 9  # routines are not part of any bot-to-bot loop
 _UTC = timezone.utc
 # Shell metacharacters and path tricks that must never appear in --check.
@@ -119,10 +119,10 @@ def _to_utc(naive: datetime, tz: ZoneInfo) -> datetime:
     raise ValueError("no valid time")  # unreachable for real zones
 
 
-def next_time(cron: str, after_iso: str, tz: str = CT) -> str:
+def next_time(cron: str, after_iso: str, tz: str | None = None) -> str:
     """The first run strictly after `after_iso`, as UTC ISO 8601."""
     parsed = parse_cron(cron)
-    zone = ZoneInfo(tz)
+    zone = ZoneInfo(tz or zone_name())
     after = datetime.fromisoformat(after_iso)
     if after.tzinfo is None:
         after = after.replace(tzinfo=_UTC)
@@ -160,12 +160,13 @@ def validate_check_cmd(home: Path, cmd: str | None) -> str | None:
                 "check command must be a relative path under the company home")
     prog = tokens[0]
     home_r = home.resolve()
+    checks = home_r / "checks"
     resolved = (home_r / prog).resolve()
     try:
-        resolved.relative_to(home_r)
+        resolved.relative_to(checks)
     except ValueError as e:
         raise ValueError(
-            "check command must stay under the company home") from e
+            "check command must be a file under checks/") from e
     return cmd
 
 
@@ -316,25 +317,9 @@ def due(cfg: Config, conn, now: str, wait: float = 2.0) -> list[int]:
             if r["id"] in _inflight:
                 continue
         try:
-            bot = bots.get(conn, r["bot"])
+            if bots.get(conn, r["bot"]).status != "active":
+                continue
         except KeyError:
-            with tx(conn):
-                try:
-                    nxt = next_time(r["cron"], now)
-                except ValueError as e:
-                    conn.execute("UPDATE routines SET enabled=0 WHERE id=?",
-                                 (r["id"],))
-                    activity.record(conn, "system", "routine.failed",
-                                    f"routine {r['id']} switched off: {e}",
-                                    str(r["id"]))
-                    continue
-                conn.execute("UPDATE routines SET next_due=? WHERE id=?",
-                             (nxt, r["id"]))
-                activity.record(conn, "system", "routine.failed",
-                                f"routine {r['id']}: bot {r['bot']!r} missing",
-                                str(r["id"]))
-            continue
-        if bot.status != "active":
             continue
         try:
             nxt = next_time(r["cron"], now)
@@ -376,8 +361,7 @@ def wait_idle() -> None:
 
 # ---- CLI ------------------------------------------------------------------
 
-def _actor() -> str:
-    return os.environ.get("CB_BOT", "cli")
+_actor = activity.actor
 
 
 def _run(fn):
@@ -427,11 +411,12 @@ def _cmd_rm(args) -> int:
 def register(subparsers) -> None:
     sp = subparsers.add_parser("routine", help="scheduled prompts")
     sub = sp.add_subparsers(dest="routine_cmd", required=True)
-    a = sub.add_parser("add", help="add a routine (cron is in Central Time)")
+    a = sub.add_parser("add", help="add a routine (cron is in the company's zone, "
+                       "Central Time unless config.json says otherwise)")
     a.add_argument("bot")
     a.add_argument("cron", help='5 fields, e.g. "0 7 * * *"')
     a.add_argument("prompt")
-    a.add_argument("--check", help="relative path under the company home "
+    a.add_argument("--check", help="relative path under checks/ in the "
                    "(no shell metacharacters or sudo): exit 0 means work to "
                    "do, exit 1 means nothing")
     a.add_argument("--level", default="normal", choices=messages.LEVELS)

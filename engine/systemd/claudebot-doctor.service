@@ -4,7 +4,7 @@ Description=ClaudeBot health check (no AI unless something is wrong)
 [Service]
 Type=oneshot
 TimeoutStartSec=30min
-User=claude
+User=@USER@
 Environment=CLAUDEBOT_HOME=@HOME@
 # Exit 1 means "findings were reported", not a unit failure.
 ExecStart=-@ENGINE@/bin/cb doctor --notify

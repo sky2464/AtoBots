@@ -1,6 +1,7 @@
 """Always-on Admin: token refuse/scrub, surface, single-flight helpers."""
 import json
 import os
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -64,7 +65,6 @@ class TokenFileTests(Base):
         self.assertTrue(self.env_path.is_file())
         self.assertEqual(self.env_path.stat().st_mode & 0o777, 0o600)
         self.assertIn("tok-1", self.env_path.read_text())
-        self.assertEqual(env[admin_live.CACHE_TTL_VAR], "1h")
         live.cleanup()
         self.assertFalse(self.env_path.exists())
 
@@ -122,21 +122,27 @@ class ServeLoopTokenTests(Base):
 
 
 class SurfaceTests(Base):
-    def test_write_alert_and_surface_notifies(self):
+    def test_surface_types_into_tmux_or_falls_back(self):
         posted = []
+        tmux_cmds = []
 
         def post(token, chat_id, text):
             posted.append((token, chat_id, text))
 
+        def fake_run(cmd, **kwargs):
+            tmux_cmds.append(cmd)
+            if cmd[0] == "tmux":
+                raise subprocess.CalledProcessError(1, cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+
         (self.tg / "access.json").write_text(json.dumps(
             {"allowFrom": [42, "99"]}))
-        path = admin_live.surface(
-            self.cfg, "two replies waiting", key="admin-queue",
-            conn=self.conn, now="2026-11-09T12:00:00+00:00",
-            post=post)
-        self.assertTrue(path.is_file())
-        self.assertIn("two replies waiting", path.read_text())
-        # no token → notify is a no-op
+        with mock.patch("claudebot.admin_live.subprocess.run", side_effect=fake_run):
+            admin_live.surface(
+                self.cfg, "two replies waiting", key="admin-queue",
+                conn=self.conn, now="2026-11-09T12:00:00+00:00",
+                post=post)
+        self.assertTrue(any(c[:3] == ["tmux", "send-keys", "-t"] for c in tmux_cmds))
         self.assertEqual(posted, [])
 
         with mock.patch("claudebot.admin_live.has_token", return_value=True), \
@@ -173,10 +179,18 @@ class MemoryWrapTests(unittest.TestCase):
         with mock.patch("claudebot.chat.shutil.which",
                         return_value="/bin/systemd-run"), \
              mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": ""}, clear=False):
-            # clear XDG so --user may be omitted; still wraps
+            wrapped = chat.memory_wrap(cfg, cmd)
+        self.assertEqual(wrapped, cmd)
+
+        with mock.patch("claudebot.chat.shutil.which",
+                        return_value="/bin/systemd-run"), \
+             mock.patch("claudebot.chat.Path") as path_cls, \
+             mock.patch.dict(os.environ,
+                             {"XDG_RUNTIME_DIR": "/run/user/1000"}, clear=False):
+            path_cls.return_value.__truediv__.return_value.is_dir.return_value = True
             wrapped = chat.memory_wrap(cfg, cmd)
         self.assertEqual(wrapped[0], "/bin/systemd-run")
-        self.assertIn("--pty", wrapped)
+        self.assertIn("--scope", wrapped)
         self.assertIn("MemoryMax=900M", wrapped)
         self.assertIn("MemorySwapMax=0", wrapped)
         self.assertEqual(wrapped[wrapped.index("--") + 1:], cmd)

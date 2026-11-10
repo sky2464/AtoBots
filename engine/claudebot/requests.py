@@ -5,11 +5,10 @@ import json
 import os
 import re
 import sqlite3
-import string
 import sys
 from pathlib import Path
 
-from . import activity
+from . import activity, admin_live
 from .config import Config
 from .db import connect, ct_display, utcnow
 from .items import _DONE_SQL, _run
@@ -85,6 +84,75 @@ def startup_brief(conn: sqlite3.Connection, limit: int = 20) -> str:
     return "\n".join(out)
 
 
+_ACK_WORDS = {"yes", "y", "yep", "yeah", "ok", "okay", "k", "kk", "thanks",
+              "thx", "ty", "great", "cool", "nice", "perfect", "good",
+              "got", "it", "sure", "fine", "done", "thank", "you"}
+_ACK_EMOJI = "\U0001F44D\U0001F44C\U0001F64F\u2705\u2764\U0001F60A\U0001F642"
+_ACK_STRIP = re.compile(r"[\s.,!~\-\ufe0f\u200d\U0001F3FB-\U0001F3FF]+")
+ACK_REASON = "Acknowledgement ignored (nothing was asked)."
+DENY_SENDER_REASON = ("Message from a sender that is not on the allow list.")
+
+
+def is_bare_ack(text) -> bool:
+    """True for a message that only acknowledges: yes, ok, thanks, a thumbs
+    up, and combinations of those. Anything with another word is a request."""
+    if not isinstance(text, str):
+        return False
+    rest = "".join(c for c in text.lower() if c not in _ACK_EMOJI)
+    had_emoji = len(rest) != len(text)
+    words = [w for w in _ACK_STRIP.split(rest) if w]
+    if not words:
+        return had_emoji
+    return len(words) <= 4 and all(w in _ACK_WORDS for w in words)
+
+
+def last_reply_asked(transcript_path) -> bool:
+    """True when Admin's last message in the session holds a question mark,
+    or when that cannot be told. So an answer to a question Admin forgot to
+    register with `cb question open` is never dropped."""
+    try:
+        with open(transcript_path, "rb") as f:
+            size = f.seek(0, os.SEEK_END)
+            f.seek(max(0, size - 512 * 1024))
+            lines = f.read().split(b"\n")
+    except (OSError, TypeError):
+        return True
+    for line in reversed(lines):
+        try:
+            d = json.loads(line)
+            if d.get("isSidechain") or d.get("type") != "assistant":
+                continue
+            content = d["message"]["content"]
+        except (ValueError, KeyError, TypeError, AttributeError):
+            continue
+        if isinstance(content, str):
+            texts = [content]
+        else:
+            texts = [b.get("text", "") for b in content
+                     if isinstance(b, dict) and b.get("type") == "text"]
+        if any(t.strip() for t in texts):
+            return any("?" in t for t in texts)
+    return False  # Admin has said nothing yet, so nothing was asked
+
+
+def open_question(conn: sqlite3.Connection, text: str) -> int:
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("the question is empty")
+    return conn.execute(
+        "INSERT INTO owner_questions(asked_at, text) VALUES (?,?)",
+        (utcnow(), text.strip())).lastrowid
+
+
+def has_open_question(conn: sqlite3.Connection) -> bool:
+    return conn.execute("SELECT 1 FROM owner_questions WHERE answered_at"
+                        " IS NULL").fetchone() is not None
+
+
+def close_questions(conn: sqlite3.Connection) -> int:
+    return conn.execute("UPDATE owner_questions SET answered_at=? WHERE"
+                        " answered_at IS NULL", (utcnow(),)).rowcount
+
+
 _CHANNEL = re.compile(r'<channel ([^>]*)>\n(.*?)\n</channel>', re.DOTALL)
 _ATTR = re.compile(r'(\w+)="([^"]*)"')
 
@@ -100,47 +168,24 @@ def source_label(attrs: dict) -> str:
     return f"{kind} user={user} chat={chat}"
 
 
-def channel_entries(prompt: str):
-    """[(attrs, source label, text)] for a prompt made only of channel
-    messages, else None."""
-    found = _CHANNEL.findall(prompt)
-    if not found or _CHANNEL.sub("", prompt).strip():
-        return None
-    out = []
-    for a, t in found:
-        attrs = dict(_ATTR.findall(a))
-        out.append((attrs, source_label(attrs), t))
-    return out
+def _telegram_sender_allowed(attrs: dict) -> bool:
+    """True when the channel user id is on the Telegram allowFrom list."""
+    allow = {str(x) for x in admin_live.access_allow_from()}
+    if not allow:
+        return False
+    uid = attrs.get("user_id") or attrs.get("user") or ""
+    return str(uid) in allow
 
 
 def channel_messages(prompt: str):
     """[(source label, text)] when the prompt is made only of channel messages
     (what Claude Code hands the hook for a Telegram message), else None. The
     text is the sender's words without the <channel> wrapper."""
-    entries = channel_entries(prompt)
-    if entries is None:
+    found = _CHANNEL.findall(prompt)
+    if not found or _CHANNEL.sub("", prompt).strip():
         return None
-    return [(source, t) for _, source, t in entries]
-
-
-def _telegram_source(attrs: dict) -> bool:
-    return "telegram" in (attrs.get("source") or "").lower()
-
-
-def _sender_allowed(attrs: dict, allowed: set[str]) -> bool:
-    """Telegram senders must be in access.json allowFrom; other channels pass."""
-    if not _telegram_source(attrs):
-        return True
-    if not allowed:
-        return False
-    uid = str(attrs.get("user_id") or attrs.get("user") or "").strip()
-    if not uid:
-        return False
-    if uid in allowed:
-        return True
-    if uid.isdigit():
-        return str(int(uid)) in allowed
-    return False
+    return [(source_label(dict(_ATTR.findall(a))), t, dict(_ATTR.findall(a)))
+            for a, t in found]
 
 
 def _caller() -> str:
@@ -196,65 +241,10 @@ def _skip_command(conn, text: str) -> bool:
     return True
 
 
-# Bare acknowledgements: words and emoji that answer nothing on their own.
-_ACK_WORDS = ("yes", "y", "ok", "okay", "k", "thanks", "thx",
-              "\U0001F44D", "\U0001F44C", "\U0001F64F")  # thumbs up, ok hand, pray
-_ACK_SEP = "[\\s" + re.escape(string.punctuation + "\u2026\u201c\u201d\u2018\u2019\u2013\u2014") + "]*"
-_ACK = re.compile(
-    "^" + _ACK_SEP + "(?:" + "|".join(
-        re.escape(w) for w in sorted(_ACK_WORDS, key=len, reverse=True))
-    + ")" + _ACK_SEP + "(?:(?:" + "|".join(
-        re.escape(w) for w in sorted(_ACK_WORDS, key=len, reverse=True))
-    + ")" + _ACK_SEP + ")*$", re.IGNORECASE)
-
-
-def is_bare_ack(text: str) -> bool:
-    """True for a message made only of acknowledgements (yes, ok, thanks,
-    thumbs up, with or without punctuation), e.g. `Yes!` or `ok 👍`. False
-    for anything with other words, e.g. `yes please publish it`."""
-    if not isinstance(text, str):
-        return False
-    cleaned = text.replace("\ufe0f", "").strip()
-    return bool(cleaned) and _ACK.fullmatch(cleaned) is not None
-
-
-def _ack_ignored(conn, text: str, wrapped) -> bool:
-    """True when the whole message is a bare acknowledgement and no Owner
-    question is open, so it answers nothing and is refused. Any error gives
-    False: a broken check must never block a real message."""
-    try:
-        texts = [t for _, t in wrapped] if wrapped is not None else [text]
-        if not all(is_bare_ack(t) for t in texts):
-            return False
-        return conn.execute(
-            "SELECT 1 FROM owner_questions WHERE answered_at IS NULL"
-            " LIMIT 1").fetchone() is None
-    except Exception:
-        return False
-
-
-def _record_ack(conn, text: str, wrapped) -> None:
-    """Log one row for a refused acknowledgement. Any failure is swallowed:
-    the block must happen even when the activity row cannot be written."""
-    try:
-        ack = " ".join(t for _, t in wrapped) if wrapped is not None else text
-        activity.record(conn, "hook", "request.ack_ignored", ack[:40])
-    except Exception:
-        pass
-
-
-def _close_questions(conn) -> None:
-    """A saved message is the Owner's answer: close every open question."""
-    try:
-        conn.execute("UPDATE owner_questions SET answered_at=? WHERE"
-                     " answered_at IS NULL", (utcnow(),))
-    except Exception:
-        pass
-
-
 def _cmd_hook_prompt(args) -> int:
-    """UserPromptSubmit hook. No AI cost. Prints a block decision only for a
-    bare acknowledgement with no open question; otherwise always exits 0."""
+    """UserPromptSubmit hook. No AI cost, always exits 0. Silent, except that
+    a bare acknowledgement ("ok", a thumbs up) while no question is open is
+    blocked: it would cost a full turn and asks for nothing."""
     raw = b""
     try:
         raw = sys.stdin.buffer.read()
@@ -265,35 +255,33 @@ def _cmd_hook_prompt(args) -> int:
         session = data.get("session_id") or ""
         conn = connect(Config.load())
         try:
-            entries = channel_entries(text)
-            wrapped = None if entries is None else [(s, t) for _, s, t in entries]
-            if entries is None and _skip_command(conn, text):
+            wrapped = channel_messages(text)
+            if wrapped is None and _skip_command(conn, text):
                 return 0
-            if _ack_ignored(conn, text, wrapped):
-                _record_ack(conn, text, wrapped)
-                print(json.dumps({"decision": "block", "reason":
-                                  "Acknowledgement ignored (nothing was asked)."}))
+            if wrapped is None and text.startswith("[system] "):
                 return 0
-            from . import admin_live
-            allowed = {str(x) for x in admin_live.access_allow_from()}
-            saved = False
-            if entries is None:
+            if wrapped and all(not _telegram_sender_allowed(a)
+                               for _, _, a in wrapped):
+                activity.record(conn, "hook", "request.sender_denied",
+                                "telegram sender not on allow list")
+                print(json.dumps({"decision": "block",
+                                  "reason": DENY_SENDER_REASON}))
+                return 0
+            said = [t for _, t, _ in wrapped] if wrapped else [text]
+            if all(is_bare_ack(t) for t in said) \
+                    and not has_open_question(conn) \
+                    and not last_reply_asked(data.get("transcript_path")):
+                activity.record(conn, "hook", "request.ack_ignored",
+                                "bare acknowledgement, nothing was asked")
+                print(json.dumps({"decision": "block", "reason": ACK_REASON}))
+                return 0
+            if wrapped is None:
                 capture(conn, text, str(session))
-                saved = True
-            else:
-                for attrs, source, inner in entries:
-                    if _skip_command(conn, inner):
-                        continue
-                    if not _sender_allowed(attrs, allowed):
-                        activity.record(conn, "hook", "request.telegram_denied",
-                                        source[:60])
-                        continue
-                    rid = capture(conn, inner, str(session), source)
-                    activity.record(conn, "hook", "request.channel",
-                                    f"request arrived through {source}", str(rid))
-                    saved = True
-            if saved:
-                _close_questions(conn)
+            for source, inner, _attrs in wrapped or ():
+                rid = capture(conn, inner, str(session), source)
+                activity.record(conn, "hook", "request.channel",
+                                f"request arrived through {source}", str(rid))
+            close_questions(conn)  # he spoke: whatever was asked is answered
         finally:
             conn.close()
     except BaseException as e:
@@ -301,11 +289,6 @@ def _cmd_hook_prompt(args) -> int:
             return 0
         _hook_failed(raw, type(e).__name__)
     return 0
-
-
-def _cmd_hook_stop(args) -> int:
-    from . import chat  # imported late: chat itself imports this module
-    return chat.cmd_hook_stop(args)
 
 
 def _cmd_link(args):
@@ -324,30 +307,32 @@ def _cmd_unhandled(args):
     return _run(go)
 
 
+def _cmd_brief(args):
+    def go(cfg, conn):
+        print(startup_brief(conn, args.limit))
+        return 0
+    return _run(go)
+
+
 def _cmd_question_open(args):
     def go(cfg, conn):
-        text = args.text.strip()
-        if not text:
-            raise ValueError("the question is empty")
-        cur = conn.execute("INSERT INTO owner_questions(asked_at, text)"
-                           " VALUES (?,?)", (utcnow(), text))
-        print(f"Q-{cur.lastrowid} open")
+        print(open_question(conn, args.text))
         return 0
     return _run(go)
 
 
 def _cmd_question_close(args):
     def go(cfg, conn):
-        cur = conn.execute("UPDATE owner_questions SET answered_at=? WHERE"
-                           " answered_at IS NULL", (utcnow(),))
-        print(f"closed {cur.rowcount} open question(s)")
+        print(close_questions(conn))
         return 0
     return _run(go)
 
 
-def _cmd_brief(args):
+def _cmd_question_list(args):
     def go(cfg, conn):
-        print(startup_brief(conn, args.limit))
+        for r in conn.execute("SELECT * FROM owner_questions WHERE"
+                              " answered_at IS NULL ORDER BY id"):
+            print(f"{r['id']}\t{ct_display(r['asked_at'])}\t{r['text']}")
         return 0
     return _run(go)
 
@@ -364,16 +349,16 @@ def register(subparsers) -> None:
     br = sub.add_parser("brief")
     br.add_argument("--limit", type=int, default=20)
     br.set_defaults(func=_cmd_brief)
-    qn = subparsers.add_parser("question", help="Questions open to the Owner")
-    qsub = qn.add_subparsers(dest="question_cmd", required=True)
-    qo = qsub.add_parser("open", help="Register a question you asked the Owner")
+    q = subparsers.add_parser(
+        "question", help="questions waiting for the Owner's answer")
+    qs = q.add_subparsers(dest="question_cmd", required=True)
+    qo = qs.add_parser("open", help="register a question you just asked him")
     qo.add_argument("text")
     qo.set_defaults(func=_cmd_question_open)
-    qc = qsub.add_parser("close", help="Mark every open question answered")
-    qc.set_defaults(func=_cmd_question_close)
+    qs.add_parser("close", help="mark every open question answered"
+                  ).set_defaults(func=_cmd_question_close)
+    qs.add_parser("list").set_defaults(func=_cmd_question_list)
     h = subparsers.add_parser("hook", help="Claude Code hooks")
     hs = h.add_subparsers(dest="hook_cmd", required=True)
     hp = hs.add_parser("prompt")
     hp.set_defaults(func=_cmd_hook_prompt)
-    hst = hs.add_parser("stop")
-    hst.set_defaults(func=_cmd_hook_stop)

@@ -3,7 +3,7 @@ Description=ClaudeBot dispatcher
 After=network.target
 
 [Service]
-User=claude
+User=@USER@
 Environment=CLAUDEBOT_HOME=@HOME@
 ExecStart=@ENGINE@/bin/cb dispatcher run
 Restart=always

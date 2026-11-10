@@ -144,8 +144,9 @@ class RecordTests(SearchBase):
         self.conn.execute(
             "INSERT INTO runs(bot, session_id, lane, started_at) VALUES"
             " ('admin','s1','chat','2026-11-08T10:00:00+00:00')")
-        d = items.decide(self.conn, "Use sqlite", "yes use sqlite please",
-                         "2026-11-08T10:00:00+00:00", "s1", "admin")
+        with mock.patch.dict(os.environ, {"CB_SESSION_ID": "s1"}):
+            d = items.decide(self.conn, "Use sqlite", "yes use sqlite please",
+                             "2026-11-08T10:00:00+00:00", "s1", "admin")
         self.assertEqual(search.reindex_records(self.cfg, self.conn), 3)
         self.assertEqual(search.reindex_records(self.cfg, self.conn), 0)
         self.assertEqual(search.search(self.cfg, "widget", kind="item")[0].ref, t)

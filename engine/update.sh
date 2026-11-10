@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Update ClaudeBot on this server to a release tag. Requires a full Git clone
-# (do not deploy with rsync --delete into this tree). Run by hand as the user
-# claude, from the clone that engine/install.sh was run from:
+# (do not deploy with rsync --delete into this tree). Run by hand as the bots'
+# account, from the clone that engine/install.sh was run from:
 #   engine/update.sh                 # the newest v* tag
 #   engine/update.sh --tag v0.0.1    # a specific tag
+# Run as the bots' account (not root), from the clone that install.sh used.
 # It backs up the company database, moves the checkout to the tag, applies
 # schema changes with `cb init` (safe to repeat), restarts the services and runs
 # `cb doctor`. If something fails after the first change, it prints how to go
@@ -35,7 +36,7 @@ if [ -n "$TAG" ] && ! [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 
 if [ "$(id -u)" -eq 0 ]; then
-    echo "error: run this as the user claude, not root" >&2
+    echo "error: run this as the bots' account, not root" >&2
     exit 2
 fi
 
@@ -203,8 +204,41 @@ fi
 # 7. Apply schema changes. Safe to repeat: it creates nothing that exists.
 echo "Applying the update to company \"$COMPANY\" ..."
 "$CB" init --company "$COMPANY"
+echo "Refreshing engine-owned templates ..."
+"$CB" templates refresh
 
-# 8. Restart the services so they run the new code.
+# 8. Wait for bot runs to finish, then restart services.
+echo "Waiting for bot runs to finish (up to 30 minutes) ..."
+IDLE_DEADLINE=$((SECONDS + 1800))
+while [ "$SECONDS" -lt "$IDLE_DEADLINE" ]; do
+    if "$CB" dispatcher idle; then
+        break
+    fi
+    sleep 10
+done
+if ! "$CB" dispatcher idle; then
+    echo "warning: a bot run is still active; restarting anyway" >&2
+fi
+for unit in claudebot-dispatcher.service claudebot-backup.service \
+        claudebot-doctor.service; do
+    if [ -f "$ENGINE_DIR/systemd/$unit" ]; then
+        sed -e "s|@HOME@|$HOME_DIR|g" -e "s|@ENGINE@|$ENGINE_DIR|g" \
+            -e "s|@USER@|$(id -un)|g" "$ENGINE_DIR/systemd/$unit" \
+            | sudo tee "/etc/systemd/system/$unit" > /dev/null
+    fi
+done
+for unit in claudebot-backup.timer claudebot-doctor.timer; do
+    if [ -f "$ENGINE_DIR/systemd/$unit" ]; then
+        sed -e "s|@HOME@|$HOME_DIR|g" -e "s|@ENGINE@|$ENGINE_DIR|g" \
+            -e "s|@USER@|$(id -un)|g" "$ENGINE_DIR/systemd/$unit" \
+            | sudo tee "/etc/systemd/system/$unit" > /dev/null
+        svc="${unit%.timer}.service"
+        sed -e "s|@HOME@|$HOME_DIR|g" -e "s|@ENGINE@|$ENGINE_DIR|g" \
+            -e "s|@USER@|$(id -un)|g" "$ENGINE_DIR/systemd/$svc" \
+            | sudo tee "/etc/systemd/system/$svc" > /dev/null
+    fi
+done
+sudo systemctl daemon-reload
 echo "Restarting services ..."
 sudo systemctl restart claudebot-dispatcher.service
 if systemctl is-enabled --quiet claudebot-admin.service 2>/dev/null; then

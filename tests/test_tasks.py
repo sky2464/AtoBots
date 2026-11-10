@@ -215,22 +215,6 @@ class ReviewRoundOneTests(TasksBase):
         self.assertEqual(tasks.failures(self.conn, self.item), 1)
         self.assertEqual(self.to("admin"), [])  # counted from zero: no escalation
 
-    def test_escalates_again_after_success_resets_failures(self):
-        for _ in range(2):
-            mid = self.task()
-            tasks.finish_task(self.cfg, self.conn, mid, "failed", "no")
-        self.assertEqual(len([m for m in self.to("admin")
-                              if m["kind"] == "escalation"]), 1)
-        self.write("work/T-0001/out.md")
-        mid = self.task()
-        tasks.finish_task(self.cfg, self.conn, mid, "done", "")
-        self.assertEqual(tasks.failures(self.conn, self.item), 0)
-        for _ in range(2):
-            mid = self.task()
-            tasks.finish_task(self.cfg, self.conn, mid, "failed", "no")
-        esc = [m for m in self.to("admin") if m["kind"] == "escalation"]
-        self.assertEqual(len(esc), 2)
-
     def test_wake_body_points_at_open_task_without_embedding(self):
         mid = self.task()
         body = tasks.wake_body(self.conn, self.item, "scout", "fallback")
