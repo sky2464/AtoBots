@@ -677,6 +677,50 @@ class StatusAndRoutineTests(Base):
         self.assertIn("Queued: 0", out.getvalue())
 
 
+class LiveSingleFlightTests(Base):
+    def test_live_up_skips_second_admin_and_surfaces(self):
+        self.send("admin", "bot finished the report", frm="backend")
+        self.send("backend", "keep working")
+        self.ready()
+        surfaced = []
+
+        def surface(cfg, text, conn=None, now=None):
+            surfaced.append(text)
+
+        d = self.make(live_fn=lambda: True, surface_fn=surface)
+        started = self.tick(d)
+        self.assertEqual(self.run_fn.bots_run, ["backend"])
+        self.assertEqual(len(started), 1)
+        self.assertEqual(self.msg(1)["status"], "queued")  # Admin left queued
+        self.assertEqual(len(surfaced), 1)
+        self.assertIn("Not starting a second Admin", surfaced[0])
+        self.assertIn("bot finished the report", surfaced[0])
+        # same fingerprint: no re-surface spam
+        self.tick(d)
+        self.assertEqual(len(surfaced), 1)
+
+    def test_live_down_starts_admin_normally(self):
+        self.send("admin", "need Admin", frm="backend")
+        self.ready()
+        d = self.make(live_fn=lambda: False)
+        self.assertEqual(len(self.tick(d)), 1)
+        self.assertEqual(self.run_fn.bots_run, ["admin"])
+
+    def test_live_up_does_not_hold_other_bots(self):
+        """Unlike cb chat, always-on Admin must not pause the fleet."""
+        self.send("backend", "work")
+        self.ready()
+        d = self.make(live_fn=lambda: True, surface_fn=lambda *a, **k: None)
+        self.assertEqual(len(self.tick(d)), 1)
+        self.assertEqual(self.run_fn.bots_run, ["backend"])
+
+    def test_wake_admin_skipped_while_live(self):
+        requests.capture(self.conn, "please do X", "sess")
+        d = self.make(live_fn=lambda: True)
+        d.tick()
+        self.assertEqual(self.system_notes(), [])
+
+
 class ServiceFileTests(unittest.TestCase):
     def test_unit(self):
         text = (ENGINE / "systemd" / "claudebot-dispatcher.service").read_text()
@@ -685,6 +729,12 @@ class ServiceFileTests(unittest.TestCase):
                      "ExecStart=@ENGINE@/bin/cb "
                      "dispatcher run"):
             self.assertIn(line, text.split("\n"))
+
+    def test_admin_unit_has_memorymax(self):
+        text = (ENGINE / "systemd" / "claudebot-admin.service").read_text()
+        self.assertIn("MemoryMax=1200M", text)
+        self.assertIn("MemorySwapMax=0", text)
+        self.assertIn("admin scrub-token", text)
 
 
 class MemoryTests(unittest.TestCase):

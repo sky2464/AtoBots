@@ -42,6 +42,9 @@ FINDING_KEYS = ("dispatcher", "admin-live", "admin-live-token", "disk",
 FINDING_PREFIXES = ("run:", "waiting:", "bots:")
 CLEAR_RUNS = 2          # clean runs without the finding before its item closes
 CLOSABLE = ("todo", "next")
+# Local alert filename under <home>/.alerts/ when the message queue cannot
+# deliver (dispatcher down). Live Admin / Owner can read it without a wake.
+ALERTS_DIRNAME = ".alerts"
 
 
 def valid_finding_key(key: str) -> bool:
@@ -379,12 +382,53 @@ def close_cleared(conn: sqlite3.Connection, current: set, now: str,
     return closed
 
 
+def alerts_dir(cfg: Config) -> Path:
+    return cfg.home / ALERTS_DIRNAME
+
+
+def write_local_alert(cfg: Config, key: str, text: str,
+                      now: str | None = None) -> Path:
+    """Write an Owner-visible alert file that does not need the dispatcher."""
+    d = alerts_dir(cfg)
+    d.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = d / f"{key}.txt"
+    stamp = now or utcnow()
+    tmp = path.with_name(path.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(f"{stamp}\n{text.rstrip()}\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+    return path
+
+
+def out_of_band_alert(cfg: Config, conn: sqlite3.Connection | None,
+                      finding: Finding, now: str | None = None,
+                      notify_fn=None) -> Path:
+    """Dispatcher-down (and similar) must not rely on the message queue.
+    Always write a local alert file; best-effort Telegram to the Owner."""
+    path = write_local_alert(cfg, finding.key, finding.text, now=now)
+    notify = notify_fn
+    if notify is None:
+        from . import admin_live
+        notify = admin_live.notify_telegram
+    try:
+        notify(cfg, f"ClaudeBot doctor: {finding.text}", conn)
+    except Exception as e:  # noqa: BLE001
+        print(f"doctor: out-of-band notify failed: {e}", file=sys.stderr)
+    return path
+
+
 def run(cfg: Config, conn: sqlite3.Connection, **kw) -> list[Finding]:
     """Run the checks and tell `backend` about each finding on the first
     sighting, when its text changes, or after 7 days; never more than 3 times
     in 24 hours overall. A down dispatcher is also told to Admin, with the
-    same backoff. Returns all current findings."""
+    same backoff, and always gets a local alert file plus a best-effort
+    Telegram notify that does not need the message queue. Returns all
+    current findings."""
     now = kw.get("now") or utcnow()
+    notify_fn = kw.pop("notify_fn", None)
     skipped: list = []
     found = checks(cfg, conn, skipped=skipped, **kw)
     try:
@@ -395,6 +439,15 @@ def run(cfg: Config, conn: sqlite3.Connection, **kw) -> list[Finding]:
         if f.key in NO_WAKE:
             continue
         try:
+            if f.key == "dispatcher":
+                # Queue delivery needs the dispatcher; write a local file and
+                # try Telegram directly before (also) queueing for later.
+                if _due(conn, "dispatcher:oob", f.text, now):
+                    out_of_band_alert(cfg, conn, f, now=now,
+                                      notify_fn=notify_fn)
+                    _mark(conn, "dispatcher:oob", f.text, now)
+                    activity.record(conn, "system", "doctor.oob", f.text,
+                                    f.key)
             if f.key.startswith("waiting:") or f.key == "admin-live":
                 # Admin's to chase, not backend's
                 if _due(conn, f.key, f.text, now):

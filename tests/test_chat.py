@@ -231,6 +231,39 @@ class SettingsTests(Base):
         self.assertTrue(cmds["Stop"].startswith("/"))
 
 
+class MemoryMaxTests(Base):
+    def test_memory_wrap_used_by_launch_when_systemd_run_exists(self):
+        seen = []
+
+        class FakePopen:
+            def __init__(self, cmd, cwd=None, env=None):
+                seen.append(list(cmd))
+                self.pid = 4242
+
+            def wait(self, timeout=None):
+                return 0
+
+            def terminate(self):
+                pass
+
+            def kill(self):
+                pass
+
+        cmd = [self.cfg.claude_bin, "--model", "sonnet"]
+        with mock.patch("claudebot.chat.shutil.which",
+                        return_value="/usr/bin/systemd-run"), \
+             mock.patch("claudebot.chat.subprocess.Popen", FakePopen), \
+             mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": "/run/user/1"},
+                             clear=False), \
+             mock.patch("pathlib.Path.is_dir", return_value=True):
+            chat._launch(cmd, str(self.cfg.bots_dir / "admin"),
+                         dict(os.environ), self.cfg)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0][0], "/usr/bin/systemd-run")
+        self.assertIn("--pty", seen[0])
+        self.assertIn(f"MemoryMax={self.cfg.run_memory_max}", seen[0])
+
+
 class LockTests(Base):
     def test_owner_connected_tracks_lock(self):
         self.assertFalse(chat.owner_connected(self.cfg))
