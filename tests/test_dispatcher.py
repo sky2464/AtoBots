@@ -1,4 +1,5 @@
 import io
+import os
 import sys
 import tempfile
 import threading
@@ -6,6 +7,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 ENGINE = Path(__file__).resolve().parent.parent / "engine"
 sys.path.insert(0, str(ENGINE))
@@ -220,6 +222,22 @@ class StartTests(Base):
         d = self.make()
         self.assertEqual(self.tick(d), [])
         self.owner = False
+        self.assertEqual(len(self.tick(d)), 1)
+
+    def test_spoofed_admin_urgent_blocked_under_owner_hold(self):
+        """A bot bound to CB_BOT cannot mint from=admin+urgent for hold bypass."""
+        self.owner = True
+        d = self.make()
+        with mock.patch.dict(os.environ, {"CB_BOT": "backend"}):
+            with self.assertRaises(PermissionError):
+                messages.send(self.conn, "admin", "backend", "wake", "now",
+                              priority="urgent")
+        self.assertEqual(self.tick(d), [])
+        # Real Admin (CB_BOT=admin) urgent still goes through hold.
+        with mock.patch.dict(os.environ, {"CB_BOT": "admin"}):
+            messages.send(self.conn, "admin", "backend", "wake", "now",
+                          priority="urgent")
+        self.ready()
         self.assertEqual(len(self.tick(d)), 1)
 
     def test_paused_and_retired_bots_skip(self):

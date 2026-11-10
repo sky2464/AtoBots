@@ -141,6 +141,9 @@ class RecordTests(SearchBase):
         t = items.new(self.cfg, self.conn, "Calibrate widget", "backend")
         mid = messages.send(self.conn, "admin", "backend", "Heads up",
                             "the flamingo cache is stale")
+        self.conn.execute(
+            "INSERT INTO runs(bot, session_id, lane, started_at) VALUES"
+            " ('admin','s1','chat','2026-11-08T10:00:00+00:00')")
         d = items.decide(self.conn, "Use sqlite", "yes use sqlite please",
                          "2026-11-08T10:00:00+00:00", "s1", "admin")
         self.assertEqual(search.reindex_records(self.cfg, self.conn), 3)

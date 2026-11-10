@@ -177,12 +177,58 @@ def open_items(conn: sqlite3.Connection,
         f"{extra} {_OPEN_ORDER}").fetchall()
 
 
+# Decisions bind to an Owner chat/live session (or a captured owner request).
+# Bot-only runs must not mint or spend decision IDs.
+OWNER_DECISION_ACTORS = frozenset({"admin", "cli", "owner"})
+OWNER_SESSION_LANES = frozenset({"chat", "live"})
+
+
+def owner_session_ok(conn: sqlite3.Connection, session: str) -> bool:
+    """True when `session` is an Owner chat/live run or a captured request."""
+    if not isinstance(session, str) or not session.strip():
+        return False
+    if conn.execute(
+            "SELECT 1 FROM runs WHERE session_id=? AND lane IN ('chat','live')"
+            " LIMIT 1", (session,)).fetchone():
+        return True
+    return bool(conn.execute(
+        "SELECT 1 FROM owner_requests WHERE session_id=? LIMIT 1",
+        (session,)).fetchone())
+
+
+def require_owner_decision(conn: sqlite3.Connection, decision_id: str):
+    """Return the decision row, or raise PermissionError if it is missing or
+    not bound to Owner session provenance."""
+    if not decision_id:
+        raise PermissionError("a recorded Owner decision is needed")
+    r = conn.execute("SELECT * FROM decisions WHERE id=?",
+                     (decision_id,)).fetchone()
+    if r is None:
+        raise PermissionError(f"unknown decision {decision_id}")
+    if r["recorded_by"] not in OWNER_DECISION_ACTORS:
+        raise PermissionError(
+            f"{decision_id} was not recorded by Admin or the Owner")
+    if not owner_session_ok(conn, r["session"] or ""):
+        raise PermissionError(
+            f"{decision_id} is not bound to an Owner chat/live session")
+    return r
+
+
 def decide(conn: sqlite3.Connection, title: str, quote: str, said_at: str,
            session: str, actor: str) -> str:
     if not isinstance(quote, str) or not quote.strip():
         raise ValueError("a decision needs the Owner's exact words (quote)")
     if not isinstance(title, str) or not title.strip():
         raise ValueError("title is required")
+    if actor not in OWNER_DECISION_ACTORS:
+        raise PermissionError(
+            "only Admin or the Owner may record decisions")
+    if not isinstance(session, str) or not session.strip():
+        raise ValueError("a decision needs the Owner session id")
+    if not owner_session_ok(conn, session):
+        raise PermissionError(
+            "decision session must be an Owner chat/live session "
+            "or a captured owner request")
     with tx(conn):
         cur = conn.execute(
             "INSERT INTO decisions(title, quote, said_at, session, recorded_by,"

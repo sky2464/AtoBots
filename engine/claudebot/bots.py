@@ -218,10 +218,13 @@ def update(cfg: Config, conn: sqlite3.Connection, name: str, actor: str,
     soul = fields.pop("soul", None)
     persona = fields.pop("persona", None)
     if soul is not None:
-        ok = decision and conn.execute(
-            "SELECT 1 FROM decisions WHERE id=?", (decision,)).fetchone()
-        if not ok:
-            raise ValueError("changing a Soul needs a recorded decision ID")
+        from .items import require_owner_decision  # late: items imports bots
+        try:
+            require_owner_decision(conn, decision)
+        except PermissionError as e:
+            raise ValueError(
+                "changing a Soul needs a recorded Owner decision "
+                "bound to a chat/live session") from e
     sets, vals = [], []
     for k in _PLAIN_FIELDS:
         if k in fields:

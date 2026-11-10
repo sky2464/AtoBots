@@ -162,10 +162,21 @@ class CheckTests(BotsBase):
                         decision="D-0099")
         self.assertEqual((self.cfg.bots_dir / "backend" / "SOUL.md").read_text(),
                          "I am a soul.")
+        # Bare decision row without Owner session provenance is refused.
         self.conn.execute(
-            "INSERT INTO decisions(id,title,created_at) VALUES('D-0001','t','x')")
+            "INSERT INTO decisions(id,title,quote,said_at,session,recorded_by,"
+            "created_at) VALUES('D-0001','t','q','t','bot-only','admin','x')")
+        with self.assertRaises(ValueError):
+            bots.update(self.cfg, self.conn, "backend", "admin", soul="new",
+                        decision="D-0001")
+        self.conn.execute(
+            "INSERT INTO runs(bot, session_id, lane, started_at) VALUES"
+            " ('admin','owner-sess','chat','2026-11-09T00:00:00+00:00')")
+        self.conn.execute(
+            "INSERT INTO decisions(id,title,quote,said_at,session,recorded_by,"
+            "created_at) VALUES('D-0002','t','q','t','owner-sess','admin','x')")
         bots.update(self.cfg, self.conn, "backend", "admin", soul="new soul",
-                    decision="D-0001")
+                    decision="D-0002")
         self.assertEqual(bots.check(self.cfg, self.conn), [])
         self.assertEqual((self.cfg.bots_dir / "backend" / "SOUL.md").read_text(),
                          "new soul")

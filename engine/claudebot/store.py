@@ -18,7 +18,7 @@ import tempfile
 import threading
 from getpass import getpass
 
-from . import activity
+from . import activity, items
 from .config import Config
 from .db import connect
 
@@ -229,12 +229,13 @@ def run_with(cfg: Config, conn, actor: str, env_map: dict, argv: list,
     for name in env_map.values():
         if not idx[name]["owner_order_only"]:
             continue
-        ok = bool(decision) and conn.execute(
-            "SELECT 1 FROM decisions WHERE id=?", (decision,)).fetchone()
-        if not ok:
+        try:
+            items.require_owner_decision(conn, decision)
+        except PermissionError:
             activity.record(conn, actor, "secret.refused", name, decision)
             raise PermissionError(
-                f"{name} is owner-order-only: a recorded decision is needed")
+                f"{name} is owner-order-only: a recorded Owner decision "
+                "bound to a chat/live session is needed") from None
     env = dict(os.environ)
     values = []
     for var, name in env_map.items():
@@ -276,13 +277,13 @@ def use_env(cfg: Config, conn, actor: str, env_map: dict,
             raise KeyError(name)
     for name in env_map.values():
         if idx[name]["owner_order_only"]:
-            ok = bool(decision) and conn.execute(
-                "SELECT 1 FROM decisions WHERE id=?", (decision,)).fetchone()
-            if not ok:
+            try:
+                items.require_owner_decision(conn, decision)
+            except PermissionError:
                 activity.record(conn, actor, "secret.refused", name, decision)
                 raise PermissionError(
-                    f"{name} is owner-order-only: a recorded decision is "
-                    "needed")
+                    f"{name} is owner-order-only: a recorded Owner decision "
+                    "bound to a chat/live session is needed") from None
     out = {var: _reveal(cfg, name).decode() for var, name in env_map.items()}
     for name in env_map.values():
         activity.record(conn, actor, "secret.use", name, decision)

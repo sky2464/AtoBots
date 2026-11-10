@@ -18,12 +18,18 @@ from claudebot.db import connect, init_db  # noqa: E402
 FAKE_SUDO = f"""#!{sys.executable}
 import os, sys
 args = sys.argv[1:]
+if args and args[0] == "systemctl":
+    open(os.environ["FAKE_DIR"] + "/stopped", "w").write(" ".join(args))
+    sys.exit(0)
 assert args[0] == "systemd-run", args
 env, cwd, i = dict(os.environ), None, 1
 while i < len(args):
     a = args[i]
     if a == "-p":
         i += 2
+        continue
+    if a == "--unit" or a.startswith("--unit="):
+        i += 1 if a.startswith("--unit=") else 2
         continue
     if a.startswith("--setenv="):
         k, v = a[len("--setenv="):].split("=", 1)
@@ -39,7 +45,7 @@ os.execve(args[i], args[i:], env)
 """
 
 FAKE_CLAUDE = f"""#!{sys.executable}
-import json, os, stat, sys
+import json, os, re, stat, sys
 d = os.environ["FAKE_DIR"]
 argv = sys.argv[1:]
 rec = {{"argv": argv, "cb_bot": os.environ.get("CB_BOT"),
@@ -49,6 +55,15 @@ for flag in ("--mcp-config", "--append-system-prompt-file"):
         p = argv[argv.index(flag) + 1]
         rec[flag] = {{"path": p, "mode": stat.S_IMODE(os.stat(p).st_mode),
                      "text": open(p).read()}}
+if "-p" in argv:
+    prompt = argv[argv.index("-p") + 1]
+    rec["-p"] = prompt
+    m = re.search(r"Read the task file at (\\S+) and follow", prompt)
+    if m:
+        tp = m.group(1)
+        rec["task_file"] = {{"path": tp,
+                            "mode": stat.S_IMODE(os.stat(tp).st_mode),
+                            "text": open(tp).read()}}
 json.dump(rec, open(d + "/rec.json", "w"))
 mode = open(d + "/mode").read().strip()
 if mode == "ok":
@@ -118,10 +133,12 @@ class RunnerBase(unittest.TestCase):
 class CommandTests(RunnerBase):
     def test_command_has_limits(self):
         cmd = runner.build_command(self.cfg, self.bot(), "sid-1",
-                                   "/tmp/ident.md", "normal", task="do it")
+                                   "/tmp/ident.md", "normal", task="do it",
+                                   unit="claudebot-run-1.scope")
         self.assertEqual(cmd[:3], ["sudo", "systemd-run", "--wait"])
         for flag in ("--collect", "--pipe", "--uid=claude"):
             self.assertIn(flag, cmd)
+        self.assertIn("--unit=claudebot-run-1.scope", cmd)
         self.assertIn("MemoryMax=1200M", cmd)
         self.assertIn("RuntimeMaxSec=1800", cmd)
         self.assertEqual(cmd[cmd.index("MemoryMax=1200M") - 1], "-p")
@@ -140,6 +157,16 @@ class CommandTests(RunnerBase):
         self.assertEqual(tail[tail.index("--append-system-prompt-file") + 1],
                          "/tmp/ident.md")
         self.assertIn("--strict-mcp-config", tail)
+
+    def test_task_file_keeps_body_off_argv(self):
+        cmd = runner.build_command(
+            self.cfg, self.bot(), "sid-1", "/tmp/ident.md", "normal",
+            task_file="/tmp/secret-task.md")
+        tail = cmd[cmd.index(self.cfg.claude_bin):]
+        prompt = tail[tail.index("-p") + 1]
+        self.assertIn("/tmp/secret-task.md", prompt)
+        self.assertNotIn("SECRET-BODY", prompt)
+        self.assertLess(len(prompt), 200)
 
     def test_limits_follow_config(self):
         self.cfg.run_memory_max = "900M"
@@ -358,12 +385,18 @@ class RunTests(RunnerBase):
             "headers": {"Authorization": "Bearer ${NOTES_TOKEN}"}}}}
         (self.cfg.home / "mcp" / "notes.json").write_text(json.dumps(defn))
         bots.update(self.cfg, self.conn, "backend", "admin", mcp=["notes"])
-        self.run_bot()
+        self.run_bot({"subject": "SECRET-SUBJ", "body": "SECRET-BODY-XYZ"})
         rec = self.rec()
         for flag in ("--mcp-config", "--append-system-prompt-file"):
             self.assertEqual(rec[flag]["mode"], 0o600, flag)
             self.assertFalse(Path(rec[flag]["path"]).exists(), flag)
         self.assertEqual(json.loads(rec["--mcp-config"]["text"]), defn)
+        self.assertIn("task_file", rec)
+        self.assertEqual(rec["task_file"]["mode"], 0o600)
+        self.assertFalse(Path(rec["task_file"]["path"]).exists())
+        self.assertIn("SECRET-BODY-XYZ", rec["task_file"]["text"])
+        self.assertNotIn("SECRET-BODY-XYZ", rec["-p"])
+        self.assertNotIn("SECRET-BODY-XYZ", " ".join(rec["argv"]))
 
     def test_no_mcp_config_when_bot_has_none(self):
         self.run_bot()
@@ -412,6 +445,28 @@ class RunTests(RunnerBase):
         kinds = [a["kind"] for a in self.conn.execute("SELECT kind FROM activity")]
         self.assertIn("run.start", kinds)
         self.assertIn("run.end", kinds)
+
+    def test_python_timeout_stops_unit_and_keeps_partial(self):
+        import subprocess as sp
+
+        class FakeTimeout(sp.TimeoutExpired):
+            def __init__(self):
+                super().__init__(cmd=["x"], timeout=1,
+                                 output="partial-out", stderr="partial-err")
+
+        stops = []
+
+        def fake_run(*a, **kw):
+            raise FakeTimeout()
+
+        with mock.patch("claudebot.runner.subprocess.run", side_effect=fake_run), \
+                mock.patch("claudebot.runner._stop_unit",
+                           side_effect=lambda u: stops.append(u)):
+            r = self.run_bot()
+        self.assertEqual(r.reason, "timeout")
+        self.assertEqual(r.exit_code, 143)
+        self.assertEqual(stops, [runner.unit_name_for(r.run_id)])
+        self.assertEqual(self.row(r.run_id)["reason"], "timeout")
 
 
 if __name__ == "__main__":
