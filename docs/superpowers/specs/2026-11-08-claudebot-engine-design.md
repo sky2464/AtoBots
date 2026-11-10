@@ -1,12 +1,12 @@
-# ClaudeBot Engine — Design (Atoosa Dev / DecisionTreeByNavid)
+# ClaudeBot Engine — Design (`<COMPANY>` / `<PRODUCT>`)
 
 **Date:** Sun Nov 8, 2026 (CT)
-**Owner:** Navid
+**Owner:** the Owner
 **Status:** Reviewed by the Owner on Nov 8, 2026 ("look good"), with his archiving and bot-setup changes added
 
-This is a new design. It does not edit or depend on the older cloud-and-Mac design in `/Users/chicademy/Documents/Code/ClaudeBots/`, which stays as it is. A builder may borrow formats from that older spec where this document says so. Its "no VPS" rule, Mac-only data split, cloud scheduled tasks and fire links do **not** apply here.
+This is a new design. It does not edit or depend on the older cloud-and-Mac design outside this repo, which stays as it is. A builder may borrow formats from that older spec where this document says so. Its "no VPS" rule, Mac-only data split, cloud scheduled tasks and fire links do **not** apply here.
 
-Labels used below: **(Owner)** was decided by Navid. **(Builder's call)** is Claude's proposal, open to correction.
+Labels used below: **(Owner)** was decided by the Owner. **(Builder's call)** is Claude's proposal, open to correction.
 
 ---
 
@@ -14,7 +14,7 @@ Labels used below: **(Owner)** was decided by Navid. **(Builder's call)** is Cla
 
 **ClaudeBot is the main engine.** It creates and runs teams of permanent AI employees. The final product is the Owner using ClaudeBot to build bot teams for different companies and customers. (Owner) For now, only the Owner runs it. (Owner)
 
-**Atoosa Dev is the first company, and DecisionTreeByNavid is one of its products. (Owner, Nov 9, 2026: "I will use the vps for Atoosa business and one of my product is decision tree by navid", the same way his Grok bots are set up.)** This VPS *is* that company install (`~/AtoosaDev`): bots manage the Atoosa Dev business from the server, 24/7 when needed, including the DecisionTreeByNavid YouTube channel. (Owner) The Owner's Mac is not part of how the company runs. (Owner) Where older wording said DecisionTreeByNavid was the company or install, read it as **Atoosa Dev** (company) with DecisionTreeByNavid as the product line. Backup repos are `atoosa-hub/backup` and `atoosa-hub/archive`.
+**`<COMPANY>` is the first company, and `<PRODUCT>` is one of its products. (Owner, Nov 9, 2026: the VPS is for the `<COMPANY>` business, and `<PRODUCT>` is one product, set up the same way as the Owner's Grok bots.)** This VPS *is* that company install (`$CLAUDEBOT_HOME`): bots manage the `<COMPANY>` business from the server, 24/7 when needed, including the `<PRODUCT>` YouTube channel. (Owner) The Owner's Mac is not part of how the company runs. (Owner) Where older wording said `<PRODUCT>` was the company or install, read it as **`<COMPANY>`** (company) with `<PRODUCT>` as the product line. Backup repos are `<ORG>/backup` and `<ORG>/archive`.
 
 **The product ships with one bot: Admin. (Owner)** If Admin can handle everything, that's all there is. When the Owner asks for a new agent or bot, Admin works with him to define it, creates it with its own Soul, Memory and persona, and remembers it. That's how Grok bots work, and how ClaudeBot should work. (Owner)
 
@@ -24,7 +24,7 @@ The Owner wants bots that act like the Grok and Muse bots he already knows: empl
 
 **Goals**
 - A reusable engine that knows nothing about any one business.
-- Atoosa Dev running on this VPS as its first install, with DecisionTreeByNavid as a product line.
+- `<COMPANY>` running on this VPS as its first install, with `<PRODUCT>` as a product line.
 - One bot, Admin, out of the box, with new bots created by talking to Admin.
 - Permanent bots that are always on duty and work together without the Mac.
 - A secure store for secrets, built before any bot. (Owner)
@@ -47,9 +47,9 @@ The Owner wants bots that act like the Grok and Muse bots he already knows: empl
 
 ## 3. The server
 
-- RackNerd VPS, Debian 13, 2 vCPU, 2 GB RAM plus 4 GB swap, about 29 GB free. SSH alias from the Owner's Mac: `atoosa-vps`, user `claude`.
+- `<provider>` VPS, Debian 13, 2 vCPU, 2 GB RAM plus 4 GB swap, about 29 GB free. SSH alias from the Owner's Mac: `<VPS_ALIAS>`, user `claude`.
 - Already set up and verified: key-only SSH, ufw with only SSH open, fail2ban, automatic security updates, Claude Code logged in.
-- This server is only for Atoosa Dev (and its products such as DecisionTreeByNavid). (Owner: one server per customer.)
+- This server is only for `<COMPANY>` (and its products such as `<PRODUCT>`). (Owner: one server per customer.)
 - **Standing rule:** nothing changes SSH or the firewall in a way that could lock the Owner out. Any such change keeps a session open and tests a second login first. (Carried from the project's `CLAUDE.md`.)
 
 **Known limits (Builder's call to manage):** RAM limits how many Claude sessions can run at once, so bots take turns (section 5). Two vCPUs make video rendering slow, and video files can fill the disk. Heavy jobs go through the same queue, and the builder measures what is practical in the first run. If it isn't enough, Admin reports it and the Owner decides about a bigger server.
@@ -57,7 +57,7 @@ The Owner wants bots that act like the Grok and Muse bots he already knows: empl
 ## 4. Two layers and who does what
 
 ```
-ClaudeBot engine (reusable)         Atoosa Dev company (this install)
+ClaudeBot engine (reusable)         <COMPANY> company (this install)
   Admin, ready to go                  Admin's Memory and company knowledge
   bot creation                        bots the Owner asks for: Soul, persona, Memory
   secure store                        org chart and rules
@@ -72,7 +72,7 @@ Adding a future company means installing the engine on a new server and talking 
 
 | Role | Who | Does | Power |
 |---|---|---|---|
-| Owner | Navid | Prompts the org, talks to Admin, approves publishing and spending | Final word |
+| Owner | the Owner | Prompts the org, talks to Admin, approves publishing and spending | Final word |
 | Backend | Claude, in a dedicated backend role | Keeps the server, store, wake-ups, backups and schedules running. No company work. (Owner: "manage the backend") | Root |
 | Admin | The one bot that ships | Owner's contact. Does the work itself, and creates new bots when asked | Root (Owner) |
 | CEO | Created when the Owner asks | Runs the org with Admin | Root (Owner) |
@@ -355,7 +355,7 @@ Which bots come after that is up to the Owner, through Admin.
 - A backup restores correctly.
 - After the server reboots, the service and routines return on their own.
 - The Owner opens Admin and gets an accurate summary.
-- A grep of the engine finds no DecisionTreeByNavid-specific details.
+- A grep of the engine finds no `<PRODUCT>`-specific details.
 
 ## 12. Risks and things to verify
 
@@ -372,4 +372,4 @@ Which bots come after that is up to the Owner, through Admin.
 
 ## 14. Left to the builder
 
-Exact database tables, `cb` command details, file formats, exact folder locations (the Owner has created `~/DTbyNavid` and `~/ClaudeBot` on the server, so check those first), how bots map to Claude Code agents and flags, the encryption method, limit values, backup schedule, and the exact wording of rules and the starting Soul template. Python standard library and SQLite are the default for engine tools, following section 8.
+Exact database tables, `cb` command details, file formats, exact folder locations (the Owner has created `$CLAUDEBOT_HOME` and `~/ClaudeBot` on the server, so check those first), how bots map to Claude Code agents and flags, the encryption method, limit values, backup schedule, and the exact wording of rules and the starting Soul template. Python standard library and SQLite are the default for engine tools, following section 8.
