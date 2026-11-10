@@ -88,9 +88,17 @@ def _insert(conn, frm, to, subject, body, item_id, kind, priority, level,
         prev = conn.execute(
             "SELECT * FROM messages WHERE item_id=? AND chain_id IS NOT NULL"
             " ORDER BY id DESC LIMIT 1", (item_id,)).fetchone()
+    elif frm != SYSTEM and to != SYSTEM:
+        # Bot↔bot traffic with no item and no reply link still chains when the
+        # other side of the same pair spoke inside the window (ping-pong).
+        # One-way floods (A→B, A→B, …) do not chain.
+        prev = conn.execute(
+            "SELECT * FROM messages WHERE item_id IS NULL AND chain_id IS NOT NULL"
+            " AND from_bot=? AND to_bot=? ORDER BY id DESC LIMIT 1",
+            (to, frm)).fetchone()
     if prev is not None and in_reply_to is None and not _within(
             prev["created_at"], now, window):
-        prev = None  # item went quiet: a new exchange starts a new chain
+        prev = None  # pair/item went quiet: a new exchange starts a new chain
     if prev is not None and prev["chain_id"]:
         chain, hop = prev["chain_id"], (prev["hop"] or 0) + 1
     else:

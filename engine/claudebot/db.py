@@ -99,7 +99,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError:  # another process added it first
             pass
         else:
-            conn.execute("UPDATE bots SET tier='worker' WHERE model='haiku'")
+            conn.execute("UPDATE bots SET tier='worker' WHERE lower(model) "
+                        "LIKE '%haiku%'")
     if bcols and "worker" not in bcols:
         try:
             conn.execute("ALTER TABLE bots ADD COLUMN worker TEXT")
