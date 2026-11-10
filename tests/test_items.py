@@ -105,7 +105,7 @@ class ItemTests(ItemsBase):
         for k in kids:
             r = self.row(k)
             self.assertEqual((r["status"], r["parent"], r["owner"]),
-                             ("slice", p, "backend"))
+                             ("todo", p, "backend"))
         items.set_status(self.conn, p, "done", "admin")
         ids = lambda: [r["id"] for r in items.open_items(self.conn)]  # noqa: E731
         self.assertIn(p, ids())
@@ -113,6 +113,13 @@ class ItemTests(ItemsBase):
         self.assertIn(p, ids())
         items.set_status(self.conn, kids[1], "parked", "admin")
         self.assertNotIn(p, ids())
+
+    def test_split_children_are_wakeable_todo(self):
+        p = self.new("big", status="doing")
+        kids = items.split(self.cfg, self.conn, p, ["step"], "backend")
+        self.assertEqual(self.row(kids[0])["status"], "todo")
+        self.assertEqual(
+            [r["id"] for r in items.next_items(self.conn, "backend")], kids)
 
     def test_decision_requires_exact_quote(self):
         seed_owner_session(self.conn, "s1")

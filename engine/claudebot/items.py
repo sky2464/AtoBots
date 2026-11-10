@@ -129,8 +129,9 @@ def assign(conn: sqlite3.Connection, id: str, to_bot: str, actor: str,
 
 def split(cfg: Config, conn: sqlite3.Connection, parent: str, titles: list,
           owner: str) -> list:
+    """Child items start as `todo` so the dispatcher can wake their owner."""
     _get(conn, parent)
-    return [new(cfg, conn, t, owner, status="slice", parent=parent)
+    return [new(cfg, conn, t, owner, status="todo", parent=parent)
             for t in titles]
 
 

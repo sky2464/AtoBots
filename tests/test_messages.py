@@ -127,7 +127,8 @@ class ChainTests(MessagesBase):
 
     def test_hop_limit_without_admin_records_activity(self):
         self.conn.execute("DELETE FROM bots WHERE name='admin'")
-        bots.create(self.cfg, self.conn, "other", role="o", soul="s", persona="p")
+        bots.create(self.cfg, self.conn, "other", role="o", soul="s", persona="p",
+                    reports_to="backend")
         a = messages.send(self.conn, "backend", "other", "s", "b", hop_limit=1)
         self.assertEqual(messages.send(self.conn, "other", "backend", "s", "b",
                                        in_reply_to=a, hop_limit=1), 0)
@@ -190,6 +191,30 @@ class ChainWindowTests(MessagesBase):
         self.assertTrue(all(results[:8]))
         self.assertEqual(results[8:], [0, 0])
         self.assertEqual(len(self.notes()), 1)
+
+    def test_no_item_frm_to_loop_stops_at_hop_limit(self):
+        """Bot↔bot ping-pong without item_id or in_reply_to still chains."""
+        last = messages.send(self.conn, "admin", "backend", "s", "b", now=at(0))
+        for k in range(1, 8):
+            frm, to = ("backend", "admin") if k % 2 else ("admin", "backend")
+            last = messages.send(self.conn, frm, to, "s", "b", now=at(k))
+            self.assertTrue(last, k)
+            self.assertEqual(self.msg(last)["hop"], k)
+            self.assertEqual(self.msg(last)["chain_id"], self.msg(1)["chain_id"])
+        self.assertEqual(messages.send(self.conn, "admin", "backend", "s", "b",
+                                       now=at(8)), 0)
+        self.assertEqual(len(self.notes()), 1)
+        # One-way floods do not chain (not a ping-pong): after the window the
+        # reverse hop is forgotten, and same-direction sends stay at hop 0.
+        one_way = [messages.send(self.conn, "admin", "backend", "note", "b",
+                                 now=at(8 + 901 + k)) for k in range(5)]
+        self.assertTrue(all(one_way))
+        self.assertEqual([self.msg(i)["hop"] for i in one_way], [0] * 5)
+        # A reverse send past that window starts a fresh chain at hop 0.
+        nxt = messages.send(self.conn, "backend", "admin", "s", "b",
+                            now=at(8 + 901 + 4 + 901))
+        self.assertTrue(nxt)
+        self.assertEqual(self.msg(nxt)["hop"], 0)
 
     def test_send_past_window_after_stop_delivers(self):
         for k in range(9):
