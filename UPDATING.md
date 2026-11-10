@@ -60,9 +60,11 @@ From 0.0.2 on, the script runs these steps in order and prints each one:
 2. copies the company database to a backup file (see below);
 3. moves the clone to the release tag;
 4. runs `cb init` (adds any new database columns; safe to repeat) and
-   `cb templates refresh` (replaces `rules.md` and the bundled skills in the
-   company home with the release's; bot Soul, Persona and Memory files are not
-   touched);
+   `cb templates refresh`. Bundled skills are replaced. `rules.md` is replaced
+   only when it still matches a template this project shipped; if the company
+   has edited it, that file is left alone and the new template is written
+   beside it as `rules.md.new`. Bot Soul, Persona and Memory files are not
+   touched;
 5. waits for bot runs to finish, up to 30 minutes;
 6. reinstalls the dispatcher, backup and health-check unit files and restarts
    the dispatcher, and Admin if it is enabled;
@@ -329,11 +331,14 @@ home. It leaves the company's own files alone:
   with the Owner's agreement; a Soul only by the Owner.
 - Memory files, company work, secrets and `config.json` are not touched.
 
-Engine-owned, and replaced by `cb templates refresh` on every update from
+Engine-owned, and refreshed by `cb templates refresh` on every update from
 0.0.2 on:
 
-- `rules.md` in the company home. If you edit it, keep your own copy and
-  compare after each update; the company home is a Git repository, so
+- `rules.md` in the company home, when it still matches a template this
+  project shipped. If you have edited it, the update leaves your file alone
+  and writes the new template as `rules.md.new`. Compare the two and keep
+  the company's rules. `cb doctor` reports `rules-new` until `rules.md.new`
+  is removed. The company home is a Git repository, so
   `git -C "$CLAUDEBOT_HOME" log -p rules.md` shows earlier versions.
 - The bundled skills in `skills/` in the company home (`cb-basics`,
   `work-tracking`, `create-bot`). Skills you added under other names stay.

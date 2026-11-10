@@ -153,6 +153,56 @@ class InitTest(unittest.TestCase):
         self.assertEqual(after[0], "custom rules\n")
         self.assertEqual(self.names(), ["admin"])
 
+    def _refresh(self):
+        buf = io.StringIO()
+        old = os.environ.get("CLAUDEBOT_HOME")
+        os.environ["CLAUDEBOT_HOME"] = str(self.home)
+        try:
+            with redirect_stdout(buf):
+                rc = cli.main(["templates", "refresh"])
+        finally:
+            if old is None:
+                os.environ.pop("CLAUDEBOT_HOME", None)
+            else:
+                os.environ["CLAUDEBOT_HOME"] = old
+        return rc, buf.getvalue()
+
+    def test_refresh_keeps_edited_rules_and_doctor_says_so(self):
+        from claudebot import doctor
+        self.init()
+        rules = self.home / "rules.md"
+        template = (TEMPLATES / "rules.md").read_text()
+        rc, out = self._refresh()
+        self.assertEqual(rc, 0)
+        self.assertFalse((self.home / "rules.md.new").exists())
+        self.assertIn("rules.md", out)
+        rules.write_text("local rule\n")
+        rc, out = self._refresh()
+        self.assertEqual(rules.read_text(), "local rule\n")
+        self.assertEqual((self.home / "rules.md.new").read_text(), template)
+        self.assertIn(
+            "rules.md has local changes; the new version is in rules.md.new", out)
+        found = doctor.checks(
+            self.cfg, active_fn=lambda: True, mem_fn=lambda: 4000,
+            live_enabled_fn=lambda: False, live_session_fn=lambda: False,
+            token_fn=lambda c: True, track=False)
+        self.assertIn("rules-new", [f.key for f in found])
+        self.assertFalse(any(p.name.startswith(".") for p in (self.home / "skills").iterdir()))
+
+    def test_refresh_replaces_an_unedited_older_template(self):
+        self.init()
+        old = subprocess.check_output(
+            ["git", "-C", str(ROOT), "show", "05e85da:engine/templates/rules.md"])
+        rules = self.home / "rules.md"
+        rules.write_bytes(old)
+        conn = connect(self.cfg)
+        conn.execute("DELETE FROM meta WHERE key='templates.rules_sha'")
+        conn.close()
+        rc, _ = self._refresh()
+        self.assertEqual(rc, 0)
+        self.assertEqual(rules.read_bytes(), (TEMPLATES / "rules.md").read_bytes())
+        self.assertFalse((self.home / "rules.md.new").exists())
+
 
 class EnvFileTest(unittest.TestCase):
     def test_home_falls_back_to_env_file(self):

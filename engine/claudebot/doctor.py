@@ -35,13 +35,13 @@ WAITING_HOURS = 48      # an item waiting on a bot this long is a finding
 # brief, never sent to a bot (a bot cannot add a remote).
 # "models": the Owner decides a bot's model; nobody is woken to change it.
 NO_WAKE = ("backup-remote", "archive-remote", "admin-live-token", "models",
-           "workers")
+           "workers", "rules-new")
 # Every finding key the doctor can raise. `cb item new --finding` accepts only
 # these, so an item can only be tied to a finding that really exists.
 FINDING_KEYS = ("dispatcher", "admin-live", "admin-live-token", "disk",
                 "git-size", "sql-size", "database", "backup-remote",
                 "archive-remote", "backup-push", "backup-snapshot", "memory",
-                "workers")
+                "workers", "rules-new")
 FINDING_PREFIXES = ("run:", "waiting:", "stall:", "bots:", "wakecap:")
 CLEAR_RUNS = 2          # clean runs without the finding before its item closes
 CLOSABLE = ("todo", "next")
@@ -137,6 +137,11 @@ def checks(cfg: Config, conn: sqlite3.Connection | None = None,
         skipped.append("disk usage unreadable")
         out.append(Finding("disk", f"Could not read disk usage: {e}"))
     out.extend(_backup_size_checks(cfg))
+    if (cfg.home / "rules.md.new").is_file():
+        out.append(Finding(
+            "rules-new",
+            "rules.md has local changes; the new version is in rules.md.new. "
+            "Compare them and keep the company's rules."))
     mb = mem_fn()
     own = conn is None
     try:
