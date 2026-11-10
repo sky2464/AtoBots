@@ -55,6 +55,8 @@ class Config:
     batch_delay_seconds: int = 5
     # Workers wait longer so several task messages land in one run.
     worker_batch_delay_seconds: int = 60
+    # Minutes after an Admin message is surfaced before Telegram backstop alerts.
+    admin_relay_minutes: int = 15
     poll_seconds: int = 5
     usage_limit_retry_seconds: int = 900
     soul_cap_bytes: int = 4 * 1024

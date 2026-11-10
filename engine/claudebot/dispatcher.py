@@ -83,18 +83,20 @@ class Dispatcher:
                  reindex_fn=search.reindex_records,
                  archive_fn=archive.archive_transcript,
                  daily_fn=archive.daily, live_fn=None,
-                 surface_fn=None):
+                 surface_fn=None, notify_fn=None):
         """`routines_fn(cfg, conn, now)` fires due routines by queueing
         messages. `owner_fn()` says whether the Owner is connected
         to a chat — that holds *all* new runs. `live_fn()` says
         whether always-on Admin is up; that only blocks a second Admin run
         (bots keep working). `surface_fn` delivers Admin-bound results to
-        live/Telegram when the second Admin is skipped."""
+        live/Telegram when the second Admin is skipped. `notify_fn` sends
+        direct Telegram notices (e.g. backstop alerts)."""
         self.cfg = cfg
         self.run_fn, self.mem_fn, self.clock = run_fn, mem_fn, clock
         self.owner_fn = owner_fn
         self.live_fn = live_fn
         self.surface_fn = surface_fn
+        self.notify_fn = notify_fn
         self.routines_fn = routines_fn
         self.commit_fn, self.reindex_fn = commit_fn, reindex_fn
         self.archive_fn, self.daily_fn = archive_fn, daily_fn
@@ -472,6 +474,8 @@ class Dispatcher:
                            ("wake_admin", lambda: self._wake_admin(conn, now)),
                            ("archive_daily",
                             lambda: self._archive_daily(conn, now)),
+                           ("admin_backstop",
+                            lambda: self._check_admin_backstop(conn, now)),
                            ("reindex", lambda: self._reindex(conn))):
             try:
                 step()
@@ -775,14 +779,35 @@ class Dispatcher:
             conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?,?)",
                          ("admin.surfaced", json.dumps(list(ids))))
 
+    def _load_surfaced_times(self, conn) -> dict:
+        r = conn.execute("SELECT value FROM meta WHERE key=?",
+                         ("admin.surfaced_times",)).fetchone()
+        if r is None:
+            return {}
+        try:
+            return json.loads(r["value"])
+        except Exception:
+            return {}
+
+    def _save_surfaced_times(self, conn, times: dict) -> None:
+        with tx(conn):
+            conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?,?)",
+                         ("admin.surfaced_times", json.dumps(times)))
+
     def _surface_admin(self, conn, msgs, now: str) -> None:
         """When live Admin is up, do not start a second Admin: leave the
         messages queued and surface a digest to the live session / Telegram."""
         ids = tuple(m["id"] for m in msgs)
         if ids == self._load_surfaced(conn):
             return
-        text = (f"{len(msgs)} message(s) are waiting for Admin. "
-                "Run: cb inbox")
+        senders = []
+        for m in msgs:
+            f = m["from_bot"]
+            if f not in senders:
+                senders.append(f)
+        senders_str = ", ".join(senders)
+        text = (f"{len(msgs)} message(s) are waiting for Admin, from {senders_str}. "
+                "Read them with cb inbox and tell the Owner what matters.")
         try:
             if self.surface_fn is not None:
                 self.surface_fn(self.cfg, text, conn=conn, now=now)
@@ -791,11 +816,73 @@ class Dispatcher:
                 admin_live.surface(self.cfg, text, key="admin-queue",
                                    conn=conn, now=now)
             self._save_surfaced(conn, ids)
+            times = self._load_surfaced_times(conn)
+            changed = False
+            for mid in ids:
+                if str(mid) not in times:
+                    times[str(mid)] = now
+                    changed = True
+            if changed:
+                self._save_surfaced_times(conn, times)
             _log(conn, "admin_live.surface",
                  f"surfaced {len(msgs)} queued Admin message(s)", "admin")
         except Exception as e:  # noqa: BLE001
             _log(conn, "admin_live.surface_failed",
                  f"{type(e).__name__}: {e}")
+
+    def _check_admin_backstop(self, conn, now: str) -> None:
+        """Alert via Telegram if an Admin-bound message from another bot is not done
+        after admin_relay_minutes."""
+        times = self._load_surfaced_times(conn)
+        if not times:
+            return
+        relayed_r = conn.execute("SELECT value FROM meta WHERE key=?",
+                                 ("admin.relay_alerted",)).fetchone()
+        relayed = set()
+        if relayed_r:
+            try:
+                relayed = set(json.loads(relayed_r["value"]))
+            except Exception:
+                pass
+        limit_s = self.cfg.admin_relay_minutes * 60
+        alerted_new = False
+        notify = self.notify_fn
+        if notify is None:
+            from . import admin_live
+            notify = admin_live.notify_telegram
+
+        for mid_str, surfaced_at in list(times.items()):
+            mid = int(mid_str)
+            if mid in relayed:
+                continue
+            m = conn.execute("SELECT from_bot, status FROM messages WHERE id=?",
+                             (mid,)).fetchone()
+            if m is None or m["status"] == "done":
+                times.pop(mid_str, None)
+                continue
+            if m["from_bot"] in ("admin", "system"):
+                continue
+            deadline = _plus(surfaced_at, limit_s)
+            if not _before(now, deadline):
+                sender = m["from_bot"]
+                mins = self.cfg.admin_relay_minutes
+                alert_text = (f"{sender} answered Admin {mins} minutes ago "
+                              "and Admin has not read it yet.")
+                try:
+                    notify(self.cfg, alert_text, conn=conn)
+                except Exception as e:  # noqa: BLE001
+                    _log(conn, "admin_live.backstop_failed", f"{mid}: {e}")
+                relayed.add(mid)
+                alerted_new = True
+
+        if alerted_new:
+            with tx(conn):
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta(key, value) VALUES (?,?)",
+                    ("admin.relay_alerted", json.dumps(list(relayed))))
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta(key, value) VALUES (?,?)",
+                    ("admin.surfaced_times", json.dumps(times)))
 
     def _batch_delay_for(self, bot) -> int:
         if getattr(bot, "tier", None) == "worker":
