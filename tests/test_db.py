@@ -75,3 +75,38 @@ class DbTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TierMigrationTests(unittest.TestCase):
+    OLD_BOTS = """
+    CREATE TABLE bots(
+      name TEXT PRIMARY KEY, role TEXT, org TEXT, reports_to TEXT,
+      model TEXT, effort TEXT, skills TEXT, mcp TEXT, plugins TEXT,
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','paused','retired')),
+      soul_sha TEXT, created_at TEXT, connectors INT DEFAULT 0
+    );
+    """
+
+    def test_migration_adds_tier_and_worker(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        cfg = Config(Path(tmp.name))
+        raw = sqlite3.connect(cfg.db_path)
+        raw.executescript(self.OLD_BOTS)
+        raw.execute("INSERT INTO bots(name, model, status) VALUES('runner', 'haiku', 'active')")
+        raw.execute("INSERT INTO bots(name, model, status) VALUES('boss', 'opus', 'active')")
+        raw.commit()
+        raw.close()
+
+        conn = connect(cfg)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(bots)")}
+        self.assertTrue({"tier", "worker"} <= cols)
+        tiers = dict(conn.execute("SELECT name, tier FROM bots").fetchall())
+        self.assertEqual(tiers, {"runner": "worker", "boss": "thinker"})
+        self.assertTrue(conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage'").fetchone())
+        conn.close()
+
+        conn = connect(cfg)  # a second connect must be a no-op
+        self.assertEqual(dict(conn.execute("SELECT name, tier FROM bots").fetchall()), tiers)
+        conn.close()
