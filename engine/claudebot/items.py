@@ -92,8 +92,7 @@ def set_status(conn: sqlite3.Connection, id: str, status: str, actor: str) -> No
         activity.record(conn, actor, "item.status", f"{id}: {old} -> {status}", id)
 
 
-def pause(cfg: Config, conn: sqlite3.Connection, id: str, note: str,
-          actor: str) -> None:
+def pause(conn: sqlite3.Connection, id: str, note: str, actor: str) -> None:
     with tx(conn):
         old = _get(conn, id)["status"]
         conn.execute("UPDATE items SET status='paused', note=?, updated_at=?"
@@ -265,7 +264,7 @@ def _cmd_status(args):
 
 def _cmd_pause(args):
     def go(cfg, conn):
-        pause(cfg, conn, args.id, args.note, _actor())
+        pause(conn, args.id, args.note, _actor())
         return 0
     return _run(go)
 

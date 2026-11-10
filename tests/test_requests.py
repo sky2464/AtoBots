@@ -64,8 +64,8 @@ class RequestTests(RequestsBase):
         its = [self.item(status="doing") for _ in range(4)]
         for rid, it in zip(ids[:4], its):
             requests.link(self.conn, rid, [it])
-        items.pause(self.cfg, self.conn, its[0], "note alpha", "admin")
-        items.pause(self.cfg, self.conn, its[1], "note beta", "admin")
+        items.pause(self.conn, its[0], "note alpha", "admin")
+        items.pause(self.conn, its[1], "note beta", "admin")
         self.conn.close()
         conn2 = connect(self.cfg)
         self.addCleanup(conn2.close)

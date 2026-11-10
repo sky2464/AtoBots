@@ -63,7 +63,7 @@ class ItemTests(ItemsBase):
 
     def test_pause_resume_keeps_note(self):
         a = self.new(status="doing")
-        items.pause(self.cfg, self.conn, a, "stopped at step 3", "admin")
+        items.pause(self.conn, a, "stopped at step 3", "admin")
         r = self.row(a)
         self.assertEqual((r["status"], r["note"]), ("paused", "stopped at step 3"))
         self.assertEqual(items.resume(self.conn, a, "admin"), "stopped at step 3")
@@ -71,7 +71,7 @@ class ItemTests(ItemsBase):
 
     def test_assign_moves_owner_and_keeps_note(self):
         a = self.new(status="doing")
-        items.pause(self.cfg, self.conn, a, "half done", "admin")
+        items.pause(self.conn, a, "half done", "admin")
         items.assign(self.conn, a, "backend", "admin")
         r = self.row(a)
         self.assertEqual((r["owner"], r["status"]), ("backend", "todo"))

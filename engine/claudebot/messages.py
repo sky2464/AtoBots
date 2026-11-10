@@ -375,6 +375,7 @@ def _cmd_retry(args):
 
 
 def register(subparsers) -> None:
+    from .runner import EFFORT_ORDER
     s = subparsers.add_parser("send", help="send a message to a bot")
     s.add_argument("to")
     s.add_argument("subject")
@@ -385,7 +386,7 @@ def register(subparsers) -> None:
     s.add_argument("--kind", default="note", choices=_SEND_KINDS)
     s.add_argument("--priority", default="normal", choices=("normal", "urgent"))
     s.add_argument("--level", default="normal", choices=LEVELS)
-    s.add_argument("--effort")
+    s.add_argument("--effort", choices=EFFORT_ORDER)
     s.add_argument("--in-reply-to", type=int)
     s.add_argument("--dedupe-key")
     s.set_defaults(func=_cmd_send)

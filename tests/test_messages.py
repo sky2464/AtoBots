@@ -310,6 +310,11 @@ class MessagesCliTests(MessagesBase):
         self.assertEqual(rc, 0)
         self.assertEqual(items.get(self.conn, t)["waiting_on"], "admin")
 
+    def test_send_rejects_an_unknown_effort(self):
+        with self.assertRaises(SystemExit):
+            cli.build_parser().parse_args(
+                ["send", "backend", "s", "b", "--effort", "huge"])
+
     def test_large_body_error_exit_1(self):
         rc, _, err = self.run_cli("send", "backend", "s", "x" * 5000,
                                   env={"CB_BOT": "admin"})

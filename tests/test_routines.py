@@ -291,6 +291,24 @@ class RoutineTests(RoutinesBase):
         self.assertEqual(run("routine", "rm", "1")[0], 0)
         self.assertEqual(run("routine", "list")[1].strip(), "")
 
+    def test_check_help_names_the_company_home(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf), self.assertRaises(SystemExit):
+            cli.main(["routine", "add", "--help"])
+        text = " ".join(buf.getvalue().split())
+        self.assertIn(
+            "company home (no shell metacharacters or sudo): exit 0 means "
+            "work to do, exit 1 means nothing", text)
+
+    def test_add_loads_config_once(self):
+        env = {"CLAUDEBOT_HOME": str(self.cfg.home), "CB_BOT": "admin"}
+        with mock.patch("claudebot.routines.Config.load",
+                        wraps=routines.Config.load) as load, \
+                mock.patch.dict("os.environ", env), redirect_stdout(io.StringIO()):
+            self.assertEqual(
+                cli.main(["routine", "add", "admin", "0 7 * * *", "x"]), 0)
+        self.assertEqual(load.call_count, 1)
+
     def test_normal_lane_bot_may_only_change_its_own_routine(self):
         bots.create(self.cfg, self.conn, "backend", role="b", soul="s",
                     persona="p")

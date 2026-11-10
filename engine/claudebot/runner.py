@@ -19,7 +19,6 @@ from . import activity, bots, items, messages, tasks, usage
 from .config import Config
 from .db import tx, utcnow
 
-LEVEL_ORDER = ("housekeeping", "normal", "deep", "heavy")
 # A level may lower a thinker's model, and only housekeeping does. No level
 # raises a model: deep and heavy keep the bot's own (they change lane and
 # effort, not model). Workers are already on haiku.
@@ -58,8 +57,8 @@ def _bot(conn, bot) -> bots.Bot:
 def settings_for(bot: bots.Bot, msgs) -> tuple:
     """(model, effort) for this run. A batch takes the highest level and the
     highest effort among its messages; unset effort falls back to the bot's."""
-    levels = [m["level"] for m in msgs if m["level"] in LEVEL_ORDER]
-    level = max(levels, key=LEVEL_ORDER.index, default="normal")
+    levels = [m["level"] for m in msgs if m["level"] in messages.LEVELS]
+    level = max(levels, key=messages.LEVELS.index, default="normal")
     model = bot.model
     if bot.tier == "thinker":
         model = LEVEL_MODEL.get(level, bot.model)
@@ -129,14 +128,13 @@ def unit_name_for(run_id: int) -> str:
 
 
 def build_command(cfg: Config, bot: bots.Bot, session_id: str, prompt_file,
-                  lane: str, *, task_file: str | None = None,
+                  *, task_file: str | None = None,
                   unit: str | None = None, model: str | None = None,
                   effort: str | None = None, mcp_config=None) -> list:
     """The full command line. `prompt_file` holds the identity text and goes in
     with --append-system-prompt-file. The task body lives in `task_file` (mode
     600); `-p` only carries a short path pointer so subjects/bodies stay out of
-    `ps` and the journal. `lane` only labels the run (limits are the same in
-    every lane)."""
+    `ps` and the journal."""
     if not task_file:
         raise ValueError("task_file is required")
     prompt = task_prompt_for_file(task_file)
@@ -348,7 +346,7 @@ def run(cfg: Config, conn: sqlite3.Connection, bot, msgs, lane: str,
             mcp = _private_file(mcp_text, ".json")
             temp.append(mcp)
         cmd = build_command(
-            cfg, bot, session_id, ident, lane,
+            cfg, bot, session_id, ident,
             task_file=task_path, unit=unit, model=model, effort=effort,
             mcp_config=mcp)
         try:

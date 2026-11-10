@@ -444,6 +444,8 @@ class RecordTests(Base):
         with gzip.open(f, "rt") as fh:
             rows = [json.loads(x) for x in fh]
         self.assertEqual({r["row"]["id"] for r in rows if r["table"] == "items"}, {old, parked})
+        self.assertTrue(all(r["row"]["archived_at"] == iso(0)
+                            for r in rows if r["table"] == "items"))
         # IDs are never reused
         newest = items.new(self.cfg, self.conn, "After", "backend")
         self.assertEqual(int(newest[2:]), int(parked[2:]) + 1)

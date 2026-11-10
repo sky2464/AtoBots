@@ -83,7 +83,7 @@ class TurnTests(Base):
 class SummaryTests(Base):
     def test_summary_lists_open_items_and_last_owner_messages(self):
         a = items.new(self.cfg, self.conn, "Draft the invoice report", "admin")
-        items.pause(self.cfg, self.conn, a, "Next: add totals", "admin")
+        items.pause(self.conn, a, "Next: add totals", "admin")
         done = items.new(self.cfg, self.conn, "Old thing", "admin")
         items.set_status(self.conn, done, "done", "admin")
         for i in range(7):

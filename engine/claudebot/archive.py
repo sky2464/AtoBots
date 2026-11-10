@@ -373,7 +373,7 @@ class _Plan:
         return len(self.keys.get(table, []))
 
 
-def _plan_items(conn, cutoff, open_req_ids, plan) -> None:
+def _plan_items(conn, cutoff, open_req_ids, plan, now) -> None:
     rows = {r["id"]: r for r in conn.execute(
         f"SELECT * FROM items WHERE id IS NOT NULL AND archived_at IS NULL"
         f" AND status IN {_CLOSED} AND updated_at < ?", (cutoff,))}
@@ -393,7 +393,9 @@ def _plan_items(conn, cutoff, open_req_ids, plan) -> None:
                 del rows[id]
                 changed = True
     for r in rows.values():
-        plan.add("items", r["updated_at"][:7], r, (r["n"], r["updated_at"]))
+        stamped = dict(r)
+        stamped["archived_at"] = now
+        plan.add("items", r["updated_at"][:7], stamped, (r["n"], r["updated_at"]))
 
 
 def _plan_requests(conn, cutoff, open_req_ids, plan) -> None:
@@ -454,7 +456,7 @@ def archive_old_records(cfg: Config, conn: sqlite3.Connection, now: str,
     open_ids = {r["id"] for r in requests._open_requests(conn)}
     on_disk = _session_files(cfg)
     plan = _Plan()
-    _plan_items(conn, cutoff, open_ids, plan)
+    _plan_items(conn, cutoff, open_ids, plan, now)
     _plan_requests(conn, cutoff, open_ids, plan)
     _plan_simple(conn, plan, "messages",
                  "SELECT * FROM messages WHERE status IN ('done','failed')"
@@ -475,9 +477,15 @@ def archive_old_records(cfg: Config, conn: sqlite3.Connection, now: str,
         raise ArchiveError(str(e)) from e
     moved = dict.fromkeys(result, 0)
     with tx(conn):
+        item_keys = plan.keys.get("items", [])
+        conn.executemany(
+            "UPDATE items SET archived_at=? WHERE n=? AND updated_at=?"
+            f" AND archived_at IS NULL AND status IN {_CLOSED}",
+            [(now, n, updated) for n, updated in item_keys])
+        moved["items"] = conn.executemany(
+            "DELETE FROM items WHERE n=? AND archived_at=?",
+            [(n, now) for n, _updated in item_keys]).rowcount
         for table, sql in (
-                ("items", "DELETE FROM items WHERE n=? AND updated_at=?"
-                          f" AND status IN {_CLOSED}"),
                 ("messages", "DELETE FROM messages WHERE id=? AND status IN "
                              "('done','failed')"),
                 ("runs", "DELETE FROM runs WHERE id=? AND ended_at IS NOT NULL")):

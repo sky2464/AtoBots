@@ -133,7 +133,7 @@ class RunnerBase(unittest.TestCase):
 class CommandTests(RunnerBase):
     def test_command_has_limits(self):
         cmd = runner.build_command(self.cfg, self.bot(), "sid-1",
-                                   "/tmp/ident.md", "normal",
+                                   "/tmp/ident.md",
                                    task_file="/tmp/task.md",
                                    unit="claudebot-run-1.service")
         self.assertEqual(cmd[:3], ["sudo", "systemd-run", "--wait"])
@@ -161,7 +161,7 @@ class CommandTests(RunnerBase):
 
     def test_task_file_keeps_body_off_argv(self):
         cmd = runner.build_command(
-            self.cfg, self.bot(), "sid-1", "/tmp/ident.md", "normal",
+            self.cfg, self.bot(), "sid-1", "/tmp/ident.md",
             task_file="/tmp/secret-task.md")
         tail = cmd[cmd.index(self.cfg.claude_bin):]
         prompt = tail[tail.index("-p") + 1]
@@ -172,21 +172,21 @@ class CommandTests(RunnerBase):
     def test_limits_follow_config(self):
         self.cfg.run_memory_max = "900M"
         self.cfg.run_seconds = 60
-        cmd = runner.build_command(self.cfg, self.bot(), "s", "/tmp/i", "normal",
+        cmd = runner.build_command(self.cfg, self.bot(), "s", "/tmp/i",
                                    task_file="/tmp/t.task.md")
         self.assertIn("MemoryMax=900M", cmd)
         self.assertIn("RuntimeMaxSec=60", cmd)
 
     def test_connectors_bot_not_strict(self):
         bots.update(self.cfg, self.conn, "backend", "admin", connectors=True)
-        cmd = runner.build_command(self.cfg, self.bot(), "s", "/tmp/i", "normal",
+        cmd = runner.build_command(self.cfg, self.bot(), "s", "/tmp/i",
                                    task_file="/tmp/t.task.md")
         self.assertNotIn("--strict-mcp-config", cmd)
 
     def test_command_applies_bot_setup(self):
         (self.cfg.home / "plugins" / "pl").mkdir(parents=True)
         bots.update(self.cfg, self.conn, "backend", "admin", plugins=["pl"])
-        cmd = runner.build_command(self.cfg, self.bot(), "s", "/tmp/i", "normal",
+        cmd = runner.build_command(self.cfg, self.bot(), "s", "/tmp/i",
                                    task_file="/tmp/t.task.md",
                                    mcp_config="/tmp/m.json")
         self.assertEqual(cmd[cmd.index("--model") + 1], "sonnet")
@@ -196,13 +196,14 @@ class CommandTests(RunnerBase):
                          str(self.cfg.home / "plugins" / "pl"))
     def test_command_omits_unset_flags(self):
         bots.update(self.cfg, self.conn, "backend", "admin", effort=None)
-        cmd = runner.build_command(self.cfg, self.bot(), "s", "/tmp/i", "normal",
+        cmd = runner.build_command(self.cfg, self.bot(), "s", "/tmp/i",
                                    task_file="/tmp/t.task.md")
         for flag in ("--effort", "--mcp-config", "--plugin-dir"):
             self.assertNotIn(flag, cmd)
 
     def test_level_and_effort_override(self):
         b = self.bot()
+        self.assertFalse(hasattr(runner, "LEVEL_ORDER"))
         self.assertEqual(runner.settings_for(b, []), ("sonnet", "medium"))
         for level, model in (("housekeeping", "haiku"), ("normal", "sonnet"),
                              ("deep", "sonnet"), ("heavy", "sonnet")):

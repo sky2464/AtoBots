@@ -362,9 +362,10 @@ def wait_idle() -> None:
 # ---- CLI ------------------------------------------------------------------
 
 def _run(fn):
-    conn = connect(Config.load())
+    cfg = Config.load()
+    conn = connect(cfg)
     try:
-        return fn(conn)
+        return fn(cfg, conn)
     except (ValueError, KeyError, PermissionError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
@@ -381,9 +382,8 @@ def _guard(conn, bot: str, command: str):
 
 
 def _cmd_add(args) -> int:
-    def go(conn):
+    def go(cfg, conn):
         who = _guard(conn, args.bot, "routine add")
-        cfg = Config.load()
         rid = add(conn, args.bot, args.cron, args.prompt, args.check,
                   args.level, who.actor, home=cfg.home)
         print(f"routine {rid} added; first run "
@@ -393,7 +393,7 @@ def _cmd_add(args) -> int:
 
 
 def _cmd_list(args) -> int:
-    def go(conn):
+    def go(cfg, conn):
         for r in conn.execute("SELECT * FROM routines ORDER BY id"):
             print(f"{r['id']}\t{r['bot']}\t{r['cron']}\t"
                   f"{'on' if r['enabled'] else 'off'}\t{r['level']}\t"
@@ -414,7 +414,7 @@ def _toggle(enabled: bool):
     command = "routine on" if enabled else "routine off"
 
     def cmd(args) -> int:
-        def go(conn):
+        def go(cfg, conn):
             who = _guard(conn, _bot_of(conn, args.id), command)
             set_enabled(conn, args.id, enabled, who.actor)
             return 0
@@ -423,7 +423,7 @@ def _toggle(enabled: bool):
 
 
 def _cmd_rm(args) -> int:
-    def go(conn):
+    def go(cfg, conn):
         who = _guard(conn, _bot_of(conn, args.id), "routine rm")
         remove(conn, args.id, who.actor)
         return 0
@@ -439,8 +439,8 @@ def register(subparsers) -> None:
     a.add_argument("cron", help='5 fields, e.g. "0 7 * * *"')
     a.add_argument("prompt")
     a.add_argument("--check", help="relative path under checks/ in the "
-                   "(no shell metacharacters or sudo): exit 0 means work to "
-                   "do, exit 1 means nothing")
+                   "company home (no shell metacharacters or sudo): exit 0 "
+                   "means work to do, exit 1 means nothing")
     a.add_argument("--level", default="normal", choices=messages.LEVELS)
     a.set_defaults(func=_cmd_add)
     sub.add_parser("list").set_defaults(func=_cmd_list)
