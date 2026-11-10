@@ -16,6 +16,7 @@ _TEXT_KEYS = {
     "run_memory_max": re.compile(r"[1-9][0-9]*[KMG]"),
     "default_model": re.compile(r"[A-Za-z0-9][A-Za-z0-9._\[\]-]{0,63}"),
     "timezone": re.compile(r"[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+){0,2}"),
+    "digest_time": re.compile(r"([01][0-9]|2[0-3]):[0-5][0-9]|^$"),
 }
 
 ENV_FILE = Path("/etc/claudebot.env")  # written by install.sh: CLAUDEBOT_HOME=...
@@ -79,6 +80,7 @@ class Config:
     claude_bin: str = ""
     # Zone for routine schedules and for times shown to people.
     timezone: str = "UTC"
+    digest_time: str = ""
     claude_projects_dir: Path | None = None
 
     def __post_init__(self):

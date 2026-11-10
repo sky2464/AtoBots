@@ -9,16 +9,16 @@ import tempfile
 from dataclasses import fields
 from pathlib import Path
 
-from . import (activity, admin_live, archive, backup, bots, chat, dispatcher,
-               doctor, gitlog, items, messages, requests, routines, search,
-               store, tasks, usage)
+from . import (activity, admin_live, archive, backup, bots, chat, digest,
+               dispatcher, doctor, gitlog, items, messages, requests, routines,
+               search, store, tasks, usage)
 from . import __version__
 from .config import Config
 from .db import SCHEMA_VERSION, connect, init_db
 
 MODULES = [store, bots, items, messages, requests, search, routines,
            dispatcher, archive, chat, doctor, backup, admin_live, usage,
-           tasks, activity]
+           tasks, activity, digest]
 
 
 TEMPLATES = Path(__file__).resolve().parent.parent / "templates"

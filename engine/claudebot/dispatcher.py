@@ -476,6 +476,8 @@ class Dispatcher:
                             lambda: self._archive_daily(conn, now)),
                            ("admin_backstop",
                             lambda: self._check_admin_backstop(conn, now)),
+                           ("daily_digest",
+                            lambda: self._check_daily_digest(conn, now)),
                            ("reindex", lambda: self._reindex(conn))):
             try:
                 step()
@@ -883,6 +885,52 @@ class Dispatcher:
                 conn.execute(
                     "INSERT OR REPLACE INTO meta(key, value) VALUES (?,?)",
                     ("admin.surfaced_times", json.dumps(times)))
+
+    def _check_daily_digest(self, conn, now: str) -> None:
+        """Send daily digest via Telegram at digest_time (in company timezone)
+        if configured and not already sent today."""
+        target_time = (getattr(self.cfg, "digest_time", None) or "").strip()
+        if not target_time:
+            return
+        from zoneinfo import ZoneInfo
+        try:
+            zone = ZoneInfo(self.cfg.timezone)
+        except Exception:
+            zone = timezone.utc
+        now_dt = datetime.fromisoformat(now)
+        if now_dt.tzinfo is None:
+            now_dt = now_dt.replace(tzinfo=timezone.utc)
+        local_dt = now_dt.astimezone(zone)
+        today_date = local_dt.date().isoformat()
+        current_hm = local_dt.strftime("%H:%M")
+
+        # Has it already been sent today?
+        last_date_r = conn.execute("SELECT value FROM meta WHERE key='digest.last_date'").fetchone()
+        if last_date_r and last_date_r["value"] == today_date:
+            return
+
+        # Is it at or after digest_time?
+        if current_hm < target_time:
+            return
+
+        from . import digest as digest_mod
+        text, _ = digest_mod.build_digest(self.cfg, conn, now=now)
+        if text:
+            msg = digest_mod.format_for_telegram(text)
+            notify = self.notify_fn
+            if notify is None:
+                from . import admin_live
+                notify = admin_live.notify_telegram
+            try:
+                notify(self.cfg, msg, conn=conn)
+            except Exception as e:  # noqa: BLE001
+                _log(conn, "digest.send_failed", str(e))
+
+        with tx(conn):
+            conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('digest.last_date', ?)",
+                         (today_date,))
+            conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('digest.last_sent', ?)",
+                         (now,))
 
     def _batch_delay_for(self, bot) -> int:
         if getattr(bot, "tier", None) == "worker":
