@@ -1,4 +1,5 @@
 import io
+import os
 import re
 import subprocess
 import sys
@@ -16,6 +17,24 @@ from claudebot.db import connect  # noqa: E402
 
 TEMPLATES = ROOT / "engine" / "templates"
 SKILLS = ("cb-basics", "work-tracking", "create-bot")
+
+
+def banned_terms_from_env(environ=None):
+    source = os.environ if environ is None else environ
+    raw = source.get("CB_BANNED_TERMS", "")
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
+def company_text_hits(root, banned):
+    hits = []
+    for p in Path(root).rglob("*"):
+        if not p.is_file() or "__pycache__" in p.parts:
+            continue
+        text = p.read_text(errors="ignore")
+        for word in banned:
+            if word in text:
+                hits.append(f"{word} in {p}")
+    return hits
 
 
 def _rules() -> str:
@@ -146,13 +165,22 @@ class EnvFileTest(unittest.TestCase):
 
 class TemplatesTest(unittest.TestCase):
     def test_engine_has_no_company_text(self):
-        banned = ("DecisionTree", "DTbyNavid", "Navid", "Atoosa")
-        for p in (ROOT / "engine").rglob("*"):
-            if not p.is_file() or "__pycache__" in p.parts:
-                continue
-            text = p.read_text(errors="ignore")
-            for word in banned:
-                self.assertNotIn(word, text, f"{word} in {p}")
+        banned = banned_terms_from_env()
+        if not banned:
+            self.skipTest("CB_BANNED_TERMS is unset")
+        self.assertEqual(company_text_hits(ROOT / "engine", banned), [])
+
+    def test_banned_term_scan_flags_a_planted_word(self):
+        self.assertEqual(banned_terms_from_env({}), ())
+        self.assertEqual(
+            banned_terms_from_env({"CB_BANNED_TERMS": " one , ,two "}),
+            ("one", "two"))
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "note.txt"
+            path.write_text("prefix TOKEN suffix\n")
+            self.assertEqual(company_text_hits(d, ("TOKEN",)),
+                             [f"TOKEN in {path}"])
+            self.assertEqual(company_text_hits(d, ("absent",)), [])
 
     def test_admin_has_all_three_skills(self):
         for s in SKILLS:
