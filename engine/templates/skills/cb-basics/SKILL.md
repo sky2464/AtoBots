@@ -71,6 +71,16 @@ command. Everything you do through `cb` is recorded under your name.
   `cb routine list`, `cb routine off ID`, `cb routine on ID`, `cb routine rm ID`.
   Add `--check "command"` so it wakes the bot only when there is work.
 
+## System changes
+
+- Before any system change (stop, restart, move, delete, install), write the plan
+  with `cb change plan "TITLE" --steps-file FILE --touches PATH_OR_UNIT...` and get
+  the Owner's approval with `cb change approve C-N --quote "<exact words>"`.
+- `cb change show C-N` shows a planned change.
+- `cb verify services` verifies dispatcher and admin services are active.
+- `cb change done C-N` closes an approved change after verifying services (`--failed "reason"` to close as failed).
+- `cb update TAG` updates ClaudeBot in a standalone unit.
+
 ## Times
 
 Say times to people like `Tue Nov 3, 2026, 7:45 AM` in the company's time zone.

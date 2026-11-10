@@ -112,15 +112,16 @@ def checks(cfg: Config, conn: sqlite3.Connection | None = None,
         skipped.append("dispatcher state unknown")
     if active is False:
         out.append(Finding("dispatcher", "The dispatcher is not running "
-                           f"({DISPATCHER_UNIT}). No bot can be woken until "
-                           "it is started."))
+                           f"({DISPATCHER_UNIT}). The Owner restarts it with: "
+                           f"sudo systemctl restart {DISPATCHER_UNIT}"))
     enabled = live_enabled_fn()
     if enabled is None:
         skipped.append("admin-live state unknown")
     if enabled and not live_session_fn():
         out.append(Finding("admin-live", "The always-on Admin is enabled "
                            f"({ADMIN_UNIT}) but tmux session admin-live is "
-                           "missing, so Telegram messages get no answer."))
+                           "missing, so Telegram messages get no answer. The Owner "
+                           f"restarts it with: sudo systemctl restart {ADMIN_UNIT}"))
     if enabled and not token_fn(cfg):
         out.append(Finding("admin-live-token", "The always-on Admin is "
                            f"enabled ({ADMIN_UNIT}) but the secure store has "
@@ -534,13 +535,13 @@ def run(cfg: Config, conn: sqlite3.Connection, **kw) -> list[Finding]:
         if f.key in NO_WAKE:
             continue
         try:
-            if f.key == "dispatcher":
-                # Queue delivery needs the dispatcher; write a local file and
-                # try Telegram directly before (also) queueing for later.
-                if _due(conn, "dispatcher:oob", f.text, now):
+            if f.key in ("dispatcher", "admin-live"):
+                # Queue delivery needs the dispatcher (and Telegram delivery needs
+                # admin-live); write a local file and try Telegram directly.
+                if _due(conn, f"{f.key}:oob", f.text, now):
                     out_of_band_alert(cfg, conn, f, now=now,
                                       notify_fn=notify_fn)
-                    _mark(conn, "dispatcher:oob", f.text, now)
+                    _mark(conn, f"{f.key}:oob", f.text, now)
                     activity.record(conn, "system", "doctor.oob", f.text,
                                     f.key)
             if (f.key.startswith("waiting:") or f.key.startswith("stall:")
@@ -575,8 +576,9 @@ def run(cfg: Config, conn: sqlite3.Connection, **kw) -> list[Finding]:
             if _due(conn, f.key, f.text, now) and \
                     _wakes_today(conn, now) < WAKES_PER_DAY:
                 messages.send(conn, "system", BACKEND, f"Health check: {f.key}",
-                              f.text + " Look into it; fix only what is safe "
-                              "and tell Admin the rest. If you open an item "
+                              f.text + " Do not stop, restart, install, move or delete anything. "
+                              "Report what you see to Admin. Safe repairs are: retry a backup push, "
+                              "clear a stuck run. If you open an item "
                               f"for it, use cb item new --finding {f.key} so "
                               "it closes when the problem clears.", kind="alert",
                               level="normal",
@@ -584,12 +586,13 @@ def run(cfg: Config, conn: sqlite3.Connection, **kw) -> list[Finding]:
                               hop_limit=_NEVER_STOP, now=now)
                 _mark(conn, f.key, f.text, now)
                 activity.record(conn, "system", "doctor.finding", f.text,
-                                f.key)
+                                    f.key)
             if f.key == "dispatcher" and _due(conn, "dispatcher:admin",
                                               f.text, now):
                 messages.send(conn, "system", ADMIN,
-                              "The dispatcher is down", f.text + " The server "
-                              "may need a restart of " + DISPATCHER_UNIT + ".",
+                              "The dispatcher is down",
+                              f.text + " Tell the Owner; they restart it with sudo systemctl restart "
+                              + DISPATCHER_UNIT + ".",
                               kind="alert", level="normal",
                               dedupe_key=f"doctor:{f.key}:admin:{tag}",
                               hop_limit=_NEVER_STOP, now=now)

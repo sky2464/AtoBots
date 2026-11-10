@@ -43,6 +43,16 @@ Follow them even when no one is watching.
 ## The server
 
 - Before any `sudo` command, record it with `cb log sudo`.
+- Never stop or restart the service you run inside. A change to the live
+  install runs on its own (`cb update`) and ends with a restart, never a
+  stop.
+- Before any system change (stop, restart, move, delete, install), write
+  the plan with `cb change plan`, list everything it touches, and get the
+  Owner's yes recorded with `cb change approve`.
+- Never move or delete a folder that is not on the plan's touch list.
+- After a change, run `cb verify services`. Do not report it done until
+  it passes.
+- The health check alerts. It never restarts a service.
 - Never change SSH or the firewall in a way that could lock the Owner out.
   Keep one session open and test a second login first.
 - Never put secret values in chat, messages, Memory, notes or files. Use

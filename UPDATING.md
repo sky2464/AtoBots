@@ -328,7 +328,13 @@ An update replaces the engine code and the engine-owned files in the company
 home. It leaves the company's own files alone:
 
 - Each bot's Soul and persona are not rewritten. A persona is changed only
-  with the Owner's agreement; a Soul only by the Owner.
+  with the Owner's agreement; a Soul only by the Owner. For existing installs,
+  the Owner should manually update `$CLAUDEBOT_HOME/bots/backend/SOUL.md` under
+  "What I will never do" to add:
+  - Stop or restart the service I run inside. A change to the live install
+    runs on its own (`cb update`) and ends with a restart, never a stop.
+  - Restart a service from a health check: the health check alerts, it never
+    restarts a service.
 - Memory files, company work, secrets and `config.json` are not touched.
 
 Engine-owned, and refreshed by `cb templates refresh` on every update from

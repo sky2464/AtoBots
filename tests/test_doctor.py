@@ -83,6 +83,33 @@ class OutOfBandTests(Base):
             " AND dedupe_key LIKE 'doctor:dispatcher:admin:%'").fetchall()
         self.assertEqual(len(queued), 1)
 
+    def test_health_check_message_to_backend_advises_safe_repairs(self):
+        # Trigger a finding that goes to backend (e.g. disk or model finding)
+        found = doctor.run(
+            self.cfg, self.conn, active_fn=lambda: True,
+            mem_fn=lambda: 4000, disk_usage_fn=lambda p: (100, 95, 5),
+            live_enabled_fn=lambda: False, live_session_fn=lambda: False,
+            token_fn=lambda c: True, track=False, now=self.now)
+        self.assertTrue(any(f.key == "disk" for f in found))
+        msg = self.conn.execute(
+            "SELECT body FROM messages WHERE to_bot='backend' AND from_bot='system'"
+            " AND dedupe_key LIKE 'doctor:disk:%'").fetchone()
+        self.assertIsNotNone(msg)
+        body = msg["body"]
+        self.assertIn("Do not stop, restart, install, move or delete anything", body)
+        self.assertIn("Report what you see to Admin", body)
+        self.assertIn("Safe repairs are: retry a backup push, clear a stuck run", body)
+
+    def test_down_services_contain_exact_restart_command_for_owner(self):
+        found = doctor.checks(
+            self.cfg, self.conn, active_fn=lambda: False,
+            mem_fn=lambda: 4000, live_enabled_fn=lambda: True,
+            live_session_fn=lambda: False, token_fn=lambda c: True,
+            track=False, now=self.now)
+        findings = {f.key: f.text for f in found}
+        self.assertIn("sudo systemctl restart claudebot-dispatcher.service", findings["dispatcher"])
+        self.assertIn("sudo systemctl restart claudebot-admin.service", findings["admin-live"])
+
 
 if __name__ == "__main__":
     unittest.main()

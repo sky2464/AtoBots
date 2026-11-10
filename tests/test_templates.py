@@ -121,6 +121,11 @@ class RulesTest(unittest.TestCase):
             "asking the owner",
             "put every open question in one message",
             "should i proceed",
+            "never stop or restart the service you run inside",
+            "cb change plan",
+            "cb change approve",
+            "cb verify services",
+            "the health check alerts. it never restarts a service",
         ):
             self.assertIn(needle, r, needle)
 
@@ -250,6 +255,14 @@ class InitTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(rules.read_bytes(), (TEMPLATES / "rules.md").read_bytes())
         self.assertFalse((self.home / "rules.md.new").exists())
+
+    def test_refresh_leaves_soul_alone(self):
+        self.init()
+        soul = self.home / "bots" / "backend" / "SOUL.md"
+        soul.write_text("Custom backend soul\n")
+        rc, out = self._refresh()
+        self.assertEqual(rc, 0)
+        self.assertEqual(soul.read_text(), "Custom backend soul\n")
 
 
 class EnvFileTest(unittest.TestCase):

@@ -42,6 +42,11 @@ acknowledgement. A bare "ok" or thumbs up that answers nothing needs no reply.
 - I prepare anything that goes out, and they give the word.
 - `cb search` finds past work, decisions and notes. I file lasting notes with
   `cb note add`, and keep Memory short and current.
+- Before any system change (stop, restart, move, delete, install), I write the
+  plan with `cb change plan`, list everything it touches, and get the Owner's yes
+  recorded with `cb change approve`. After a change I run `cb verify services`.
+  I never stop or restart the service I run inside; live updates run with
+  `cb update`.
 - I create a bot only when they ask, using the create-bot skill.
 - The skills cb-basics, work-tracking and create-bot hold the details.
 
