@@ -11,12 +11,14 @@ finish on their own (each has a hard time limit).
 """
 import argparse
 import os
+import re
 import signal
 import subprocess
 import sys
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from . import activity, bots, messages
@@ -27,6 +29,8 @@ CHECK_TIMEOUT = 60  # seconds, per check
 CT = "America/Chicago"
 _NEVER_STOP = 10 ** 9  # routines are not part of any bot-to-bot loop
 _UTC = timezone.utc
+# Shell metacharacters and path tricks that must never appear in --check.
+_CHECK_META = re.compile(r"[\n\r;|&`$<>(){}\[\]\\!#*?~]")
 
 _lock = threading.Lock()
 _inflight: set[int] = set()
@@ -135,22 +139,59 @@ def next_time(cron: str, after_iso: str, tz: str = CT) -> str:
 
 # ---- storage --------------------------------------------------------------
 
+def validate_check_cmd(home: Path, cmd: str | None) -> str | None:
+    """A check must be a relative path under the company home, with optional
+    plain arguments. No shell metacharacters, no sudo, no absolute paths."""
+    if cmd is None:
+        return None
+    if not isinstance(cmd, str) or not cmd.strip():
+        raise ValueError("check command is empty")
+    cmd = cmd.strip()
+    if _CHECK_META.search(cmd):
+        raise ValueError("check command may not contain shell metacharacters")
+    tokens = cmd.split()
+    if any(t.lower() == "sudo" for t in tokens):
+        raise ValueError("check command may not use sudo")
+    for tok in tokens:
+        if tok.startswith("-"):
+            continue  # plain flags like -n are fine
+        if tok.startswith("/") or tok.startswith("~") or ".." in Path(tok).parts:
+            raise ValueError(
+                "check command must be a relative path under the company home")
+    prog = tokens[0]
+    home_r = home.resolve()
+    resolved = (home_r / prog).resolve()
+    try:
+        resolved.relative_to(home_r)
+    except ValueError as e:
+        raise ValueError(
+            "check command must stay under the company home") from e
+    return cmd
+
+
 def add(conn, bot: str, cron: str, prompt: str, check_cmd: str | None = None,
-        level: str = "normal", actor: str = "admin") -> int:
+        level: str = "normal", actor: str = "admin",
+        home: Path | None = None) -> int:
     bots.get(conn, bot)
     if level not in messages.LEVELS:
         raise ValueError(f"level must be one of: {', '.join(messages.LEVELS)}")
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("a routine needs a prompt")
     messages._check_body(prompt)
+    if check_cmd:
+        if home is None:
+            raise ValueError("company home is required to validate --check")
+        check_cmd = validate_check_cmd(home, check_cmd)
     nxt = next_time(cron, utcnow())  # also validates the cron
     with tx(conn):
         cur = conn.execute(
             "INSERT INTO routines(bot, cron, check_cmd, prompt, level, enabled,"
             " next_due, created_by) VALUES (?,?,?,?,?,1,?,?)",
             (bot, cron, check_cmd or None, prompt, level, nxt, actor))
-        activity.record(conn, actor, "routine.add",
-                        f"{bot}: {cron}: {prompt[:80]}", str(cur.lastrowid))
+        detail = f"{bot}: {cron}: {prompt[:80]}"
+        if check_cmd:
+            detail += f": check={check_cmd}"
+        activity.record(conn, actor, "routine.add", detail, str(cur.lastrowid))
     return cur.lastrowid
 
 
@@ -184,11 +225,15 @@ def remove(conn, rid: int, actor: str = "admin") -> None:
 
 # ---- firing ---------------------------------------------------------------
 
-def _run_check(cmd: str) -> tuple[bool, str]:
+def _run_check(cmd: str, cwd: Path) -> tuple[bool, str]:
     """Returns (work to do, problem). Exit 0 is work, 1 is nothing, anything
-    else (or a timeout) is a problem."""
+    else (or a timeout) is a problem. `cmd` was already validated as a
+    relative path under `cwd` with no shell metacharacters."""
+    tokens = cmd.split()
+    prog = cwd / tokens[0]
+    argv = [str(prog), *tokens[1:]]
     try:
-        p = subprocess.Popen(["/bin/sh", "-c", cmd], stdin=subprocess.DEVNULL,
+        p = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL,
                              stdout=subprocess.DEVNULL,
                              stderr=subprocess.PIPE, start_new_session=True)
     except OSError as e:
@@ -215,8 +260,18 @@ def _fire(cfg: Config, rid: int, bot: str, check_cmd, prompt: str, level: str,
     """Runs in its own thread with its own connection."""
     conn = connect(cfg)
     try:
+        try:
+            if bots.get(conn, bot).status != "active":
+                activity.record(conn, "system", "routine.skipped",
+                                f"routine {rid} ({bot}): bot not active",
+                                str(rid))
+                return
+        except KeyError as e:
+            activity.record(conn, "system", "routine.failed",
+                            f"routine {rid} ({bot}): {e}", str(rid))
+            return
         if check_cmd:
-            work, problem = _run_check(check_cmd)
+            work, problem = _run_check(check_cmd, cfg.home)
             if problem:
                 activity.record(conn, "system", "routine.check_failed",
                                 f"routine {rid} ({bot}): {problem}", str(rid))
@@ -248,7 +303,8 @@ def due(cfg: Config, conn, now: str, wait: float = 2.0) -> list[int]:
     """Fire every enabled routine whose time has come, once however many
     periods were missed. Each routine's next time is stored before its check
     starts. Returns the routines whose message was queued within `wait`
-    seconds; a slower check finishes in the background."""
+    seconds; a slower check finishes in the background. Routines for
+    non-active bots are left due (next_due unchanged) until the bot resumes."""
     now_dt = datetime.fromisoformat(now)
     rows = [r for r in conn.execute("SELECT * FROM routines WHERE enabled=1"
                                     " ORDER BY id")
@@ -259,6 +315,11 @@ def due(cfg: Config, conn, now: str, wait: float = 2.0) -> list[int]:
         with _lock:
             if r["id"] in _inflight:
                 continue
+        try:
+            if bots.get(conn, r["bot"]).status != "active":
+                continue
+        except KeyError:
+            continue
         try:
             nxt = next_time(r["cron"], now)
         except ValueError as e:
@@ -316,8 +377,9 @@ def _run(fn):
 
 def _cmd_add(args) -> int:
     def go(conn):
+        cfg = Config.load()
         rid = add(conn, args.bot, args.cron, args.prompt, args.check,
-                  args.level, _actor())
+                  args.level, _actor(), home=cfg.home)
         print(f"routine {rid} added; first run "
               f"{ct_display(_get(conn, rid)['next_due'])}")
         return 0
@@ -353,8 +415,9 @@ def register(subparsers) -> None:
     a.add_argument("bot")
     a.add_argument("cron", help='5 fields, e.g. "0 7 * * *"')
     a.add_argument("prompt")
-    a.add_argument("--check", help="shell command: exit 0 means work to do, "
-                   "anything else means nothing")
+    a.add_argument("--check", help="relative path under the company home "
+                   "(no shell metacharacters or sudo): exit 0 means work to "
+                   "do, exit 1 means nothing")
     a.add_argument("--level", default="normal", choices=messages.LEVELS)
     a.set_defaults(func=_cmd_add)
     sub.add_parser("list").set_defaults(func=_cmd_list)
