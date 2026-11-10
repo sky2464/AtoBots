@@ -64,6 +64,7 @@ class TokenFileTests(Base):
         self.assertTrue(self.env_path.is_file())
         self.assertEqual(self.env_path.stat().st_mode & 0o777, 0o600)
         self.assertIn("tok-1", self.env_path.read_text())
+        self.assertEqual(env[admin_live.CACHE_TTL_VAR], "1h")
         live.cleanup()
         self.assertFalse(self.env_path.exists())
 
