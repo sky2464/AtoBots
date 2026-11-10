@@ -9,7 +9,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "engine"))
 
-from claudebot import bots, cli, items  # noqa: E402
+from claudebot import activity, bots, cli, items  # noqa: E402
 from claudebot.config import Config  # noqa: E402
 from claudebot.db import connect, init_db  # noqa: E402
 
@@ -188,6 +188,70 @@ class ItemCliTests(ItemsBase):
         self.assertIn("go ahead", self.run_cli("decision", "show", "D-0001")[1])
         with mock.patch("sys.stderr", io.StringIO()):
             self.assertEqual(self.run_cli("item", "status", "T-0001", "bogus")[0], 1)
+
+
+class CallerTests(ItemsBase):
+    def _run_row(self, bot, session, lane, ended=None):
+        self.conn.execute(
+            "INSERT INTO runs(bot, session_id, lane, started_at, ended_at)"
+            " VALUES (?,?,?,?,?)",
+            (bot, session, lane, "2026-11-10T00:00:00+00:00", ended))
+
+    def test_open_run_row_wins_over_the_environment(self):
+        self._run_row("admin", "sess-live", "live")
+        who = activity.caller(self.conn, environ={
+            "CB_BOT": "backend", "CB_SESSION_ID": "sess-live"})
+        self.assertEqual(who, activity.Caller("admin", "sess-live", "live", True))
+        self._run_row("backend", "sess-work", "normal")
+        worker = activity.caller(self.conn, environ={
+            "CB_BOT": "admin", "CB_SESSION_ID": "sess-work"})
+        self.assertEqual(
+            worker, activity.Caller("backend", "sess-work", "normal", False))
+
+    def test_closed_run_falls_back_to_cb_bot(self):
+        self._run_row("admin", "sess-old", "chat",
+                      ended="2026-11-10T01:00:00+00:00")
+        who = activity.caller(self.conn, environ={
+            "CB_BOT": "backend", "CB_SESSION_ID": "sess-old"})
+        self.assertEqual(who, activity.Caller("backend", None, None, False))
+
+    def test_no_variables_is_cli(self):
+        who = activity.caller(
+            self.conn, environ={},
+            environ_of=lambda pid: {},
+            parent_of=lambda pid: 1,
+            pid=100)
+        self.assertEqual(who, activity.Caller("cli", None, None, False))
+
+    def test_ancestor_environment_is_used_when_the_child_looks_like_cli(self):
+        self._run_row("backend", "parent-sess", "normal")
+
+        def parent_of(pid):
+            return {100: 50, 50: 1}[pid]
+
+        def environ_of(pid):
+            if pid == 50:
+                return {"CB_BOT": "admin", "CB_SESSION_ID": "parent-sess"}
+            return {}
+
+        who = activity.caller(
+            self.conn, environ={}, environ_of=environ_of, parent_of=parent_of,
+            pid=100)
+        self.assertEqual(
+            who, activity.Caller("backend", "parent-sess", "normal", False))
+
+        def bot_only(pid):
+            if pid == 40:
+                return {"CB_BOT": "backend"}
+            return {}
+
+        def parents(pid):
+            return {80: 40, 40: 1}[pid]
+
+        named = activity.caller(
+            self.conn, environ={}, environ_of=bot_only, parent_of=parents,
+            pid=80)
+        self.assertEqual(named, activity.Caller("backend", None, None, False))
 
 
 if __name__ == "__main__":
