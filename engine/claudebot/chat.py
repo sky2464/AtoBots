@@ -6,12 +6,13 @@ systemd-run: it needs the Owner's terminal). It holds an exclusive flock on
 `.chat.lock` for as long as the chat is open; the dispatcher reads that lock
 (`owner_connected`) and stays quiet while the Owner is talking.
 
-Rollover: when the chat gets long the Stop hook asks Admin for a summary and
-tells him to run `cb chat-rollover --summary-file F`. That command stores the
-summary, drops a marker and sends SIGTERM to the claude process named in the
-pid file (Admin's Bash tool is a child of claude, but not always its direct
-child, so the parent pid is not used). chat_loop sees the marker, archives the
-old transcript and starts claude again with the summary in its prompt.
+Rollover: the engine watches the session (rotation.Watcher, from the wait
+loop). When the context is too large, or large and idle past the cache
+lifetime, it builds a summary from the records and calls `rollover`, which
+stores the summary, drops a marker and sends SIGTERM to the claude process
+named in the pid file. chat_loop sees the marker, archives the old transcript
+and starts claude again with the summary in its prompt. Admin can still ask
+for the same thing with `cb chat-rollover --summary-file F`.
 """
 import fcntl
 import json
@@ -26,7 +27,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import activity, archive, bots, items, requests, runner
+from . import activity, archive, bots, items, requests, rotation, runner
 from .config import Config
 from .db import connect, ct_display, tx, utcnow
 
@@ -38,8 +39,6 @@ LAST_CHECK_KEY = "chat.last_check"
 SUMMARY_PROMPT_CAP = 20000
 TRANSCRIPT_SCAN_CAP = 16 * 1024 * 1024
 KILL_GRACE_SECONDS = 20
-DEFAULT_THRESHOLD = 100000
-NAG_STEP = 20000
 TOKEN_ENV = "CB_ROLLOVER_TOKEN"
 STATE_ENV = "CB_STATE_DIR"  # set by `cb admin serve`: its own state directory
 
@@ -68,10 +67,6 @@ def rollover_path(cfg: Config) -> Path:
 
 def marker_path(cfg: Config) -> Path:
     return chat_dir(cfg) / "rollover.pending"
-
-
-def last_block_path(cfg: Config) -> Path:
-    return chat_dir(cfg) / "last_block"
 
 
 def _read_token(cfg: Config):
@@ -305,55 +300,15 @@ def settings_for_chat(cfg: Config) -> dict:
     def hook(sub):
         return [{"hooks": [{"type": "command", "command": f"{cb} hook {sub}",
                             "timeout": 30}]}]
-    return {"hooks": {"UserPromptSubmit": hook("prompt"), "Stop": hook("stop")}}
-
-
-def _block_reason(cfg) -> str:
-    draft = (chat_dir(cfg) / "summary.md") if cfg else Path("summary.md")
-    cb = shlex.quote(str(_engine_cb()))
-    return (
-        "This chat has grown long and must continue in a fresh session. "
-        "Write a summary of the open thread: what the Owner asked, what is "
-        "done, what is still open, decisions made and anything he still has "
-        f"to answer. Save it to {draft}, then run: {cb} chat-rollover "
-        f"--summary-file {draft}\n"
-        "Tell the Owner in one short line that you are continuing in a "
-        "fresh session, then run the command.")
+    return {"hooks": {"UserPromptSubmit": hook("prompt")}}
 
 
 def cmd_hook_stop(args) -> int:
-    """Stop hook. Silent below the threshold; at or over it, blocks once.
-    Any failure passes silently: it must never break the Owner's chat."""
+    """Stop hook of sessions started by an older engine. It used to ask Admin
+    for a rollover summary; the engine now rotates sessions itself
+    (rotation.py), so this says nothing and never blocks."""
     try:
-        data = json.loads(sys.stdin.buffer.read().decode("utf-8"))
-        if data.get("stop_hook_active"):
-            return 0
-        cfg, threshold = None, DEFAULT_THRESHOLD
-        try:
-            cfg = Config.load()
-            threshold = cfg.chat_rollover_tokens
-        except Exception:
-            pass
-        if cfg is not None:
-            tok = _read_token(cfg)
-            if tok is not None and tok != os.environ.get(TOKEN_ENV):
-                return 0  # a newer rollover is already on its way
-        tokens = context_tokens(data.get("transcript_path"))
-        if tokens < threshold:
-            return 0
-        if cfg is not None:  # do not nag if the last request went unanswered
-            try:
-                last = int(last_block_path(cfg).read_text().strip())
-            except (OSError, ValueError):
-                last = None
-            if last is not None and tokens < last + NAG_STEP:
-                return 0
-            try:
-                chat_dir(cfg).mkdir(mode=0o700, exist_ok=True)
-                last_block_path(cfg).write_text(str(tokens))
-            except OSError:
-                pass
-        print(json.dumps({"decision": "block", "reason": _block_reason(cfg)}))
+        sys.stdin.buffer.read()
     except BaseException:
         pass
     return 0
@@ -421,7 +376,7 @@ def _compose_prompt(cfg, conn, brief_text: str, summary) -> str:
     if summary is not None:
         parts.append(
             "# Continuing an earlier chat\n\nThe earlier chat grew long and "
-            "was restarted. Your own summary of it follows. Carry on from "
+            "was restarted. A summary of it follows. Carry on from "
             "it; do not greet the Owner as if this were new.\n\n"
             + summary[:SUMMARY_PROMPT_CAP])
     return "\n\n".join(parts)
@@ -480,7 +435,7 @@ def _launch(cmd, cwd, env, cfg: Config | None = None):
         raise
 
 
-def _wait(proc, cfg, token=None, stop=None) -> int:
+def _wait(proc, cfg, token=None, stop=None, watcher=None) -> int:
     """Wait for claude. Ctrl-C belongs to claude, not to us. If a rollover
     was requested (or `stop` is set) and claude ignores SIGTERM, kill it after
     a grace period."""
@@ -489,6 +444,8 @@ def _wait(proc, cfg, token=None, stop=None) -> int:
         try:
             return proc.wait(timeout=1)
         except subprocess.TimeoutExpired:
+            if watcher is not None:
+                watcher.tick()  # may request a rollover; never raises
             if stop is not None and stop.is_set():
                 if not termed:
                     termed = True
@@ -567,7 +524,6 @@ def _one_session(cfg, conn, summary, token, first: bool, live=None) -> str:
         env.pop(TOKEN_ENV, None)
         if token:
             env[TOKEN_ENV] = token
-        _unlink(last_block_path(cfg))
         if summary is not None:
             print("Continuing this chat in a fresh session.", flush=True)
         elif live:
@@ -579,7 +535,8 @@ def _one_session(cfg, conn, summary, token, first: bool, live=None) -> str:
         # The marker stays until this session ends well; the summary file is
         # never deleted.
         _write_private(pid_path(cfg), f"{proc.pid}\n")
-        code = _wait(proc, cfg, token, live.stop if live else None)
+        code = _wait(proc, cfg, token, live.stop if live else None,
+                     rotation.Watcher(cfg, conn, session_id))
         now_token = _read_token(cfg)
         if live and live.stop.is_set():
             reason = "stopped"

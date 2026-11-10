@@ -19,7 +19,6 @@ from . import activity, bots, items, messages, tasks, usage
 from .config import Config
 from .db import tx, utcnow
 
-CLAUDE_HOME = "/home/claude"
 LEVEL_ORDER = ("housekeeping", "normal", "deep", "heavy")
 # A level may lower a thinker's model, and only housekeeping does. No level
 # raises a model: deep and heavy keep the bot's own (they change lane and
@@ -138,7 +137,7 @@ def build_command(cfg: Config, bot: bots.Bot, session_id: str, prompt_file,
     else:
         prompt = task
     cmd = ["sudo", "systemd-run", "--wait", "--collect", "--pipe",
-           "--uid=claude"]
+           f"--uid={cfg.run_user}"]
     if unit:
         cmd += [f"--unit={unit}"]
     cmd += [
@@ -147,8 +146,8 @@ def build_command(cfg: Config, bot: bots.Bot, session_id: str, prompt_file,
            "-p", "MemorySwapMax=0",
            "-p", f"RuntimeMaxSec={cfg.run_seconds}",
            f"--working-directory={cfg.bots_dir / bot.name}",
-           f"--setenv=HOME={CLAUDE_HOME}",
-           f"--setenv=PATH={CLAUDE_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin",
+           f"--setenv=HOME={cfg.run_home}",
+           f"--setenv=PATH={cfg.run_home}/.local/bin:/usr/local/bin:/usr/bin:/bin",
            f"--setenv=CB_BOT={bot.name}",
            f"--setenv=CB_SESSION_ID={session_id}",
            f"--setenv=CLAUDEBOT_HOME={cfg.home}",

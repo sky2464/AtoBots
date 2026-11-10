@@ -136,7 +136,7 @@ class CommandTests(RunnerBase):
                                    "/tmp/ident.md", "normal", task="do it",
                                    unit="claudebot-run-1.scope")
         self.assertEqual(cmd[:3], ["sudo", "systemd-run", "--wait"])
-        for flag in ("--collect", "--pipe", "--uid=claude"):
+        for flag in ("--collect", "--pipe", f"--uid={self.cfg.run_user}"):
             self.assertIn(flag, cmd)
         self.assertIn("--unit=claudebot-run-1.scope", cmd)
         self.assertIn("MemoryMax=1200M", cmd)
@@ -147,7 +147,7 @@ class CommandTests(RunnerBase):
         self.assertIn(f"--working-directory={self.cfg.bots_dir / 'backend'}", cmd)
         self.assertIn("--setenv=CB_BOT=backend", cmd)
         self.assertIn(f"--setenv=CLAUDEBOT_HOME={self.cfg.home}", cmd)
-        self.assertIn("--setenv=HOME=/home/claude", cmd)
+        self.assertIn(f"--setenv=HOME={self.cfg.run_home}", cmd)
         tail = cmd[cmd.index(self.cfg.claude_bin):]
         self.assertEqual(tail[1:3], ["-p", "do it"])
         self.assertIn("--dangerously-skip-permissions", tail)

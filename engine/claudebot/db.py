@@ -15,6 +15,14 @@ CREATE TABLE IF NOT EXISTS usage(
 );
 """
 
+# Questions Admin has put to the Owner and that still wait for an answer. A
+# bare "ok" or thumbs up counts as a request only while one is open.
+QUESTIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS owner_questions(
+  id INTEGER PRIMARY KEY, asked_at TEXT, text TEXT, answered_at TEXT
+);
+"""
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS bots(
   name TEXT PRIMARY KEY, role TEXT, org TEXT, reports_to TEXT,
@@ -67,9 +75,24 @@ BEGIN SELECT RAISE(ABORT, 'append-only'); END;
 CREATE TRIGGER IF NOT EXISTS activity_no_delete BEFORE DELETE ON activity
 BEGIN SELECT RAISE(ABORT, 'append-only'); END;
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
-""" + USAGE_TABLE
+""" + USAGE_TABLE + QUESTIONS_TABLE
 
-_CT = ZoneInfo("America/Chicago")
+_zone = ZoneInfo("America/Chicago")
+
+
+def set_zone(name: str) -> None:
+    """The zone for times shown to people and for routine schedules
+    (`timezone` in config.json)."""
+    global _zone
+    _zone = ZoneInfo(name)
+
+
+def zone_name() -> str:
+    return _zone.key
+
+
+def _zone_label(d: datetime) -> str:
+    return "CT" if _zone.key == "America/Chicago" else (d.tzname() or _zone.key)
 
 
 def connect(cfg: Config) -> sqlite3.Connection:
@@ -107,6 +130,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError:
             pass
     conn.execute(USAGE_TABLE)
+    conn.execute(QUESTIONS_TABLE)
 
 
 def init_db(cfg: Config) -> None:
@@ -136,7 +160,7 @@ def ct_display(iso: str) -> str:
     d = datetime.fromisoformat(iso)
     if d.tzinfo is None:
         d = d.replace(tzinfo=timezone.utc)
-    d = d.astimezone(_CT)
+    d = d.astimezone(_zone)
     hour = d.hour % 12 or 12
     return (f"{d:%a %b} {d.day}, {d.year}, {hour}:{d:%M} "
-            f"{'AM' if d.hour < 12 else 'PM'} CT")
+            f"{'AM' if d.hour < 12 else 'PM'} {_zone_label(d)}")

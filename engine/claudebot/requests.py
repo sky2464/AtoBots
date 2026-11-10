@@ -84,6 +84,74 @@ def startup_brief(conn: sqlite3.Connection, limit: int = 20) -> str:
     return "\n".join(out)
 
 
+_ACK_WORDS = {"yes", "y", "yep", "yeah", "ok", "okay", "k", "kk", "thanks",
+              "thx", "ty", "great", "cool", "nice", "perfect", "good",
+              "got", "it", "sure", "fine", "done", "thank", "you"}
+_ACK_EMOJI = "\U0001F44D\U0001F44C\U0001F64F\u2705\u2764\U0001F60A\U0001F642"
+_ACK_STRIP = re.compile(r"[\s.,!~\-\ufe0f\u200d\U0001F3FB-\U0001F3FF]+")
+ACK_REASON = "Acknowledgement ignored (nothing was asked)."
+
+
+def is_bare_ack(text) -> bool:
+    """True for a message that only acknowledges: yes, ok, thanks, a thumbs
+    up, and combinations of those. Anything with another word is a request."""
+    if not isinstance(text, str):
+        return False
+    rest = "".join(c for c in text.lower() if c not in _ACK_EMOJI)
+    had_emoji = len(rest) != len(text)
+    words = [w for w in _ACK_STRIP.split(rest) if w]
+    if not words:
+        return had_emoji
+    return len(words) <= 4 and all(w in _ACK_WORDS for w in words)
+
+
+def last_reply_asked(transcript_path) -> bool:
+    """True when Admin's last message in the session holds a question mark,
+    or when that cannot be told. So an answer to a question Admin forgot to
+    register with `cb question open` is never dropped."""
+    try:
+        with open(transcript_path, "rb") as f:
+            size = f.seek(0, os.SEEK_END)
+            f.seek(max(0, size - 512 * 1024))
+            lines = f.read().split(b"\n")
+    except (OSError, TypeError):
+        return True
+    for line in reversed(lines):
+        try:
+            d = json.loads(line)
+            if d.get("isSidechain") or d.get("type") != "assistant":
+                continue
+            content = d["message"]["content"]
+        except (ValueError, KeyError, TypeError, AttributeError):
+            continue
+        if isinstance(content, str):
+            texts = [content]
+        else:
+            texts = [b.get("text", "") for b in content
+                     if isinstance(b, dict) and b.get("type") == "text"]
+        if any(t.strip() for t in texts):
+            return any("?" in t for t in texts)
+    return False  # Admin has said nothing yet, so nothing was asked
+
+
+def open_question(conn: sqlite3.Connection, text: str) -> int:
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("the question is empty")
+    return conn.execute(
+        "INSERT INTO owner_questions(asked_at, text) VALUES (?,?)",
+        (utcnow(), text.strip())).lastrowid
+
+
+def has_open_question(conn: sqlite3.Connection) -> bool:
+    return conn.execute("SELECT 1 FROM owner_questions WHERE answered_at"
+                        " IS NULL").fetchone() is not None
+
+
+def close_questions(conn: sqlite3.Connection) -> int:
+    return conn.execute("UPDATE owner_questions SET answered_at=? WHERE"
+                        " answered_at IS NULL", (utcnow(),)).rowcount
+
+
 _CHANNEL = re.compile(r'<channel ([^>]*)>\n(.*?)\n</channel>', re.DOTALL)
 _ATTR = re.compile(r'(\w+)="([^"]*)"')
 
@@ -163,7 +231,9 @@ def _skip_command(conn, text: str) -> bool:
 
 
 def _cmd_hook_prompt(args) -> int:
-    """UserPromptSubmit hook. No output, no AI cost, always exits 0."""
+    """UserPromptSubmit hook. No AI cost, always exits 0. Silent, except that
+    a bare acknowledgement ("ok", a thumbs up) while no question is open is
+    blocked: it would cost a full turn and asks for nothing."""
     raw = b""
     try:
         raw = sys.stdin.buffer.read()
@@ -177,12 +247,21 @@ def _cmd_hook_prompt(args) -> int:
             wrapped = channel_messages(text)
             if wrapped is None and _skip_command(conn, text):
                 return 0
+            said = [t for _, t in wrapped] if wrapped else [text]
+            if all(is_bare_ack(t) for t in said) \
+                    and not has_open_question(conn) \
+                    and not last_reply_asked(data.get("transcript_path")):
+                activity.record(conn, "hook", "request.ack_ignored",
+                                "bare acknowledgement, nothing was asked")
+                print(json.dumps({"decision": "block", "reason": ACK_REASON}))
+                return 0
             if wrapped is None:
                 capture(conn, text, str(session))
             for source, inner in wrapped or ():
                 rid = capture(conn, inner, str(session), source)
                 activity.record(conn, "hook", "request.channel",
                                 f"request arrived through {source}", str(rid))
+            close_questions(conn)  # he spoke: whatever was asked is answered
         finally:
             conn.close()
     except BaseException as e:
@@ -220,6 +299,29 @@ def _cmd_brief(args):
     return _run(go)
 
 
+def _cmd_question_open(args):
+    def go(cfg, conn):
+        print(open_question(conn, args.text))
+        return 0
+    return _run(go)
+
+
+def _cmd_question_close(args):
+    def go(cfg, conn):
+        print(close_questions(conn))
+        return 0
+    return _run(go)
+
+
+def _cmd_question_list(args):
+    def go(cfg, conn):
+        for r in conn.execute("SELECT * FROM owner_questions WHERE"
+                              " answered_at IS NULL ORDER BY id"):
+            print(f"{r['id']}\t{ct_display(r['asked_at'])}\t{r['text']}")
+        return 0
+    return _run(go)
+
+
 def register(subparsers) -> None:
     sp = subparsers.add_parser("request", help="Owner requests")
     sub = sp.add_subparsers(dest="request_cmd", required=True)
@@ -232,6 +334,15 @@ def register(subparsers) -> None:
     br = sub.add_parser("brief")
     br.add_argument("--limit", type=int, default=20)
     br.set_defaults(func=_cmd_brief)
+    q = subparsers.add_parser(
+        "question", help="questions waiting for the Owner's answer")
+    qs = q.add_subparsers(dest="question_cmd", required=True)
+    qo = qs.add_parser("open", help="register a question you just asked him")
+    qo.add_argument("text")
+    qo.set_defaults(func=_cmd_question_open)
+    qs.add_parser("close", help="mark every open question answered"
+                  ).set_defaults(func=_cmd_question_close)
+    qs.add_parser("list").set_defaults(func=_cmd_question_list)
     h = subparsers.add_parser("hook", help="Claude Code hooks")
     hs = h.add_subparsers(dest="hook_cmd", required=True)
     hp = hs.add_parser("prompt")
