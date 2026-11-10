@@ -32,10 +32,11 @@ any account himself. Install a new tool only from a source he approved.
 
 Where things live, if the job needs them: an MCP server definition is a file
 `$CLAUDEBOT_HOME/mcp/NAME.json` (name it in `--mcp NAME`), and a plugin is a
-folder `$CLAUDEBOT_HOME/plugins/NAME/` (name it in `--plugins NAME`). Secrets
-stored with `cb secret` are not wired into MCP yet, so a token in an MCP
-definition would have to be a `${VARIABLE}` the bot's session already has;
-never write a token value into the file. `--connectors` exposes every account
+folder `$CLAUDEBOT_HOME/plugins/NAME/` (name it in `--plugins NAME`). A token an
+MCP server needs is written in its definition as `${secret:NAME}`, the name
+of an item in the secure store; the value is filled in when the bot's run
+starts and each use is recorded. Never write a token value into the file.
+`--connectors` exposes every account
 connector the Owner has linked (mail, calendar, drive and so on) to that bot,
 not just one, so ask him first and say so plainly.
 

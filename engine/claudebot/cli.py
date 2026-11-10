@@ -4,16 +4,16 @@ import shutil
 import sys
 from pathlib import Path
 
-from . import (admin_live, archive, backup, bots, chat, dispatcher, doctor,
-               gitlog, items, messages, requests, routines, search, store,
-               tasks, usage)
+from . import (activity, admin_live, archive, backup, bots, chat, dispatcher,
+               doctor, gitlog, items, messages, requests, routines, search,
+               store, tasks, usage)
 from . import __version__
 from .config import Config
-from .db import connect, harden_data_files, init_db
+from .db import connect, init_db
 
 MODULES = [store, bots, items, messages, requests, search, routines,
            dispatcher, archive, chat, doctor, backup, admin_live, usage,
-           tasks]
+           tasks, activity]
 
 
 TEMPLATES = Path(__file__).resolve().parent.parent / "templates"
@@ -34,7 +34,6 @@ def init_company(cfg: Config, company: str) -> list[str]:
     cfg.secrets_dir.mkdir(mode=0o700, exist_ok=True)
     cfg.secrets_dir.chmod(0o700)
     init_db(cfg)
-    harden_data_files(cfg)
     gitlog.ensure_repo(cfg)
     rules = cfg.home / "rules.md"
     if not rules.exists():
@@ -77,6 +76,29 @@ def init_company(cfg: Config, company: str) -> list[str]:
     return done
 
 
+def refresh_engine_templates(cfg: Config) -> list[str]:
+    """Copy engine-owned rules.md and bundled skills into the company home.
+    Does not touch bot SOUL.md or PERSONA.md."""
+    done = []
+    shutil.copyfile(TEMPLATES / "rules.md", cfg.home / "rules.md")
+    done.append("rules.md")
+    src = TEMPLATES / "skills"
+    dst = cfg.home / "skills"
+    dst.mkdir(parents=True, exist_ok=True)
+    refreshed = 0
+    for skill in src.iterdir():
+        if not skill.is_dir():
+            continue
+        target = dst / skill.name
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(skill, target)
+        refreshed += 1
+    if refreshed:
+        done.append("skills")
+    return done
+
+
 def _cmd_init(args) -> int:
     try:
         cfg = Config.load()
@@ -94,6 +116,17 @@ def _cmd_version(_args) -> int:
     return 0
 
 
+def _cmd_templates_refresh(_args) -> int:
+    try:
+        cfg = Config.load()
+        done = refresh_engine_templates(cfg)
+    except (RuntimeError, ValueError, OSError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print("refreshed " + (", ".join(done) if done else "nothing"))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="cb")
     sub = p.add_subparsers(dest="command", required=True)
@@ -104,6 +137,10 @@ def build_parser() -> argparse.ArgumentParser:
     ip.set_defaults(func=_cmd_init)
     vp = sub.add_parser("version", help="print the ClaudeBot version")
     vp.set_defaults(func=_cmd_version)
+    tp = sub.add_parser("templates", help="engine-owned company templates")
+    tsub = tp.add_subparsers(dest="templates_cmd", required=True)
+    tr = tsub.add_parser("refresh", help="refresh rules.md and bundled skills")
+    tr.set_defaults(func=_cmd_templates_refresh)
     return p
 
 

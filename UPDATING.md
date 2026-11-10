@@ -5,8 +5,8 @@ repository on your server and ran `engine/install.sh`. The supported deploy path
 is a Git clone plus `engine/update.sh` after release tags (see
 [docs/deploy.md](docs/deploy.md)). Do not rsync with `--delete` into the clone.
 
-Run every command below as the user `claude` on the server, in the ClaudeBot
-clone (the folder that holds `engine/`).
+Run every command below as the same UNIX account that runs the bots, in the
+ClaudeBot clone (the folder that holds `engine/`).
 
 ## See the current version
 
@@ -35,12 +35,11 @@ To update to one specific release instead:
 engine/update.sh --tag v0.0.1
 ```
 
-The script runs these steps in order and prints each one. It restarts the
-dispatcher (and Admin, if it is enabled), so running work pauses for a moment.
-
-The update restarts the services but does not re-install the systemd unit
-files. If a release changes files in `engine/systemd/`, its CHANGELOG section
-says what to re-install by hand.
+The script runs these steps in order and prints each one. It waits for
+dispatcher runs to finish (up to 30 minutes), re-installs changed systemd unit
+files, refreshes engine-owned `rules.md` and bundled skills (not bot SOUL or
+PERSONA files), then restarts the dispatcher (and Admin, if it is enabled), so
+running work pauses for a moment.
 
 ## What the update backs up, and where
 
@@ -50,7 +49,7 @@ Before anything changes, the script copies the company database to:
 $CLAUDEBOT_HOME/backups/pre-update-<old version>-<UTC date>.db
 ```
 
-For example, `/home/claude/MyCompany/backups/pre-update-0.0.1-2026-11-10.db`.
+For example, `$CLAUDEBOT_HOME/backups/pre-update-0.0.1-2026-11-10.db`.
 The folder is created if it does not exist, and the file is readable only by
 you. The copy is a full, consistent copy made by SQLite. The update runs
 `cb init`, which also rewrites each bot's settings file and commits any pending
