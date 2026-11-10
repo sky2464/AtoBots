@@ -242,6 +242,18 @@ class PacketTests(RunnerBase):
         self.assertNotIn("FILE-CONTENT-XYZ", p)
         self.assertNotIn("HANDOFF-CONTENT-XYZ", p)
 
+    def test_task_packet_carries_memory_and_colleagues(self):
+        bots.update(self.cfg, self.conn, "backend", "admin", role="Backend engineer")
+        (self.cfg.bots_dir / "backend" / "MEMORY.md").write_text("MEM-NOTE-XYZ")
+        ms = self.msgs({"subject": "Job", "body": "do it"})
+        p = runner.task_packet(self.cfg, self.conn, self.bot(), ms)
+        self.assertIn("## Memory", p)
+        self.assertIn("MEM-NOTE-XYZ", p)
+        self.assertIn("## Colleagues", p)
+        self.assertIn("- admin: ", p)
+        self.assertLess(p.index("## Memory"), p.index("## Message"))
+        self.assertLess(p.index("## Colleagues"), p.index("## Message"))
+
     def test_packet_has_no_history(self):
         ms = self.msgs({"subject": "first job", "body": "FIRST-BODY"})
         runner.run(self.cfg, self.conn, self.bot(), ms, "normal")
@@ -309,6 +321,11 @@ class RunTests(RunnerBase):
     def row(self, run_id):
         return self.conn.execute("SELECT * FROM runs WHERE id=?",
                                  (run_id,)).fetchone()
+
+    def test_run_command_has_no_agents_flag(self):
+        self.run_bot()
+        argv = self.rec()["argv"]
+        self.assertNotIn("--agents", argv)
 
     def test_run_ok_records_row_and_tokens(self):
         r = self.run_bot()

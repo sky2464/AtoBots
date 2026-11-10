@@ -83,7 +83,9 @@ def _plugin_dirs(cfg: Config, bot: bots.Bot) -> list:
 def task_packet(cfg: Config, conn: sqlite3.Connection, bot, msgs) -> str:
     """What to do now, as pointers. File contents are not included."""
     bot = _bot(conn, bot)
-    lines = [f"You are {bot.name}. New work for this run:", ""]
+    lines = [bots.memory_block(cfg, bot.name), "",
+             bots.colleagues_block(conn, bot.name), "",
+             f"You are {bot.name}. New work for this run:", ""]
     item_ids = []
     for m in msgs:
         lines.append(f"## Message {m['id']} ({m['kind']}) from {m['from_bot']}: "
@@ -267,7 +269,7 @@ def run(cfg: Config, conn: sqlite3.Connection, bot, msgs, lane: str,
         cmd = build_command(
             cfg, bot, session_id, ident, lane,
             task=task_packet(cfg, conn, bot, msgs), model=model, effort=effort,
-            mcp_config=mcp, agents=bots.agents_json(conn, bot.name))
+            mcp_config=mcp)
         try:
             p = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True,
                                text=True, errors="replace",

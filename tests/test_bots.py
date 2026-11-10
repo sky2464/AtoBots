@@ -184,8 +184,10 @@ class PromptTests(BotsBase):
         (self.cfg.home / "rules.md").write_text("RULES-TEXT")
         p = bots.identity_prompt(self.cfg, self.conn, "backend")
         order = [p.index(x) for x in ("I am a soul.", "Calm and brief.",
-                                      "MEM-TEXT", "RULES-TEXT")]
+                                      "RULES-TEXT")]
         self.assertEqual(order, sorted(order))
+        # Memory is not part of the identity: it moved to the task packet
+        self.assertNotIn("MEM-TEXT", p)
 
     def test_rules_optional(self):
         self.new()
@@ -257,6 +259,44 @@ class CliTests(BotsBase):
         self.assertEqual(bots.get(self.conn, "backend").status, "retired")
         rc, out = self.run_cli("check")
         self.assertEqual(rc, 0)
+
+
+
+class StablePrefixTests(BotsBase):
+    def test_prefix_bytes_identical_when_memory_changes(self):
+        self.new()
+        d = self.cfg.bots_dir / "backend"
+        (d / "MEMORY.md").write_text("first memory")
+        before = bots.identity_prompt(self.cfg, self.conn, "backend").encode()
+        (d / "MEMORY.md").write_text("second memory, edited between runs")
+        after = bots.identity_prompt(self.cfg, self.conn, "backend").encode()
+        self.assertEqual(before, after)
+
+    def test_memory_block_reads_capped_memory(self):
+        self.new()
+        (self.cfg.bots_dir / "backend" / "MEMORY.md").write_text("MEM-TEXT")
+        block = bots.memory_block(self.cfg, "backend")
+        self.assertTrue(block.startswith("## Memory\n\n"))
+        self.assertIn("MEM-TEXT", block)
+        (self.cfg.bots_dir / "backend" / "MEMORY.md").write_text(
+            "M" * (self.cfg.memory_cap_bytes + 500))
+        self.assertLessEqual(len(bots.memory_block(self.cfg, "backend").encode()),
+                             self.cfg.memory_cap_bytes + 64)
+
+    def test_colleagues_block_lists_other_active_bots(self):
+        self.new("admin", role="Chief")
+        self.new("backend", role="Backend engineer")
+        self.new("old", role="Retired one")
+        self.new("pausy", role="Paused one")
+        bots.set_status(self.conn, "old", "retired", "admin")
+        bots.set_status(self.conn, "pausy", "paused", "admin")
+        block = bots.colleagues_block(self.conn, exclude="admin")
+        self.assertTrue(block.startswith("## Colleagues\n"))
+        self.assertIn("- backend: Backend engineer", block)
+        self.assertNotIn("admin", block)
+        self.assertNotIn("old", block)
+        self.assertNotIn("pausy", block)
+        self.assertEqual(block, bots.colleagues_block(self.conn, exclude="admin"))
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ from unittest import mock
 ENGINE = Path(__file__).resolve().parent.parent / "engine"
 sys.path.insert(0, str(ENGINE))
 
-from claudebot import bots, chat, cli, items, requests  # noqa: E402
+from claudebot import admin_live, bots, chat, cli, items, requests  # noqa: E402
 from claudebot.config import Config  # noqa: E402
 from claudebot.db import connect, init_db  # noqa: E402
 
@@ -452,6 +452,17 @@ class RolloverCommandTests(Base):
             self.assertEqual(
                 cli.main(["chat-rollover", "--summary-file",
                           str(self.root / "missing")]), 1)
+
+
+class ComposeMemoryTests(Base):
+    """Memory left the identity prompt; both chat prompts must still carry it."""
+    def test_chat_and_live_prompts_keep_memory(self):
+        (self.cfg.bots_dir / "admin" / "MEMORY.md").write_text("ADMIN-MEM-XYZ")
+        chat_p = chat._compose_prompt(self.cfg, self.conn, "BRIEF", None)
+        live_p = admin_live.Live().compose(self.cfg, self.conn, "BRIEF", None)
+        for p in (chat_p, live_p):
+            self.assertIn("ADMIN-MEM-XYZ", p)
+            self.assertLess(p.index("ADMIN-MEM-XYZ"), p.index("BRIEF"))
 
 
 if __name__ == "__main__":
