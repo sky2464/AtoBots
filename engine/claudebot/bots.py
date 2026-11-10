@@ -338,13 +338,28 @@ def set_status(conn: sqlite3.Connection, name: str, status: str,
         activity.record(conn, actor, f"bot.{status}", name, name)
 
 
-def _read_capped(path: Path, cap: int) -> str:
-    """Read at most `cap` bytes, keeping the newest suffix (memory/persona
-    append; the oldest head is what condensation drops first)."""
+def _read_capped(path: Path, cap: int, keep: str = "tail") -> str:
+    """Read at most `cap` bytes.
+
+    `tail` keeps the newest suffix (memory and persona append; condensation
+    drops the oldest head). `head` keeps the opening, which is where Soul and
+    the shared rules put the limits, and says the file was cut.
+    """
     try:
         data = path.read_bytes()
     except FileNotFoundError:
         return ""
+    if len(data) <= cap:
+        return data.decode("utf-8", errors="ignore")
+    if keep == "head":
+        chunk = data[:cap]
+        nl = chunk.rfind(b"\n")
+        if nl >= 0:
+            chunk = chunk[:nl + 1]
+        text = chunk.decode("utf-8", errors="ignore")
+        if text and not text.endswith("\n"):
+            text += "\n"
+        return text + "[cut: file is over its size limit]"
     return data[-cap:].decode("utf-8", errors="ignore")
 
 
@@ -359,18 +374,14 @@ def identity_prompt(cfg: Config, conn: sqlite3.Connection, name: str) -> str:
     get(conn, name)
     d = _bot_dir(cfg, name)
     parts = [
-        ("Soul", _read_capped(d / "SOUL.md", cfg.soul_cap_bytes)),
+        ("Soul", _read_capped(d / "SOUL.md", cfg.soul_cap_bytes, keep="head")),
         ("Persona", _HTML_COMMENT.sub("", _read_capped(
             d / "PERSONA.md", cfg.persona_cap_bytes))),
     ]
     rules = cfg.home / "rules.md"
     if rules.is_file():
-        cap = 4 * 1024
-        size = rules.stat().st_size
-        if size > cap:
-            print(f"warning: rules.md is {size} bytes; only the last {cap} "
-                  f"bytes are sent to the model", file=sys.stderr)
-        parts.append(("Shared rules", _read_capped(rules, cap)))
+        parts.append(("Shared rules", _read_capped(
+            rules, cfg.rules_cap_bytes, keep="head")))
     return "\n\n".join(f"# {title}\n\n{text.strip()}" for title, text in parts)
 
 
@@ -439,6 +450,12 @@ def relink_skills(cfg: Config, conn: sqlite3.Connection) -> int:
 
 def check(cfg: Config, conn: sqlite3.Connection) -> list[str]:
     msgs = []
+    rules = cfg.home / "rules.md"
+    if rules.is_file():
+        size = rules.stat().st_size
+        if size > cfg.rules_cap_bytes:
+            msgs.append(f"rules.md is {size} bytes, over the "
+                        f"{cfg.rules_cap_bytes} byte cap")
     caps = {"SOUL.md": cfg.soul_cap_bytes, "PERSONA.md": cfg.persona_cap_bytes,
             "MEMORY.md": cfg.memory_cap_bytes}
     for status in STATUSES:

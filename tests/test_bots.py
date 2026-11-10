@@ -434,6 +434,26 @@ class StablePrefixTests(BotsBase):
         self.assertIn("NEW-", text[-40:])
         self.assertNotIn("OLD-", text[:40])
 
+    def test_read_capped_keeps_the_head_of_soul_and_rules(self):
+        self.new()
+        cap = self.cfg.soul_cap_bytes
+        path = self.cfg.bots_dir / "backend" / "SOUL.md"
+        path.write_text("OPENING RULE\n" + ("x" * (cap + 50)) + "\nTAIL SHOULD GO")
+        text = bots._read_capped(path, cap, keep="head")
+        self.assertTrue(text.startswith("OPENING RULE\n"))
+        self.assertIn("[cut: file is over its size limit]", text)
+        self.assertNotIn("TAIL SHOULD GO", text)
+        rules = self.cfg.home / "rules.md"
+        rules.write_text("FIRST RULE\n" + ("y\n" * (cap + 10)) + "LAST")
+        prompt = bots.identity_prompt(self.cfg, self.conn, "backend")
+        self.assertIn("OPENING RULE", prompt)
+        self.assertIn("FIRST RULE", prompt)
+        self.assertNotIn("TAIL SHOULD GO", prompt)
+        self.assertNotIn("\nLAST", prompt)
+        msgs = bots.check(self.cfg, self.conn)
+        self.assertTrue(any(m.startswith("rules.md") and "over the" in m
+                            for m in msgs), msgs)
+
     def test_colleagues_block_lists_other_active_bots(self):
         self.new("admin", role="Chief")
         self.new("backend", role="Backend engineer")

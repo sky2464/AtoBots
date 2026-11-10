@@ -33,6 +33,7 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(cfg.run_home.startswith("/"))
         self.assertEqual(cfg.claude_bin, f"{cfg.run_home}/.local/bin/claude")
         self.assertEqual(cfg.timezone, "America/Chicago")
+        self.assertEqual(cfg.rules_cap_bytes, 4 * 1024)
 
     def test_text_settings_can_be_overridden(self):
         cfg = self.load({"run_user": "bots", "run_home": "/srv/bots",

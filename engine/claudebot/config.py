@@ -59,6 +59,7 @@ class Config:
     usage_limit_retry_seconds: int = 900
     soul_cap_bytes: int = 4 * 1024
     persona_cap_bytes: int = 4 * 1024
+    rules_cap_bytes: int = 4 * 1024
     memory_cap_bytes: int = 8 * 1024
     chat_rollover_tokens: int = 100000
     # Rotate a session that is this large once it has sat idle longer than
