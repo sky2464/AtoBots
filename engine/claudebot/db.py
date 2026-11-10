@@ -15,6 +15,14 @@ CREATE TABLE IF NOT EXISTS usage(
 );
 """
 
+# Questions the Admin put to the Owner that he has not answered yet (cost
+# control: a bare acknowledgement is refused when none is open).
+OWNER_QUESTIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS owner_questions(
+  id INTEGER PRIMARY KEY, asked_at TEXT, text TEXT, answered_at TEXT
+);
+"""
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS bots(
   name TEXT PRIMARY KEY, role TEXT, org TEXT, reports_to TEXT,
@@ -67,7 +75,7 @@ BEGIN SELECT RAISE(ABORT, 'append-only'); END;
 CREATE TRIGGER IF NOT EXISTS activity_no_delete BEFORE DELETE ON activity
 BEGIN SELECT RAISE(ABORT, 'append-only'); END;
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
-""" + USAGE_TABLE
+""" + USAGE_TABLE + OWNER_QUESTIONS_TABLE
 
 _CT = ZoneInfo("America/Chicago")
 
@@ -107,6 +115,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError:
             pass
     conn.execute(USAGE_TABLE)
+    conn.execute(OWNER_QUESTIONS_TABLE)
 
 
 def init_db(cfg: Config) -> None:
