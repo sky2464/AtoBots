@@ -345,3 +345,16 @@ Engine-owned, and refreshed by `cb templates refresh` on every update from
 
 When a release changes a bot's starting persona, the CHANGELOG says so, and
 the new version is in the engine's `engine/templates/` folder.
+
+## Verifying releases
+
+Maintainers sign a release with `git tag -s`. To make this clone refuse an
+unsigned or wrongly signed tag, set the fingerprint `git verify-tag` prints:
+
+```bash
+git config claudebot.releaseKey <fingerprint>
+```
+
+`engine/update.sh` then runs `git verify-tag` and continues only when that
+fingerprint is in the output. With no key configured it prints one note and
+continues. The check happens before the checkout or the database backup.

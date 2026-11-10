@@ -144,6 +144,16 @@ if ! git -C "$REPO_DIR" rev-parse -q --verify "refs/tags/$TAG^{commit}" >/dev/nu
     echo "error: there is no tag $TAG. List the releases with: git -C $REPO_DIR tag --list 'v*'" >&2
     exit 1
 fi
+RELEASE_KEY=$(git -C "$REPO_DIR" config --get claudebot.releaseKey || true)
+if [ -n "$RELEASE_KEY" ]; then
+    verify_out=$(git -C "$REPO_DIR" verify-tag "$TAG" 2>&1 || true)
+    if ! printf '%s\n' "$verify_out" | grep -F -q -- "$RELEASE_KEY"; then
+        echo "error: tag $TAG is not signed by the configured release key" >&2
+        exit 1
+    fi
+else
+    echo 'note: release tags are not verified (see UPDATING.md, "Verifying releases")'
+fi
 TARGET_COMMIT=$(git -C "$REPO_DIR" rev-parse "refs/tags/$TAG^{commit}")
 if [ "$(git -C "$REPO_DIR" rev-parse HEAD)" = "$TARGET_COMMIT" ]; then
     echo "Already on $TAG (ClaudeBot $OLD_VERSION). Nothing to do."
