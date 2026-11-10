@@ -47,8 +47,8 @@ STATE_ENV = "CB_STATE_DIR"  # set by `cb admin serve`: its own state directory
 
 def chat_dir(cfg: Config) -> Path:
     """State of the running chat. The always-on Admin session sets
-    CB_STATE_DIR so the Stop hook and `cb chat-rollover` find its files, not
-    those of a `cb chat`."""
+    CB_STATE_DIR so `cb chat-rollover` and the engine's rotation find its
+    files, not those of a `cb chat`."""
     override = os.environ.get(STATE_ENV)
     return Path(override) if override else cfg.home / ".chat"
 

@@ -200,6 +200,16 @@ def _ack_ignored(conn, text: str, wrapped) -> bool:
         return False
 
 
+def _record_ack(conn, text: str, wrapped) -> None:
+    """Log one row for a refused acknowledgement. Any failure is swallowed:
+    the block must happen even when the activity row cannot be written."""
+    try:
+        ack = " ".join(t for _, t in wrapped) if wrapped is not None else text
+        activity.record(conn, "hook", "request.ack_ignored", ack[:40])
+    except Exception:
+        pass
+
+
 def _close_questions(conn) -> None:
     """A saved message is the Owner's answer: close every open question."""
     try:
@@ -226,6 +236,7 @@ def _cmd_hook_prompt(args) -> int:
             if wrapped is None and _skip_command(conn, text):
                 return 0
             if _ack_ignored(conn, text, wrapped):
+                _record_ack(conn, text, wrapped)
                 print(json.dumps({"decision": "block", "reason":
                                   "Acknowledgement ignored (nothing was asked)."}))
                 return 0

@@ -17,7 +17,7 @@ cb version
 ## See the available releases
 
 ```bash
-git fetch --tags && git tag --list 'v*'
+git fetch --tags && git tag --list 'v*' --sort=v:refname
 ```
 
 The newest release is the last line. Release notes are also on the GitHub
@@ -38,6 +38,10 @@ engine/update.sh --tag v0.0.1
 The script runs these steps in order and prints each one. It restarts the
 dispatcher (and Admin, if it is enabled), so running work pauses for a moment.
 
+The update restarts the services but does not re-install the systemd unit
+files. If a release changes files in `engine/systemd/`, its CHANGELOG section
+says what to re-install by hand.
+
 ## What the update backs up, and where
 
 Before anything changes, the script copies the company database to:
@@ -48,9 +52,10 @@ $CLAUDEBOT_HOME/backups/pre-update-<old version>-<UTC date>.db
 
 For example, `/home/claude/MyCompany/backups/pre-update-0.0.1-2026-11-10.db`.
 The folder is created if it does not exist, and the file is readable only by
-you. The copy is a full, consistent copy made by SQLite. The update does not
-rewrite your company files; the only change it makes to the company home is a
-"Check setup" entry in the company's Git history.
+you. The copy is a full, consistent copy made by SQLite. The update runs
+`cb init`, which also rewrites each bot's settings file and commits any pending
+company changes to the company's Git history. Restoring the database backup
+does not undo those.
 
 ## If the update refuses to start
 

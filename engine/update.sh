@@ -16,11 +16,13 @@ usage() {
 }
 
 TAG=""
+EXPLICIT_TAG=0
 while [ "$#" -gt 0 ]; do
     case $1 in
         --tag)
             [ "$#" -ge 2 ] || usage
             TAG=$2
+            EXPLICIT_TAG=1
             shift 2
             ;;
         *) usage ;;
@@ -138,6 +140,13 @@ TARGET_COMMIT=$(git -C "$REPO_DIR" rev-parse "refs/tags/$TAG^{commit}")
 if [ "$(git -C "$REPO_DIR" rev-parse HEAD)" = "$TARGET_COMMIT" ]; then
     echo "Already on $TAG (ClaudeBot $OLD_VERSION). Nothing to do."
     exit 0
+fi
+# Downgrade guard: the checkout is newer than the target tag. Refuse unless the
+# user named the tag with --tag (an explicit rollback).
+if [ "$EXPLICIT_TAG" -eq 0 ] && git -C "$REPO_DIR" merge-base --is-ancestor "$TARGET_COMMIT" HEAD; then
+    echo "error: this checkout ($OLD_VERSION) is newer than the newest release, $TAG." >&2
+    echo "Refusing to go back. To roll back on purpose, run: engine/update.sh --tag $TAG" >&2
+    exit 1
 fi
 echo "Updating to $TAG ..."
 
