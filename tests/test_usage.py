@@ -39,6 +39,18 @@ class FromResultTests(unittest.TestCase):
             "model": "claude-sonnet-5-0", "input_tokens": 10,
             "cache_write": 100, "cache_read": 1000, "output_tokens": 7})
 
+    def test_from_result_picks_the_model_with_most_tokens(self):
+        # The helper model comes first; the one that did the work is second.
+        data = {"usage": {"input_tokens": 1},
+                "modelUsage": {
+                    "claude-haiku-5-5": {"inputTokens": 900, "outputTokens": 10,
+                                         "cacheReadInputTokens": 0,
+                                         "cacheCreationInputTokens": 0},
+                    "claude-sonnet-5-0": {"inputTokens": 10, "outputTokens": 500,
+                                          "cacheReadInputTokens": 9000,
+                                          "cacheCreationInputTokens": 0}}}
+        self.assertEqual(usage.from_result(data)["model"], "claude-sonnet-5-0")
+
     def test_from_result_without_data_is_zero_and_no_model(self):
         empty = {"model": None, "input_tokens": 0, "cache_write": 0,
                  "cache_read": 0, "output_tokens": 0}
@@ -99,6 +111,18 @@ class IngestTests(UsageBase):
             h.write(_line("m1"))  # the second block arrives in a later pass
         self.assertEqual(usage.ingest_transcripts(self.cfg, self.conn), 0)
 
+    def test_truncated_file_is_read_again_from_the_top(self):
+        f = self.project_folder() / "sess-trunc.jsonl"
+        f.write_bytes(_line("m1") + _line("m2"))
+        self.assertEqual(usage.ingest_transcripts(self.cfg, self.conn), 2)
+        # Replaced by a shorter file whose only message has the id that was
+        # the stored last id: both the offset and that id must be reset.
+        f.write_bytes(_line("m2"))
+        self.assertEqual(usage.ingest_transcripts(self.cfg, self.conn), 1)
+        self.assertEqual(usage.ingest_transcripts(self.cfg, self.conn), 0)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM usage WHERE ref='sess-trunc'").fetchone()[0], 3)
+
     def test_ingest_skips_partial_last_line(self):
         f = self.project_folder() / "sess-4.jsonl"
         f.write_bytes(_line("m1") + b'{"type": "assistant", "mess')
@@ -154,6 +178,18 @@ class ReportTests(UsageBase):
         text = usage.report(self.conn, since="24h", by="bot")
         self.assertIn("mismatch", text.lower())
         self.assertIn("claude-opus-5-0", text)
+
+    def test_housekeeping_haiku_on_a_sonnet_bot_is_not_flagged(self):
+        usage.record(self.conn, bot="backend", model="claude-haiku-5-5", lane="n",
+                     trigger="wake", ref="1", input_tokens=1, cache_write=0,
+                     cache_read=0, output_tokens=1)
+        self.assertNotIn("mismatch", usage.report(self.conn, since="24h").lower())
+
+    def test_opus_on_a_sonnet_bot_is_still_flagged(self):
+        usage.record(self.conn, bot="backend", model="claude-opus-5-0", lane="n",
+                     trigger="wake", ref="1", input_tokens=1, cache_write=0,
+                     cache_read=0, output_tokens=1)
+        self.assertIn("mismatch", usage.report(self.conn, since="24h").lower())
 
     def test_matching_model_is_not_flagged(self):
         usage.record(self.conn, bot="backend", model="claude-sonnet-5-0", lane="n",

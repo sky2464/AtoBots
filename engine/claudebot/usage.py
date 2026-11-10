@@ -42,9 +42,18 @@ def _int(value) -> int:
         return 0
 
 
+def _model_total(stats) -> int:
+    if not isinstance(stats, dict):
+        return 0
+    return sum(_int(stats.get(k)) for k in (
+        "inputTokens", "outputTokens", "cacheReadInputTokens",
+        "cacheCreationInputTokens"))
+
+
 def from_result(data) -> dict:
-    """Usage from the claude JSON result. The served model is the first key of
-    modelUsage, or None when the result has none."""
+    """Usage from the claude JSON result. When modelUsage names several models
+    (a run may call a helper model too), the served model is the one with the
+    most tokens. None when the result has no modelUsage."""
     out = {"model": None, "input_tokens": 0, "cache_write": 0,
            "cache_read": 0, "output_tokens": 0}
     if not isinstance(data, dict):
@@ -57,7 +66,7 @@ def from_result(data) -> dict:
         out["output_tokens"] = _int(usage.get("output_tokens"))
     served = data.get("modelUsage")
     if isinstance(served, dict) and served:
-        out["model"] = str(next(iter(served)))
+        out["model"] = str(max(served, key=lambda m: _model_total(served[m])))
     return out
 
 
@@ -115,10 +124,14 @@ def _meta_get(conn, key):
 
 
 def _ingest_file(conn, path: Path, bot: str) -> int:
+    """Caller holds the transaction: the stored offset is read and written
+    under the same lock, so two concurrent calls cannot both insert."""
     name = path.name
     start_text = _meta_get(conn, OFFSET_KEY + name)
     start = int(start_text) if start_text and start_text.isdigit() else 0
     prev_id = _meta_get(conn, LAST_MSG_KEY + name)
+    if path.stat().st_size < start:  # truncated or replaced: start over
+        start, prev_id = 0, None
     with open(path, "rb") as f:
         f.seek(start)
         data = f.read()
@@ -139,34 +152,38 @@ def _ingest_file(conn, path: Path, bot: str) -> int:
             continue
         last_id = msg_id if msg_id is not None else last_id
         rows.append(row)
-    with tx(conn):
-        for row in rows:
-            record(conn, bot=bot, lane=TRANSCRIPT_LANE, trigger="session",
-                   ref=path.stem, **row)
+    for row in rows:
+        record(conn, bot=bot, lane=TRANSCRIPT_LANE, trigger="session",
+               ref=path.stem, **row)
+    conn.execute("INSERT INTO meta(key, value) VALUES(?,?) ON CONFLICT(key)"
+                 " DO UPDATE SET value=excluded.value",
+                 (OFFSET_KEY + name, str(start + end)))
+    if last_id is not None:
         conn.execute("INSERT INTO meta(key, value) VALUES(?,?) ON CONFLICT(key)"
                      " DO UPDATE SET value=excluded.value",
-                     (OFFSET_KEY + name, str(start + end)))
-        if last_id is not None:
-            conn.execute("INSERT INTO meta(key, value) VALUES(?,?) ON CONFLICT(key)"
-                         " DO UPDATE SET value=excluded.value",
-                         (LAST_MSG_KEY + name, last_id))
+                     (LAST_MSG_KEY + name, last_id))
+    else:
+        conn.execute("DELETE FROM meta WHERE key=?", (LAST_MSG_KEY + name,))
     return len(rows)
 
 
 def ingest_transcripts(cfg: Config, conn: sqlite3.Connection,
                        bot: str = "admin") -> int:
     """Record new assistant turns from the bot's session transcripts. Returns
-    how many rows were added. Sessions the runner recorded are skipped."""
+    how many rows were added. Sessions the runner recorded are skipped. The
+    whole pass runs in one immediate transaction."""
     folder = project_dir(cfg, bot)
     if not folder.is_dir() or folder.is_symlink():
         return 0
-    recorded = {r[0] for r in conn.execute(
-        "SELECT session_id FROM runs WHERE session_id IS NOT NULL")}
     count = 0
-    for path in sorted(folder.glob("*.jsonl")):
-        if path.is_symlink() or not path.is_file() or path.stem in recorded:
-            continue
-        count += _ingest_file(conn, path, bot)
+    with tx(conn):
+        recorded = {r[0] for r in conn.execute(
+            "SELECT session_id FROM runs WHERE session_id IS NOT NULL")}
+        for path in sorted(folder.glob("*.jsonl")):
+            if (path.is_symlink() or not path.is_file()
+                    or path.stem in recorded):
+                continue
+            count += _ingest_file(conn, path, bot)
     return count
 
 
@@ -219,8 +236,11 @@ def _table(conn, since_iso: str, by: str) -> list[str]:
 
 
 def _mismatches(conn, since_iso: str) -> list[str]:
-    """Calls whose served model does not contain the bot's configured model
-    (e.g. configured sonnet, served claude-opus-...)."""
+    """Calls whose served model is neither the bot's configured model (e.g.
+    configured sonnet, served claude-opus-...) nor a deliberate lower model
+    from runner.LEVEL_MODEL (housekeeping runs on haiku on purpose)."""
+    from . import runner  # local: runner imports this module
+    expected = set(runner.LEVEL_MODEL.values())
     rows = conn.execute(
         "SELECT u.bot AS bot, u.model AS model, b.model AS configured,"
         " COUNT(*) AS n FROM usage u LEFT JOIN bots b ON b.name = u.bot"
@@ -230,7 +250,10 @@ def _mismatches(conn, since_iso: str) -> list[str]:
     out = []
     for r in rows:
         configured = (r["configured"] or "").lower()
-        if not configured or configured in r["model"].lower():
+        served = r["model"].lower()
+        if not configured or configured in served:
+            continue
+        if any(m.lower() in served for m in expected):
             continue
         out.append(f"  {r['bot']}: served {r['model']} for {r['n']} call(s), "
                    f"configured {r['configured']}")
