@@ -6,6 +6,7 @@ from pathlib import Path
 
 from . import (admin_live, archive, backup, bots, chat, dispatcher, doctor,
                gitlog, items, messages, requests, routines, search, store)
+from . import __version__
 from .config import Config
 from .db import connect, init_db
 
@@ -85,6 +86,11 @@ def _cmd_init(args) -> int:
     return 0
 
 
+def _cmd_version(_args) -> int:
+    print(__version__)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="cb")
     sub = p.add_subparsers(dest="command", required=True)
@@ -93,6 +99,8 @@ def build_parser() -> argparse.ArgumentParser:
     ip = sub.add_parser("init", help="set up the company home and Admin")
     ip.add_argument("--company", required=True)
     ip.set_defaults(func=_cmd_init)
+    vp = sub.add_parser("version", help="print the ClaudeBot version")
+    vp.set_defaults(func=_cmd_version)
     return p
 
 

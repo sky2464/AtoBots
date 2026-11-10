@@ -6,7 +6,7 @@ Each employee (a *bot*) has its own identity, memory, and job. Bots sleep when i
 
 ClaudeBot is built on [Claude Code](https://claude.com/claude-code). The engine is reusable and knows nothing about any one business. Each company gets its own install and its own company home.
 
-> **Status:** early and private. Interfaces may change without notice.
+> **Status:** early and private. Interfaces may change without notice. Current package version: **0.0.1** (`cb version`).
 
 ---
 
@@ -43,7 +43,7 @@ Each bot has three identity parts:
 ## Requirements
 
 - A Linux server (tested on Debian 13) with systemd and tmux
-- Python 3 (the test suite runs on Python 3.15)
+- Python 3 (CI uses 3.13; the Mac suite also runs on newer CPython)
 - Claude Code, logged in for the user that runs the services
 - Git, for backups
 
@@ -67,23 +67,24 @@ Check the install at any time:
 
 ```bash
 cb doctor
+cb version
 ```
 
 ## Command overview
 
-Run `cb --help` or `cb <command> --help` for the full reference. The main groups:
+Run `cb --help` or `cb <command> --help` for the full reference. Top-level commands:
 
 | Area | Commands |
 |---|---|
-| Setup | `init` (run by the installer) |
-| Bots | `bot`, `new`, `pause`, `resume`, `stop`, `set`, `prompt` |
-| Work | `item`, `add`, `assign`, `next`, `now`, `split`, `link`, `open`, `list`, `show` |
-| Messages | `send`, `inbox`, `reply`, `ask`, `request`, `fetch` |
-| Routines | `routine`, `run`, `check` |
-| Search and records | `search`, `reindex`, `record`, `brief`, `decision`, `note` |
-| Secrets | `secret` (values are entered at a hidden prompt) |
-| Operations | `dispatcher`, `serve`, `backup`, `restore`, `archive`, `doctor`, `status` |
-| Admin channel | `admin` (always-on Admin with Telegram, run as `claudebot-admin.service`) |
+| Setup | `init`, `version` |
+| Bots | `bot` (`new` / `list` / `show` / `set` / `pause` / `resume` / `retire`), `check` |
+| Work | `item` (`new` / `status` / `pause` / `resume` / `assign` / `split` / `show` / `waiting-on-owner`), `next`, `open`, `decision` |
+| Messages | `send`, `ask`, `reply`, `inbox`, `request`, `hook` |
+| Routines | `routine` (`add` / `list` / `on` / `off` / `rm`) |
+| Search and notes | `search`, `note` |
+| Secrets | `secret` (`add` / `list` / `rm` / `run`; values at a hidden prompt) |
+| Operations | `dispatcher`, `status`, `backup` (`now` / `restore`), `archive` (`run` / `status` / `reindex` / `fetch`), `doctor` |
+| Owner sessions | `chat`, `chat-rollover`, `admin` (`serve` / `run` / `scrub-token`) |
 
 ## Repository layout
 
@@ -95,9 +96,8 @@ engine/
   templates/             starting files for Admin and new bots
   install.sh             server installer
 tests/                   unit tests (run with unittest discover)
-docs/superpowers/
-  specs/                 design specification
-  plans/                 implementation plan and review notes
+docs/                    deploy, branch cleanup, design and plans
+.github/workflows/       CI (unittest discover on push and pull requests)
 vps-bootstrap.sh         one-time server hardening script
 ```
 
@@ -109,13 +109,34 @@ Run the test suite from the repository root:
 python3 -m unittest discover -s tests
 ```
 
-The suite currently runs 274 tests. The secret-store tests are skipped when GnuPG is not installed (15 skipped on the development Mac).
+Do not hard-code a test count in docs or scripts; re-run discover after changes.
+Secret-store tests are skipped when GnuPG is not installed (expect skips on a
+typical Mac without gpg). GitHub Actions runs the same discover command on every
+push and pull request.
+
+## Deploy
+
+Ship a tagged checkout and rsync with `--delete` so the server matches the tag.
+See [docs/deploy.md](docs/deploy.md). Branch cleanup notes for stale remotes are
+in [docs/branch-cleanup.md](docs/branch-cleanup.md).
 
 ## Documentation
 
 - [Design specification](docs/superpowers/specs/2026-11-08-claudebot-engine-design.md): intent, roles, bot lifecycle, and safety rules
 - [Implementation plan](docs/superpowers/plans/2026-11-08-claudebot-engine.md): the build plan and task breakdown
 - [Acceptance notes](docs/superpowers/plans/acceptance-notes.md): what was tested on a live server and the results
+- [Deploy from a tag](docs/deploy.md)
+- [Branch cleanup](docs/branch-cleanup.md)
+- [Hygiene leftovers](docs/hygiene-leftovers.md): deferred dead-code notes (no security/cost work)
+
+## First company install (ops)
+
+The engine itself is company-agnostic. The first live install on the Owner's VPS is:
+
+- **Company:** Atoosa Dev (`~/AtoosaDev`)
+- **Product:** DecisionTreeByNavid (YouTube channel)
+
+Older docs that say the company *is* DecisionTreeByNavid mean that product line; the install name is Atoosa Dev.
 
 ## Safety principles
 

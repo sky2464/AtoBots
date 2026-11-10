@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the reusable ClaudeBot engine and install it on the VPS as DecisionTreeByNavid, shipping with one bot, Admin, that can create permanent bots with their own Soul, Persona and Memory.
+**Goal:** Build the reusable ClaudeBot engine and install it on the VPS as **Atoosa Dev** (product line: DecisionTreeByNavid), shipping with one bot, Admin, that can create permanent bots with their own Soul, Persona and Memory.
 
 **Architecture:** A small AI-free dispatcher, kept alive by systemd, watches one SQLite database and starts short `claude -p` sessions, one per bot with work, when the server has room. Bots use only the `cb` tool to reach the database, share work through plain files, exit while they wait, and have their file changes committed to Git by the dispatcher. Old conversations move to a compressed, searchable archive, so starting context never grows.
 
@@ -43,7 +43,7 @@ engine/install.sh
 tests/              test_*.py  (run: python3 -m unittest discover -s tests)
 ```
 
-Server: engine at `~/ClaudeBot/`, company home at `~/DTbyNavid/` (Task 1 confirms this folder is free to use), holding `company.db`, `search.db`, `bots/<name>/`, `work/T-0001/`, `knowledge/`, `archive/`, `.secrets/` (git-ignored, mode 700).
+Server: engine at `~/ClaudeBot/`, company home at `~/AtoosaDev/` (live name; older notes said `~/DTbyNavid` / `~/Atoosa` during renames), holding `company.db`, `search.db`, `bots/<name>/`, `work/T-0001/`, `knowledge/`, `archive/`, `.secrets/` (git-ignored, mode 700).
 
 ## Review Focus
 
@@ -436,7 +436,7 @@ Live, against the Owner's usage. Each check gets pass or fail plus evidence in `
 - Create: `docs/superpowers/plans/acceptance-notes.md`
 - Modify: `CLAUDE.md` (status and how to run)
 
-- [ ] **Step 1: Deploy.** `rsync -a engine/ tests/` to `atoosa-vps:~/ClaudeBot/`. Run the suite there; expected all PASS. Run `CLAUDEBOT_HOME=~/DTbyNavid cb init --company DTbyNavid` and `install.sh`. Verify with a second SSH login that access is unaffected, and `systemctl status claudebot-dispatcher` is active.
+- [ ] **Step 1: Deploy.** Prefer a tagged checkout and `rsync -a --delete` of `engine/` and `tests/` to `atoosa-vps:~/ClaudeBot/` (see [docs/deploy.md](../../deploy.md)). Run the suite there; expected all PASS. Run `CLAUDEBOT_HOME=~/AtoosaDev cb init --company "Atoosa Dev"` and `install.sh` when setting up a fresh home. Verify with a second SSH login that access is unaffected, and `systemctl status claudebot-dispatcher` is active.
 - [ ] **Step 2: OWNER DOES:** create the private GitHub `backup` and `archive` repos and add the deploy keys. Add first store items with `cb secret add` in his own terminal. Wait for "done". Never ask for values in chat.
 - [ ] **Step 3: Measure** idle dispatcher RSS and 2 concurrent sessions. Set the floor, `MemoryMax` and concurrency from real numbers, and record them.
 - [ ] **Step 4: Owner tests Admin:** he runs `cb chat` from an SSH session and gets an accurate brief.

@@ -97,9 +97,6 @@ def remotes(cfg: Config) -> list:
     return _git_ok(cfg.home, "remote").split()
 
 
-_remotes = remotes
-
-
 def meta_get(conn: sqlite3.Connection, key: str) -> str | None:
     r = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
     return r[0] if r else None
