@@ -3,7 +3,8 @@
 It decides who has work and whether there is room to run them. Each pass
 (`tick`) recovers expired claims, fires due routines, queues wake-ups, and
 starts one session per bot that has ready work, within the limits for
-concurrency, the heavy lane, free memory and the per-bot hourly wake cap.
+concurrency, the heavy lane, free memory and the soft hourly wake cap
+(per model: opus/sonnet/haiku; Owner and Admin-urgent traffic bypass it).
 
 Every run gets its own worker thread and its own database connection. All
 time comes from the injected `clock` and all memory readings from `mem_fn`.
@@ -673,20 +674,43 @@ class Dispatcher:
                     conn.execute("INSERT OR REPLACE INTO meta(key, value)"
                                  " VALUES (?,?)", (k, v))
 
-    def _wake_capped(self, conn, bot: str, now: str) -> bool:
-        """Count only dispatcher lanes (`normal`/`heavy`); chat/live Admin
-        sessions must not burn the worker wake cap."""
+    def _wake_limit(self, bot) -> int:
+        """Soft hourly cap for this bot's model. Opus/Sonnet/Haiku each have
+        their own default; anything else uses wakes_per_bot_per_hour."""
+        model = (getattr(bot, "model", None) or "").lower()
+        if "opus" in model:
+            return self.cfg.wake_cap_opus
+        if "haiku" in model:
+            return self.cfg.wake_cap_haiku
+        if "sonnet" in model:
+            return self.cfg.wake_cap_sonnet
+        return self.cfg.wakes_per_bot_per_hour
+
+    def _owner_bypasses_cap(self, msgs) -> bool:
+        """Owner traffic and Admin urgent wakes are never soft-capped."""
+        return any(
+            m["from_bot"] == "owner" or
+            (m["from_bot"] == "admin" and m["priority"] == _URGENT)
+            for m in msgs)
+
+    def _wake_capped(self, conn, bot, now: str, msgs) -> bool:
+        if self._owner_bypasses_cap(msgs):
+            return False
+        limit = self._wake_limit(bot)
+        name = bot if isinstance(bot, str) else bot.name
+        # Only dispatcher lanes count: chat/live Admin sessions must not
+        # burn the wake cap.
         n = conn.execute(
             "SELECT COUNT(*) FROM runs WHERE bot=? AND started_at>?"
             " AND COALESCE(lane,'normal') IN ('normal','heavy')",
-            (bot, _plus(now, -_HOUR))).fetchone()[0]
-        if n < self.cfg.wakes_per_bot_per_hour:
+            (name, _plus(now, -_HOUR))).fetchone()[0]
+        if n < limit:
             return False
         self._system_send(
-            conn, "admin", f"Wake cap reached for {bot}",
-            f"{bot} has been started {n} times in the last hour, which is the "
-            f"limit ({self.cfg.wakes_per_bot_per_hour}). Its queued work "
-            "waits. Check whether it is looping.", f"wakecap:{bot}:{now[:13]}",
+            conn, "admin", f"Wake cap reached for {name}",
+            f"{name} has been started {n} times in the last hour, which is the "
+            f"limit ({limit}). Its queued work "
+            "waits. Check whether it is looping.", f"wakecap:{name}:{now[:13]}",
             now=now)
         return True
 
@@ -716,6 +740,11 @@ class Dispatcher:
             _log(conn, "admin_live.surface_failed",
                  f"{type(e).__name__}: {e}")
 
+    def _batch_delay_for(self, bot) -> int:
+        if getattr(bot, "tier", None) == "worker":
+            return self.cfg.worker_batch_delay_seconds
+        return self.cfg.batch_delay_seconds
+
     def _start_ready(self, conn, now, hold: bool = False) -> list:
         """`hold`: the Owner is in a chat, so only Admin's urgent messages to
         other bots (such as the test wake of a new bot) may start a run.
@@ -740,8 +769,8 @@ class Dispatcher:
                 continue
             urgent = any(m["priority"] == _URGENT for m in msgs)
             oldest = msgs[0]["created_at"]
-            wait_over = not _before(now, _plus(oldest,
-                                               self.cfg.batch_delay_seconds))
+            delay = self._batch_delay_for(active[name])
+            wait_over = not _before(now, _plus(oldest, delay))
             if urgent or wait_over:
                 cands.append((not urgent, msgs[0]["id"], name,
                               any(m["level"] == "heavy" for m in msgs)))
@@ -759,7 +788,8 @@ class Dispatcher:
                 continue
             if self.mem_fn() < self.cfg.memory_floor_mb:
                 break
-            if self._wake_capped(conn, name, now):
+            queued = groups[name]
+            if self._wake_capped(conn, active[name], now, queued):
                 continue
             msgs = self.claim(name, hold)
             if not msgs:
