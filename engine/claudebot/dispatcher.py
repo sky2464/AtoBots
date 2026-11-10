@@ -122,8 +122,14 @@ class Dispatcher:
         so only the lease (longer than that) returns the work to the queue."""
         conn = self._db()
         now = self.clock()
-        rows = conn.execute(
-            "SELECT id, bot FROM runs WHERE ended_at IS NULL").fetchall()
+        from . import admin_live  # late: it imports chat
+        # Chat and always-on sessions close their own rows; one still open
+        # while its process holds its lock is alive, not crashed.
+        alive = {"chat": chat.owner_connected(self.cfg),
+                 "live": admin_live.is_running(self.cfg)}
+        rows = [r for r in conn.execute(
+            "SELECT id, bot, lane FROM runs WHERE ended_at IS NULL"
+        ).fetchall() if not alive.get(r["lane"])]
         for r in rows:
             with tx(conn):
                 conn.execute("UPDATE runs SET ended_at=?, reason='crash'"
@@ -496,6 +502,8 @@ class Dispatcher:
         if unhandled:
             lines.append(f"{len(unhandled)} Owner request(s) not yet turned "
                          "into items (cb request unhandled).")
+        lines += [f"  R-{r['id']} via {r['source']}: {r['text'][:200]}"
+                  for r in unhandled if r["source"]]
         lines += [f"Paused: {p['id']} {p['title']}" for p in paused]
         # What this wake says, by identity of the things in it. The same list
         # is not sent again for 24 hours.
@@ -612,7 +620,10 @@ class Dispatcher:
 def status_text(conn, now: str | None = None) -> str:
     now = now or utcnow()
     running = conn.execute("SELECT bot, id, started_at FROM runs WHERE"
-                           " ended_at IS NULL ORDER BY id").fetchall()
+                           " ended_at IS NULL AND COALESCE(lane,'')!='live'"
+                           " ORDER BY id").fetchall()
+    live = conn.execute("SELECT 1 FROM runs WHERE ended_at IS NULL AND"
+                        " lane='live'").fetchone()
     queued = conn.execute("SELECT COUNT(*) FROM messages WHERE status='queued'"
                           ).fetchone()[0]
     stuck = conn.execute("SELECT COUNT(*) FROM messages WHERE status='failed'"
@@ -625,7 +636,8 @@ def status_text(conn, now: str | None = None) -> str:
                          f"{ct_display(x['started_at'])})" for x in running
                          ) or "none"
     return (f"Running: {run_text}\nQueued: {queued}\n"
-            f"Paused until: {paused}\nStuck: {stuck}\n")
+            f"Paused until: {paused}\nStuck: {stuck}\n"
+            + ("Always-on Admin: up\n" if live else ""))
 
 
 def _cmd_run(args) -> int:

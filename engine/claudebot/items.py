@@ -52,6 +52,13 @@ def new(cfg: Config, conn: sqlite3.Connection, title: str, owner: str,
         owner_waiting: bool = False, actor: str | None = None,
         finding: str | None = None) -> str:
     _check_status(status)
+    if finding:
+        from . import doctor  # late: it imports the dispatcher
+        if not doctor.valid_finding_key(finding):
+            raise ValueError(
+                f"{finding!r} is not a key the health check raises "
+                "(see `cb doctor`; keys such as disk, memory, backup-push, "
+                "database, run:ID, waiting:T-0001, bots:NAME:FILE)")
     if not isinstance(title, str) or not title.strip():
         raise ValueError("title is required")
     bots.get(conn, owner)

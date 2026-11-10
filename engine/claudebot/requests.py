@@ -14,10 +14,11 @@ from .db import connect, ct_display, utcnow
 from .items import _DONE_SQL, _run
 
 
-def capture(conn: sqlite3.Connection, text: str, session_id: str) -> int:
+def capture(conn: sqlite3.Connection, text: str, session_id: str,
+            source: str | None = None) -> int:
     cur = conn.execute(
-        "INSERT INTO owner_requests(text, session_id, received_at) VALUES (?,?,?)",
-        (text, session_id, utcnow()))
+        "INSERT INTO owner_requests(text, session_id, received_at, source)"
+        " VALUES (?,?,?,?)", (text, session_id, utcnow(), source))
     return cur.lastrowid
 
 
@@ -65,7 +66,9 @@ def startup_brief(conn: sqlite3.Connection, limit: int = 20) -> str:
         return "No open Owner requests."
     out = [f"Open Owner requests ({len(rows)}):"]
     for r in rows[:limit]:
-        out.append(f"\n[R-{r['id']}] {ct_display(r['received_at'])}\n{r['text']}")
+        via = f" (via {r['source']})" if r["source"] else ""
+        out.append(f"\n[R-{r['id']}] {ct_display(r['received_at'])}{via}"
+                   f"\n{r['text']}")
         its = conn.execute(
             "SELECT i.* FROM request_items l JOIN items i ON i.id=l.item_id"
             " WHERE l.request_id=? ORDER BY i.n", (r["id"],)).fetchall()
@@ -81,18 +84,29 @@ def startup_brief(conn: sqlite3.Connection, limit: int = 20) -> str:
     return "\n".join(out)
 
 
-_CHANNEL = re.compile(r'<channel source="([^"]*)"[^>]*>\n(.*?)\n</channel>',
-                      re.DOTALL)
+_CHANNEL = re.compile(r'<channel ([^>]*)>\n(.*?)\n</channel>', re.DOTALL)
+_ATTR = re.compile(r'(\w+)="([^"]*)"')
+
+
+def source_label(attrs: dict) -> str:
+    """Where a channel message came from, e.g. `telegram user=123 chat=123`."""
+    kind = (attrs.get("source") or "channel").split(":")[-1] or "channel"
+    def clean(v):
+        return re.sub(r"[^\w@.-]", "", v or "")[:40] or "?"
+    user = clean(attrs.get("user_id") or attrs.get("user"))
+    chat = clean(attrs.get("chat_id"))
+    kind = clean(kind)
+    return f"{kind} user={user} chat={chat}"
 
 
 def channel_messages(prompt: str):
-    """[(source, text)] when the prompt is made only of channel messages (what
-    Claude Code hands the hook for a Telegram message), else None. The text is
-    the sender's words without the <channel> wrapper."""
+    """[(source label, text)] when the prompt is made only of channel messages
+    (what Claude Code hands the hook for a Telegram message), else None. The
+    text is the sender's words without the <channel> wrapper."""
     found = _CHANNEL.findall(prompt)
     if not found or _CHANNEL.sub("", prompt).strip():
         return None
-    return found
+    return [(source_label(dict(_ATTR.findall(a))), t) for a, t in found]
 
 
 def _caller() -> str:
@@ -129,14 +143,22 @@ def _hook_failed(raw: bytes, reason: str) -> None:
         pass
 
 
+_COMMAND = re.compile(r"/[A-Za-z][\w:-]*")
+_SETUP_COMMANDS = ("/telegram:access", "/telegram:configure")
+
+
 def _skip_command(conn, text: str) -> bool:
-    """A prompt that starts with `/` is a slash command, not a request. Only
-    the command name is recorded: its arguments can hold secrets."""
-    stripped = text.lstrip()
-    if not stripped.startswith("/"):
+    """A bare slash command (`/clear`) is not a request, and neither is
+    `/telegram:access ...` or `/telegram:configure ...` (channel setup, which
+    can carry pairing codes). A path like /home/x, or `/skill do this`, is a
+    real request. Only the command name is recorded, never its arguments."""
+    parts = text.strip().split(None, 1)
+    if not parts or not _COMMAND.fullmatch(parts[0]):
         return False
-    name = stripped.split(None, 1)[0]
-    activity.record(conn, "hook", "request.skipped_command", name)
+    name, rest = parts[0], (parts[1] if len(parts) > 1 else "")
+    if rest and name not in _SETUP_COMMANDS:
+        return False
+    activity.record(conn, "hook", "request.skipped_command", name[:40])
     return True
 
 
@@ -158,7 +180,7 @@ def _cmd_hook_prompt(args) -> int:
             if wrapped is None:
                 capture(conn, text, str(session))
             for source, inner in wrapped or ():
-                rid = capture(conn, inner, str(session))
+                rid = capture(conn, inner, str(session), source)
                 activity.record(conn, "hook", "request.channel",
                                 f"request arrived through {source}", str(rid))
         finally:
@@ -185,7 +207,8 @@ def _cmd_link(args):
 def _cmd_unhandled(args):
     def go(cfg, conn):
         for r in unhandled(conn):
-            print(f"R-{r['id']}\t{ct_display(r['received_at'])}\t{r['text']}")
+            via = f"(via {r['source']}) " if r["source"] else ""
+            print(f"R-{r['id']}\t{ct_display(r['received_at'])}\t{via}{r['text']}")
         return 0
     return _run(go)
 

@@ -129,8 +129,15 @@ done
 # the secure store (name only is checked; the value is never read here).
 if [ "$START" -eq 1 ] && "$ENGINE_DIR/bin/cb" secret list 2>/dev/null | grep -q '^telegram-bot[[:space:]]'; then
     sudo systemctl enable "$ADMIN_UNIT"
-    sudo systemctl restart "$ADMIN_UNIT"
-    echo "Started $ADMIN_UNIT (attach: tmux attach -t admin-live)"
+    # start, not restart: a restart would end the Owner's conversation.
+    if systemctl is-active --quiet "$ADMIN_UNIT"; then
+        echo "$ADMIN_UNIT is already running and was left alone."
+        echo "  If the engine code changed it needs a restart to load it:"
+        echo "  sudo systemctl restart $ADMIN_UNIT (this ends the current conversation)"
+    else
+        sudo systemctl start "$ADMIN_UNIT"
+        echo "Started $ADMIN_UNIT (attach: tmux attach -t admin-live)"
+    fi
 else
     echo "Not enabled or started: $ADMIN_UNIT (always-on Admin with Telegram)."
     echo "  Needs the bot token in the secure store: cb secret add telegram-bot --kind token"

@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS messages(
   lease_until TEXT, run_id INT, created_at TEXT, done_at TEXT
 );
 CREATE TABLE IF NOT EXISTS owner_requests(
-  id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT, session_id TEXT, received_at TEXT
+  id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT, session_id TEXT, received_at TEXT,
+  source TEXT
 );
 CREATE TABLE IF NOT EXISTS request_items(
   request_id INT, item_id TEXT, PRIMARY KEY(request_id, item_id)
@@ -67,7 +68,18 @@ def connect(cfg: Config) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=30000")
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Columns added after the first release. Cheap, and safe to repeat."""
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(owner_requests)")]
+    if cols and "source" not in cols:
+        try:
+            conn.execute("ALTER TABLE owner_requests ADD COLUMN source TEXT")
+        except sqlite3.OperationalError:  # another process added it first
+            pass
 
 
 def init_db(cfg: Config) -> None:

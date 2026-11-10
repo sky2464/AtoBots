@@ -11,6 +11,9 @@ Environment=CLAUDEBOT_HOME=@HOME@
 # Owner's own, shared with his sessions.
 ExecStart=@ENGINE@/bin/cb admin run
 ExecStopPost=-/usr/bin/tmux kill-session -t =admin-live
+# Remove the token file a killed session may have left (only if the store
+# holds the token).
+ExecStopPost=-@ENGINE@/bin/cb admin scrub-token
 KillMode=process
 Restart=always
 RestartSec=10

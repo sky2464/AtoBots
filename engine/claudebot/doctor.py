@@ -33,7 +33,20 @@ WAKES_PER_DAY = 3       # most messages the doctor sends backend in 24 hours
 WAITING_HOURS = 48      # an item waiting on a bot this long is a finding
 # Findings that are the Owner's to act on: shown by `cb doctor` and in the chat
 # brief, never sent to a bot (a bot cannot add a remote).
-NO_WAKE = ("backup-remote", "archive-remote")
+NO_WAKE = ("backup-remote", "archive-remote", "admin-live-token")
+# Every finding key the doctor can raise. `cb item new --finding` accepts only
+# these, so an item can only be tied to a finding that really exists.
+FINDING_KEYS = ("dispatcher", "admin-live", "admin-live-token", "disk",
+                "git-size", "sql-size", "database", "backup-remote",
+                "archive-remote", "backup-push", "backup-snapshot", "memory")
+FINDING_PREFIXES = ("run:", "waiting:", "bots:")
+CLEAR_RUNS = 2          # clean runs without the finding before its item closes
+CLOSABLE = ("todo", "next")
+
+
+def valid_finding_key(key: str) -> bool:
+    return key in FINDING_KEYS or any(
+        key.startswith(p) and len(key) > len(p) for p in FINDING_PREFIXES)
 
 
 @dataclass(frozen=True)
@@ -52,18 +65,23 @@ def dispatcher_active(unit: str = DISPATCHER_UNIT) -> bool | None:
     return r.returncode == 0
 
 
-def admin_live_enabled(unit: str = ADMIN_UNIT) -> bool:
+def admin_live_enabled(unit: str = ADMIN_UNIT) -> bool | None:
     try:
         r = subprocess.run(["systemctl", "is-enabled", "--quiet", unit],
                            timeout=20)
     except (OSError, subprocess.TimeoutExpired):
-        return False
+        return None  # unknown: the caller must not treat it as "off"
     return r.returncode == 0
 
 
 def _admin_live_session() -> bool:
     from . import admin_live  # late: it imports chat
     return admin_live.has_session()
+
+
+def _token_present(cfg: Config) -> bool:
+    from . import admin_live  # late: it imports chat
+    return admin_live.has_token(cfg)
 
 
 def _memory_mb() -> int | None:
@@ -74,19 +92,35 @@ def checks(cfg: Config, conn: sqlite3.Connection | None = None,
            active_fn=dispatcher_active, mem_fn=_memory_mb,
            disk_usage_fn=shutil.disk_usage, now: str | None = None,
            track: bool = True, live_enabled_fn=admin_live_enabled,
-           live_session_fn=_admin_live_session) -> list[Finding]:
+           live_session_fn=_admin_live_session, token_fn=_token_present,
+           skipped: list | None = None) -> list[Finding]:
     """Everything wrong right now. Opens its own connection if none is given,
-    so a database that cannot be opened is a finding, not a crash."""
+    so a database that cannot be opened is a finding, not a crash. When a
+    check could not complete, the reason is appended to `skipped`: absence of
+    a finding then proves nothing."""
     now = now or utcnow()
     out: list[Finding] = []
-    if active_fn() is False:
+    skipped = skipped if skipped is not None else []
+    active = active_fn()
+    if active is None:
+        skipped.append("dispatcher state unknown")
+    if active is False:
         out.append(Finding("dispatcher", "The dispatcher is not running "
                            f"({DISPATCHER_UNIT}). No bot can be woken until "
                            "it is started."))
-    if live_enabled_fn() and not live_session_fn():
+    enabled = live_enabled_fn()
+    if enabled is None:
+        skipped.append("admin-live state unknown")
+    if enabled and not live_session_fn():
         out.append(Finding("admin-live", "The always-on Admin is enabled "
                            f"({ADMIN_UNIT}) but tmux session admin-live is "
                            "missing, so Telegram messages get no answer."))
+    if enabled and not token_fn(cfg):
+        out.append(Finding("admin-live-token", "The always-on Admin is "
+                           f"enabled ({ADMIN_UNIT}) but the secure store has "
+                           "no telegram-bot secret, so it cannot start. The "
+                           "Owner adds it with: cb secret add telegram-bot "
+                           "--kind token"))
     try:
         total, used = disk_usage_fn(cfg.home if cfg.home.exists() else "/")[:2]
         pct = used * 100 / total if total else 0
@@ -94,6 +128,7 @@ def checks(cfg: Config, conn: sqlite3.Connection | None = None,
             out.append(Finding("disk", f"The disk is over {int(pct) // 5 * 5}% full "
                                f"(limit {cfg.archive_offserver_pct}%)."))
     except OSError as e:
+        skipped.append("disk usage unreadable")
         out.append(Finding("disk", f"Could not read disk usage: {e}"))
     out.extend(_backup_size_checks(cfg))
     mb = mem_fn()
@@ -101,21 +136,24 @@ def checks(cfg: Config, conn: sqlite3.Connection | None = None,
     try:
         if own:
             conn = connect(cfg)
-        out.extend(_db_checks(cfg, conn, now))
+        out.extend(_db_checks(cfg, conn, now, skipped))
         out.extend(_backup_checks(cfg, conn, now))
     except sqlite3.Error as e:
+        skipped.append("database unreadable")
         out.append(Finding("database", f"The database could not be opened or "
                            f"read: {e}"))
     finally:
         if own and conn is not None:
             conn.close()
-    if mb is not None:
-        out.extend(_memory_check(cfg, conn, mb, track, own))
+    if mb is None:
+        skipped.append("memory unreadable")
+    else:
+        out.extend(_memory_check(cfg, conn, mb, track, own, skipped))
     return out
 
 
-def _memory_check(cfg, conn, mb: int, track: bool, own: bool
-                  ) -> list[Finding]:
+def _memory_check(cfg, conn, mb: int, track: bool, own: bool,
+                  skipped: list) -> list[Finding]:
     """Low memory is a finding only after MEM_READINGS low readings in a row.
     The count lives in the database; if that is unusable, one low reading
     counts at once, so a broken database cannot hide the problem."""
@@ -132,6 +170,7 @@ def _memory_check(cfg, conn, mb: int, track: bool, own: bool
             if own:
                 conn.close()
     except (sqlite3.Error, ValueError):
+        skipped.append("memory counter unreadable")
         n = MEM_READINGS if low else 0
     if n >= MEM_READINGS:
         return [Finding("memory", "Available memory has been below the "
@@ -206,13 +245,14 @@ def _backup_size_checks(cfg: Config) -> list[Finding]:
     return out
 
 
-def _db_checks(cfg: Config, conn: sqlite3.Connection, now: str
-               ) -> list[Finding]:
+def _db_checks(cfg: Config, conn: sqlite3.Connection, now: str,
+               skipped: list) -> list[Finding]:
     out = []
     result = [r[0] for r in conn.execute("PRAGMA integrity_check")]
     if result != ["ok"]:
         out.append(Finding("database", "The database integrity check failed: "
                            + "; ".join(result[:3])))
+        skipped.append("database integrity check failed")
         return out  # the other queries are not trustworthy on a damaged file
     limit = (datetime.fromisoformat(now)
              - timedelta(seconds=cfg.lease_seconds)).isoformat(timespec="seconds")
@@ -226,8 +266,18 @@ def _db_checks(cfg: Config, conn: sqlite3.Connection, now: str
                            f"{cfg.lease_seconds} s lease."))
     out.extend(_waiting_checks(conn, now))
     for msg in bots.check(cfg, conn):
-        out.append(Finding("bots:" + msg, f"Bot files: {msg}"))
+        out.append(Finding(_bots_key(msg), f"Bot files: {msg}"))
     return out
+
+
+def _bots_key(msg: str) -> str:
+    """A key that does not change with the message's numbers: bots:NAME:FILE
+    or bots:NAME:skill-X (messages look like 'admin: SOUL.md is missing')."""
+    name, _, rest = msg.partition(": ")
+    words = rest.split()
+    what = (f"skill-{words[1]}" if words[:1] == ["skill"] and len(words) > 1
+            else (words[0] if words else "files"))
+    return f"bots:{name}:{what}"
 
 
 def _waiting_checks(conn, now: str) -> list[Finding]:
@@ -277,27 +327,55 @@ def _wakes_today(conn, now: str) -> int:
         (BACKEND, since)).fetchone()[0]
 
 
-def close_cleared(conn: sqlite3.Connection, current: set, now: str) -> list:
-    """Close open items opened for a finding (`cb item new --finding KEY`)
-    when the doctor no longer sees that finding. Returns the closed ids."""
-    closed = []
-    rows = conn.execute(
-        "SELECT i.id, a.detail FROM items i JOIN activity a ON a.ref=i.id"
-        " AND a.kind='item.finding' WHERE i.status NOT IN ('done','parked')"
-        " AND i.archived_at IS NULL ORDER BY a.id").fetchall()
+def close_cleared(conn: sqlite3.Connection, current: set, now: str,
+                  skipped: list) -> list:
+    """Close items opened for a finding (`cb item new --finding KEY`) once the
+    doctor has run CLEAR_RUNS times in a row, every check completing, without
+    that finding. Only items in todo or next that wait on nobody are closed;
+    for any other open item the clearing is only recorded. A run in which a
+    check could not complete changes nothing. Returns the closed ids."""
+    if skipped:
+        return []
     keys = {}
-    for r in rows:  # the latest tag on an item wins
+    for r in conn.execute(
+            "SELECT i.id, a.detail FROM items i JOIN activity a ON a.ref=i.id"
+            " AND a.kind='item.finding' WHERE i.status NOT IN"
+            " ('done','parked') AND i.archived_at IS NULL ORDER BY a.id"):
         keys[r["id"]] = r["detail"][len("finding:"):]
+    closed = []
     for id, key in keys.items():
+        mkey = f"doctor.clear:{id}"
         if key in current:
+            if backup.meta_get(conn, mkey) is not None:
+                backup.meta_set(conn, mkey, "0")  # it came back: start over
             continue
+        raw = backup.meta_get(conn, mkey) or "0"
+        if raw == "noted":
+            continue
+        n = int(raw) + 1 if raw.isdigit() else 1
+        if n < CLEAR_RUNS:
+            backup.meta_set(conn, mkey, str(n))
+            continue
+        it = conn.execute("SELECT status, owner_waiting, COALESCE(waiting_on,'')"
+                          " AS w FROM items WHERE id=?", (id,)).fetchone()
         with tx(conn):
-            conn.execute("UPDATE items SET status='done', updated_at=?"
-                         " WHERE id=?", (now, id))
-            activity.record(conn, "system", "item.status",
-                            f"{id}: closed, the health check no longer "
-                            f"reports finding {key}", id)
-        closed.append(id)
+            if it["status"] in CLOSABLE and not it["owner_waiting"] \
+                    and not it["w"]:
+                conn.execute("UPDATE items SET status='done', updated_at=?"
+                             " WHERE id=?", (now, id))
+                activity.record(conn, "system", "item.status",
+                                f"{id}: closed, the health check has not "
+                                f"reported finding {key} for {CLEAR_RUNS} "
+                                "runs in a row", id)
+                closed.append(id)
+                note = "0"
+            else:
+                activity.record(conn, "system", "item.finding_cleared",
+                                f"{id} [{it['status']}]: finding {key} is no "
+                                "longer reported; the item was left open "
+                                "because it is in progress or waiting", id)
+                note = "noted"
+            backup.meta_set(conn, mkey, note)
     return closed
 
 
@@ -307,9 +385,10 @@ def run(cfg: Config, conn: sqlite3.Connection, **kw) -> list[Finding]:
     in 24 hours overall. A down dispatcher is also told to Admin, with the
     same backoff. Returns all current findings."""
     now = kw.get("now") or utcnow()
-    found = checks(cfg, conn, **kw)
+    skipped: list = []
+    found = checks(cfg, conn, skipped=skipped, **kw)
     try:
-        close_cleared(conn, {f.key for f in found}, now)
+        close_cleared(conn, {f.key for f in found}, now, skipped)
     except sqlite3.Error as e:
         print(f"doctor: could not close cleared items: {e}", file=sys.stderr)
     for f in found:

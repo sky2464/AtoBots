@@ -184,7 +184,9 @@ def _sections(conn, since: str, cfg: Config | None = None) -> list:
     reqs = requests.unhandled(conn)
     if reqs:
         out.append(("Unhandled requests", [
-            _clip(f"R-{r['id']} {ct_display(r['received_at'])}: {r['text']}")
+            _clip(f"R-{r['id']} {ct_display(r['received_at'])}"
+                  + (f" (via {r['source']})" if r["source"] else "")
+                  + f": {r['text']}")
             for r in reqs]))
     need = [i for i in items.open_items(conn) if i["owner_waiting"]]
     if need:
