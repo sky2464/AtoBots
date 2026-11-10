@@ -7,6 +7,7 @@ still works (and says so) when the dispatcher is down.
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -42,7 +43,8 @@ FINDING_KEYS = ("dispatcher", "admin-live", "admin-live-token", "disk",
                 "git-size", "sql-size", "database", "backup-remote",
                 "archive-remote", "backup-push", "backup-snapshot", "memory",
                 "workers", "rules-new", "timezone-unset")
-FINDING_PREFIXES = ("run:", "waiting:", "stall:", "bots:", "wakecap:")
+FINDING_PREFIXES = ("run:", "waiting:", "stall:", "bots:", "wakecap:",
+                    "change:", "commands:")
 CLEAR_RUNS = 2          # clean runs without the finding before its item closes
 CLOSABLE = ("todo", "next")
 # Local alert filename under <home>/.alerts/ when the message queue cannot
@@ -156,6 +158,7 @@ def checks(cfg: Config, conn: sqlite3.Connection | None = None,
             conn = connect(cfg)
         out.extend(_db_checks(cfg, conn, now, skipped))
         out.extend(_backup_checks(cfg, conn, now))
+        out.extend(_command_checks(cfg, conn))
     except sqlite3.Error as e:
         skipped.append("database unreadable")
         out.append(Finding("database", f"The database could not be opened or "
@@ -333,6 +336,91 @@ def _wakecap_checks(conn, now: str) -> list[Finding]:
                 f"wakecap:{bot}",
                 f"{bot} hit the wake cap in {len(seen)} hours of the last day. "
                 "Its queued work waits during a capped hour."))
+    return out
+
+
+def _extract_hook_commands(data: dict) -> list[str]:
+    """Extract hook command strings from a Claude settings dictionary."""
+    cmds = []
+    hooks = data.get("hooks")
+    if isinstance(hooks, dict):
+        for hook_val in hooks.values():
+            if isinstance(hook_val, list):
+                for item in hook_val:
+                    if isinstance(item, dict) and "command" in item:
+                        cmds.append(str(item["command"]))
+                    elif isinstance(item, str):
+                        cmds.append(item)
+            elif isinstance(hook_val, dict) and "command" in hook_val:
+                cmds.append(str(hook_val["command"]))
+            elif isinstance(hook_val, str):
+                cmds.append(hook_val)
+    return cmds
+
+
+def _command_checks(cfg: Config, conn: sqlite3.Connection | None = None) -> list[Finding]:
+    """Check hook commands in settings files and routine check commands."""
+    out = []
+    # Settings files to check
+    paths = []
+    home_claude = cfg.home / ".claude"
+    paths.append(home_claude / "settings.json")
+    paths.append(home_claude / "settings.local.json")
+    if cfg.bots_dir.is_dir():
+        for bot_dir in sorted(cfg.bots_dir.iterdir()):
+            if bot_dir.is_dir():
+                paths.append(bot_dir / ".claude" / "settings.json")
+                paths.append(bot_dir / ".claude" / "settings.local.json")
+
+    for p in paths:
+        if not p.is_file():
+            continue
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        cmds = _extract_hook_commands(data)
+        for cmd in cmds:
+            try:
+                parts = shlex.split(cmd)
+            except ValueError:
+                parts = cmd.split()
+            if not parts:
+                continue
+            first_word = parts[0]
+            # Check if existing absolute path or on PATH
+            is_valid = (os.path.isabs(first_word) and os.path.exists(first_word)) or (shutil.which(first_word) is not None)
+            if not is_valid:
+                hint = "; this server has python3, not python" if first_word == "python" else ""
+                key = f"commands:{p.name}:{first_word}"
+                msg = f"{p}: hook command {first_word!r} was not found on PATH and is not an existing absolute path{hint}."
+                out.append(Finding(key, msg))
+
+    # Routine check commands from database
+    if conn is not None:
+        try:
+            rows = conn.execute("SELECT id, bot, check_cmd FROM routines WHERE check_cmd IS NOT NULL AND check_cmd != ''").fetchall()
+            for r in rows:
+                cmd = r["check_cmd"]
+                try:
+                    parts = shlex.split(cmd)
+                except ValueError:
+                    parts = cmd.split()
+                if not parts:
+                    continue
+                first_word = parts[0]
+                is_valid = (os.path.isabs(first_word) and os.path.exists(first_word)) or (shutil.which(first_word) is not None)
+                if not is_valid:
+                    hint = "; this server has python3, not python" if first_word == "python" else ""
+                    key = f"commands:routine:{r['id']}:{first_word}"
+                    msg = f"routine {r['id']} ({r['bot']}): check command {first_word!r} was not found on PATH and is not an existing absolute path{hint}."
+                    out.append(Finding(key, msg))
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            pass
+
     return out
 
 

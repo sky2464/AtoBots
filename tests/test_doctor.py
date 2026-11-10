@@ -111,5 +111,44 @@ class OutOfBandTests(Base):
         self.assertIn("sudo systemctl restart claudebot-admin.service", findings["admin-live"])
 
 
+    def test_commands_check_detects_python_and_missing_commands(self):
+        # Create a settings.json under home/.claude with python hook
+        home_claude = self.cfg.home / ".claude"
+        home_claude.mkdir(parents=True, exist_ok=True)
+        settings_file = home_claude / "settings.json"
+        settings_file.write_text(
+            '{"hooks": {"pre-commit": [{"command": "python -m unittest"}]}}',
+            encoding="utf-8"
+        )
+        # Create a settings.local.json under a bot folder with nonexistent command
+        bot_claude = self.cfg.bots_dir / "backend" / ".claude"
+        bot_claude.mkdir(parents=True, exist_ok=True)
+        bot_settings = bot_claude / "settings.local.json"
+        bot_settings.write_text(
+            '{"hooks": {"post-task": "nonexistent_executable_12345 --foo"}}',
+            encoding="utf-8"
+        )
+        # Also create a routine with missing command
+        self.conn.execute(
+            "INSERT INTO routines (id, bot, cron, check_cmd) VALUES (42, 'backend', '* * * * *', 'another_bad_cmd_6789')"
+        )
+        self.conn.commit()
+
+        found = doctor.checks(
+            self.cfg, self.conn, active_fn=lambda: True,
+            mem_fn=lambda: 4000, live_enabled_fn=lambda: False,
+            live_session_fn=lambda: False, token_fn=lambda c: True,
+            track=False, now=self.now)
+
+        keys = [f.key for f in found]
+        self.assertIn("commands:settings.json:python", keys)
+        self.assertIn("commands:settings.local.json:nonexistent_executable_12345", keys)
+        self.assertIn("commands:routine:42:another_bad_cmd_6789", keys)
+
+        python_finding = next(f for f in found if f.key == "commands:settings.json:python")
+        self.assertIn("this server has python3, not python", python_finding.text)
+        self.assertIn("hook command 'python' was not found on PATH", python_finding.text)
+
+
 if __name__ == "__main__":
     unittest.main()

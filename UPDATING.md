@@ -335,6 +335,7 @@ home. It leaves the company's own files alone:
     runs on its own (`cb update`) and ends with a restart, never a stop.
   - Restart a service from a health check: the health check alerts, it never
     restarts a service.
+- For existing installs: run `cb doctor`, then change `python` to `python3` in the file it names.
 - Memory files, company work, secrets and `config.json` are not touched.
 
 Engine-owned, and refreshed by `cb templates refresh` on every update from

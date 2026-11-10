@@ -426,5 +426,32 @@ class TemplatesTest(unittest.TestCase):
         self.assertIn("CB_BANNED_TERMS: ${{ secrets.CB_BANNED_TERMS }}", text)
 
 
+    def test_no_bare_python_in_engine_scripts_units_or_templates(self):
+        bare_python = re.compile(r"(?<![a-zA-Z0-9_-])python(?![a-zA-Z0-9_-])")
+        targets = []
+        for p in (ROOT / "engine").rglob("*"):
+            if not p.is_file() or "__pycache__" in p.parts:
+                continue
+            # Check scripts (.sh, .py, etc.), unit files (.service, .timer), and templates
+            if p.suffix in (".sh", ".py", ".service", ".timer", ".md", ".json") or p.parent.name in ("bin", "systemd", "templates"):
+                targets.append(p)
+        for path in targets:
+            text = path.read_text(errors="ignore")
+            # Ignore mentions in markdown explanations or tests, but check executable invocations or scripts
+            for line_no, line in enumerate(text.splitlines(), start=1):
+                stripped = line.strip()
+                # Skip comments or markdown list/doc descriptions that talk about python3 vs python
+                if stripped.startswith("#") or "this server has python3, not python" in line:
+                    continue
+                # If it's a script/service/command line, check for bare python invocations:
+                # e.g., "python ", "python\t", or "/usr/bin/python "
+                # We specifically look for bare python as command name
+                m = re.search(r"(?:^|[\s;&|`\$\(])python(?:\s|$)", line)
+                self.assertIsNone(
+                    m,
+                    f"Bare python call found in {path.relative_to(ROOT)}:{line_no}: {line.strip()}"
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
