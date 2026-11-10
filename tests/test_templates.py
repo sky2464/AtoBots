@@ -236,6 +236,20 @@ class TemplatesTest(unittest.TestCase):
         for forbidden in ("sshd", "ufw", "sudoers"):
             self.assertNotIn(forbidden, text)
 
+    def test_update_script_holds_the_queue_before_checkout(self):
+        path = ROOT / "engine" / "update.sh"
+        r = subprocess.run(["bash", "-n", str(path)], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        text = path.read_text()
+        self.assertIn("set -euo pipefail", text)
+        self.assertIn("this version cannot hold the queue; continuing as before", text)
+        self.assertLess(text.index("dispatcher hold"), text.index("checkout --quiet --detach"))
+        stop = text.index("sudo systemctl stop claudebot-dispatcher.service")
+        self.assertLess(text.index("dispatcher idle"), stop)
+        self.assertLess(stop, text.index("checkout --quiet --detach"))
+        self.assertIn('"$CB" dispatcher release', text)
+        self.assertIn("--force", text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -15,7 +15,7 @@ import signal
 import sqlite3
 import sys
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from . import (activity, archive, bots, chat, gitlog, items, messages, requests, routines,
                runner, search, tasks)
@@ -23,6 +23,8 @@ from .config import Config
 from .db import connect, ct_display, tx, utcnow
 
 PAUSED_KEY = "dispatcher.paused_until"
+HOLD_UNTIL_KEY = "dispatcher.hold_until"
+HOLD_REASON_KEY = "dispatcher.hold_reason"
 _NEVER_STOP = 10 ** 9  # system wake-ups are not part of any bot-to-bot loop
 _URGENT = "urgent"
 _HOUR = 3600
@@ -511,16 +513,26 @@ class Dispatcher:
             _log(conn, "search.reindex_failed", f"{type(e).__name__}: {e}")
         self._dv = conn.execute("PRAGMA data_version").fetchone()[0]
 
+    def _hold_active(self, conn, now) -> bool:
+        r = conn.execute("SELECT value FROM meta WHERE key=?",
+                         (HOLD_UNTIL_KEY,)).fetchone()
+        return bool(r and _before(now, r["value"]))
+
     def _paused(self, conn, now) -> bool:
+        """True when a usage-limit pause or an operator hold is still in force.
+
+        Either one stops new runs. The steps before this check still run.
+        """
+        held = self._hold_active(conn, now)
         r = conn.execute("SELECT value FROM meta WHERE key=?",
                          (PAUSED_KEY,)).fetchone()
         if r is None:
-            return False
+            return held
         if _before(now, r["value"]):
             return True
         conn.execute("DELETE FROM meta WHERE key=?", (PAUSED_KEY,))
         _log(conn, "queue.resumed", "usage-limit pause is over")
-        return False
+        return held
 
     def _system_send(self, conn, to, subject, body, key, item_id=None,
                      level="normal", now=None) -> int:
@@ -891,11 +903,19 @@ def status_text(conn, now: str | None = None) -> str:
                      (PAUSED_KEY,)).fetchone()
     paused = ct_display(r["value"]) if r and _before(now, r["value"]) \
         else "not paused"
+    hold = conn.execute("SELECT value FROM meta WHERE key=?",
+                        (HOLD_UNTIL_KEY,)).fetchone()
+    reason = conn.execute("SELECT value FROM meta WHERE key=?",
+                          (HOLD_REASON_KEY,)).fetchone()
+    held = ""
+    if hold and _before(now, hold["value"]):
+        why = reason["value"] if reason else ""
+        held = f"Held until: {ct_display(hold['value'])} ({why})\n"
     run_text = ", ".join(f"{x['bot']} (run {x['id']}, since "
                          f"{ct_display(x['started_at'])})" for x in running
                          ) or "none"
     return (f"Running: {run_text}\nQueued: {queued}\n"
-            f"Paused until: {paused}\nStuck: {stuck}\n"
+            f"Paused until: {paused}\n{held}Stuck: {stuck}\n"
             + ("Always-on Admin: up\n" if live else ""))
 
 
@@ -924,6 +944,54 @@ def dispatcher_idle(conn: sqlite3.Connection) -> bool:
     ).fetchone() is None
 
 
+def hold_queue(conn, minutes: int, reason: str, now: str | None = None) -> str:
+    """Stop new runs until `minutes` from `now`. Returns the UTC instant."""
+    if minutes < 1:
+        raise ValueError("minutes must be at least 1")
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError("a hold needs a reason")
+    start = datetime.fromisoformat(now) if now else datetime.now(timezone.utc)
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    until = (start + timedelta(minutes=minutes)).isoformat(timespec="seconds")
+    with tx(conn):
+        conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?,?)",
+                     (HOLD_UNTIL_KEY, until))
+        conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?,?)",
+                     (HOLD_REASON_KEY, reason.strip()))
+    return until
+
+
+def release_queue(conn) -> None:
+    conn.execute("DELETE FROM meta WHERE key IN (?,?)",
+                 (HOLD_UNTIL_KEY, HOLD_REASON_KEY))
+
+
+def _cmd_hold(args) -> int:
+    cfg = Config.load()
+    conn = connect(cfg)
+    try:
+        until = hold_queue(conn, args.minutes, args.reason)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+    print(f"Held until: {until} ({args.reason})")
+    return 0
+
+
+def _cmd_release(_args) -> int:
+    cfg = Config.load()
+    conn = connect(cfg)
+    try:
+        release_queue(conn)
+    finally:
+        conn.close()
+    print("Hold released.")
+    return 0
+
+
 def _cmd_idle(_args) -> int:
     cfg = Config.load()
     conn = connect(cfg)
@@ -940,5 +1008,11 @@ def register(subparsers) -> None:
     r.set_defaults(func=_cmd_run)
     idle = dsub.add_parser("idle", help="exit 0 when no bot run is active")
     idle.set_defaults(func=_cmd_idle)
+    hold = dsub.add_parser("hold", help="stop new runs for a few minutes")
+    hold.add_argument("--minutes", type=int, required=True)
+    hold.add_argument("--reason", required=True)
+    hold.set_defaults(func=_cmd_hold)
+    rel = dsub.add_parser("release", help="let new runs start again")
+    rel.set_defaults(func=_cmd_release)
     s = subparsers.add_parser("status", help="running bots, queue, pauses")
     s.set_defaults(func=_cmd_status)

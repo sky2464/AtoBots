@@ -13,12 +13,13 @@
 set -euo pipefail
 
 usage() {
-    echo "usage: $0 [--tag vX.Y.Z]" >&2
+    echo "usage: $0 [--tag vX.Y.Z] [--force]" >&2
     exit 2
 }
 
 TAG=""
 EXPLICIT_TAG=0
+FORCE=0
 while [ "$#" -gt 0 ]; do
     case $1 in
         --tag)
@@ -26,6 +27,10 @@ while [ "$#" -gt 0 ]; do
             TAG=$2
             EXPLICIT_TAG=1
             shift 2
+            ;;
+        --force)
+            FORCE=1
+            shift
             ;;
         *) usage ;;
     esac
@@ -82,6 +87,7 @@ BACKUP=""
 
 on_error() {
     local status=$1
+    "$CB" dispatcher release >/dev/null 2>&1 || true
     echo "" >&2
     if [ "$CHANGED" -eq 0 ]; then
         echo "The update stopped (exit $status). Nothing was changed." >&2
@@ -191,7 +197,37 @@ chmod 600 "$BACKUP"
 [ -s "$BACKUP" ] || { echo "error: the backup at $BACKUP is empty" >&2; exit 1; }
 echo "Backed up the database to $BACKUP"
 
-# 6. Move the checkout to the tag. From here on, a failure needs the rollback
+# 6. Hold the queue with the code that is running now, then wait until the
+# current runs finish. An engine older than this release has no hold command.
+set +e
+"$CB" dispatcher hold --minutes 45 --reason update
+hold_status=$?
+set -e
+if [ "$hold_status" -eq 2 ]; then
+    echo "this version cannot hold the queue; continuing as before"
+elif [ "$hold_status" -ne 0 ]; then
+    exit "$hold_status"
+fi
+echo "Waiting for bot runs to finish (up to 30 minutes) ..."
+IDLE_DEADLINE=$((SECONDS + 1800))
+while [ "$SECONDS" -lt "$IDLE_DEADLINE" ]; do
+    if "$CB" dispatcher idle; then
+        break
+    fi
+    sleep 10
+done
+if ! "$CB" dispatcher idle; then
+    echo "A bot run is still active:" >&2
+    "$CB" status >&2 || true
+    if [ "$FORCE" -eq 0 ]; then
+        "$CB" dispatcher release >/dev/null 2>&1 || true
+        exit 1
+    fi
+    echo "warning: continuing because --force was given" >&2
+fi
+sudo systemctl stop claudebot-dispatcher.service
+
+# 7. Move the checkout to the tag. From here on, a failure needs the rollback
 # steps printed by on_error.
 CHANGED=1
 git -C "$REPO_DIR" checkout --quiet --detach "refs/tags/$TAG"
@@ -207,18 +243,7 @@ echo "Applying the update to company \"$COMPANY\" ..."
 echo "Refreshing engine-owned templates ..."
 "$CB" templates refresh
 
-# 8. Wait for bot runs to finish, then restart services.
-echo "Waiting for bot runs to finish (up to 30 minutes) ..."
-IDLE_DEADLINE=$((SECONDS + 1800))
-while [ "$SECONDS" -lt "$IDLE_DEADLINE" ]; do
-    if "$CB" dispatcher idle; then
-        break
-    fi
-    sleep 10
-done
-if ! "$CB" dispatcher idle; then
-    echo "warning: a bot run is still active; restarting anyway" >&2
-fi
+# 8. Re-render units, then start the services on the new code.
 for unit in claudebot-dispatcher.service claudebot-backup.service \
         claudebot-doctor.service; do
     if [ -f "$ENGINE_DIR/systemd/$unit" ]; then
@@ -239,8 +264,9 @@ for unit in claudebot-backup.timer claudebot-doctor.timer; do
     fi
 done
 sudo systemctl daemon-reload
-echo "Restarting services ..."
-sudo systemctl restart claudebot-dispatcher.service
+echo "Starting services ..."
+sudo systemctl start claudebot-dispatcher.service
+"$CB" dispatcher release
 if systemctl is-enabled --quiet claudebot-admin.service 2>/dev/null; then
     sudo systemctl restart claudebot-admin.service
     echo "Restarted claudebot-admin (the current Admin conversation ends)."

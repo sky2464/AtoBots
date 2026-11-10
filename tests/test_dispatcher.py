@@ -491,6 +491,23 @@ class ClaimTests(Base):
         self.assertEqual(self.msg(a)["status"], "failed")
         self.assertEqual(len(self.system_notes()), 1)  # just the original
 
+    def test_hold_stops_new_runs_until_release(self):
+        self.send("backend")
+        self.ready()
+        until = dispatcher.hold_queue(self.conn, 45, "update", now=self.clock())
+        d = self.make()
+        self.assertEqual(self.tick(d), [])
+        self.assertEqual(self.msg(1)["status"], "queued")
+        text = dispatcher.status_text(self.conn, self.clock())
+        self.assertIn("Held until:", text)
+        self.assertIn("(update)", text)
+        self.assertTrue(until)
+        dispatcher.release_queue(self.conn)
+        self.assertIsNone(self.conn.execute(
+            "SELECT 1 FROM meta WHERE key=?",
+            (dispatcher.HOLD_UNTIL_KEY,)).fetchone())
+        self.assertEqual(len(self.tick(d)), 1)
+
     def test_usage_limit_pauses_queue_and_resumes(self):
         a = self.send("backend")
         b = self.send("design")
