@@ -894,7 +894,7 @@ class LiveSingleFlightTests(Base):
 class ServiceFileTests(unittest.TestCase):
     def test_unit(self):
         text = (ENGINE / "systemd" / "claudebot-dispatcher.service").read_text()
-        for line in ("User=claude", "Environment=CLAUDEBOT_HOME=@HOME@",
+        for line in ("User=@USER@", "Environment=CLAUDEBOT_HOME=@HOME@",
                      "Restart=always", "RestartSec=5",
                      "ExecStart=@ENGINE@/bin/cb "
                      "dispatcher run"):

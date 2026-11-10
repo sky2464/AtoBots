@@ -139,5 +139,36 @@ class ArchivePushTests(BackupBase):
         self.assertEqual(args[-2:], (backup.BACKUP_REMOTE, "main"))
 
 
+
+class RestoreArchiveTests(BackupBase):
+    def test_archive_months_come_back_and_existing_files_are_kept(self):
+        root = Path(self._tmp.name)
+        src = root / "arch-src"
+        (src / "2026-09").mkdir(parents=True)
+        (src / "2026-09" / "admin-1.jsonl.gz").write_bytes(b"OLD-TRANSCRIPT")
+        (src / "2026-09" / "records.jsonl.gz").write_bytes(b"REMOTE")
+        (src / "notes").mkdir()
+        (src / "notes" / "x.txt").write_text("not a month")
+        git(root, "init", "-q", "-b", "main", str(src))
+        git(src, "add", "-A")
+        git(src, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+            "-m", "a")
+        target = root / "restored"
+        (target / "archive" / "2026-09").mkdir(parents=True)
+        (target / "archive" / "2026-09" / "records.jsonl.gz").write_bytes(
+            b"LOCAL")
+        self.assertEqual(backup.restore_archive(str(src), target), 1)
+        self.assertEqual((target / "archive" / "2026-09" / "admin-1.jsonl.gz"
+                          ).read_bytes(), b"OLD-TRANSCRIPT")
+        self.assertEqual((target / "archive" / "2026-09" / "records.jsonl.gz"
+                          ).read_bytes(), b"LOCAL")
+        self.assertFalse((target / "archive" / "notes").exists())
+
+    def test_bad_source_is_a_clear_error(self):
+        with self.assertRaises(backup.BackupError):
+            backup.restore_archive(str(Path(self._tmp.name) / "nope"),
+                                   Path(self._tmp.name) / "t")
+
+
 if __name__ == "__main__":
     unittest.main()

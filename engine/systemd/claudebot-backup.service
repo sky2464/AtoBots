@@ -5,6 +5,6 @@ After=network-online.target
 [Service]
 Type=oneshot
 TimeoutStartSec=30min
-User=claude
+User=@USER@
 Environment=CLAUDEBOT_HOME=@HOME@
 ExecStart=@ENGINE@/bin/cb backup now

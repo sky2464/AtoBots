@@ -350,6 +350,38 @@ def push(cfg: Config, conn: sqlite3.Connection | None = None) -> str:
 
 # ---- restore ----
 
+def restore_archive(source: str, target) -> int:
+    """Copy the archive months (YYYY-MM folders) of an archive repo (path or
+    URL) into `<target>/archive`. Files already there are kept. Returns how
+    many files were copied. Run `cb archive reindex` afterwards."""
+    target = Path(target).expanduser().absolute()
+    dest_root = target / "archive"
+    tmp = Path(tempfile.mkdtemp(prefix="cb-archive-restore-"))
+    n = 0
+    try:
+        r = _git(tmp, "clone", "-q", "--depth", "1", "--", source,
+                 str(tmp / "repo"))
+        if r.returncode:
+            raise BackupError("git clone of the archive failed: "
+                              + clean(r.stderr.strip())[:300])
+        for month in sorted((tmp / "repo").iterdir()):
+            if month.is_symlink() or not month.is_dir() \
+                    or not _MONTH_RE.fullmatch(month.name):
+                continue
+            for src in sorted(month.rglob("*")):
+                if src.is_symlink() or not src.is_file():
+                    continue
+                dest = dest_root / month.name / src.relative_to(month)
+                if dest.exists():
+                    continue
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(src, dest)
+                n += 1
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return n
+
+
 def restore(cfg: Config, source: str, target) -> str:
     """Rebuild a company home at `target` from a backup repo (path or URL) or
     from a company.sql file. `target` must be missing or empty: a live home is
@@ -712,6 +744,9 @@ def _cmd_restore(args) -> int:
         cfg = Config(Path(args.target))
     try:
         print(f"integrity_check: {restore(cfg, args.source, args.target)}")
+        if args.archive:
+            print("archive files restored: "
+                  f"{restore_archive(args.archive, args.target)}")
     except (BackupError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
@@ -730,4 +765,7 @@ def register(subparsers) -> None:
                        "into an empty or missing folder")
     r.add_argument("source", help="backup repo (path or URL) or a company.sql")
     r.add_argument("target")
+    r.add_argument("--archive", metavar="SOURCE",
+                   help="also bring back old transcripts and records from "
+                        "the archive repo (path or URL)")
     r.set_defaults(func=_cmd_restore)

@@ -84,7 +84,16 @@ Run `cb --help` or `cb <command> --help` for the full reference. Top-level comma
 | Search and notes | `search`, `note` |
 | Secrets | `secret` (`add` / `list` / `rm` / `run`; values at a hidden prompt) |
 | Operations | `dispatcher`, `status`, `backup` (`now` / `restore`), `archive` (`run` / `status` / `reindex` / `fetch`), `doctor` |
-| Owner sessions | `chat`, `chat-rollover`, `admin` (`serve` / `run` / `scrub-token`) |
+| Owner sessions | `question` (`open` / `close` / `list`), `chat`, `chat-rollover`, `admin` (`serve` / `run` / `scrub-token`) |
+
+## Configuration
+
+Limits and a few text settings can be overridden in `config.json` in the
+company home. Text settings: `run_user`, `run_home`, `claude_bin`,
+`run_memory_max`, `default_model` and `timezone` (schedules and displayed
+times; `America/Chicago` by default). Unknown keys are ignored, and a bad value
+stops `cb` with a clear message. See [CHANGELOG.md](CHANGELOG.md) for what
+each release changed.
 
 ## Repository layout
 

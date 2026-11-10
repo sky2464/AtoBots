@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Install ClaudeBot on this server. Run by hand as the user `claude`:
+# Install ClaudeBot on this server. Run by hand as the account the bots will
+# use (not root; it needs passwordless sudo):
 #   engine/install.sh [--start] COMPANY_NAME /home/claude/COMPANY_HOME
 # The dispatcher and timers are enabled (they start at boot) but are NOT started
 # now unless you pass --start, so you can look around first.
@@ -31,7 +32,7 @@ if ! [[ $HOME_DIR =~ ^/[A-Za-z0-9._/-]+$ ]]; then
     exit 2
 fi
 if [ "$(id -u)" -eq 0 ]; then
-    echo "error: run this as the user claude, not root" >&2
+    echo "error: run this as the bots' own account, not root" >&2
     exit 2
 fi
 
@@ -55,7 +56,8 @@ TIMERS=(claudebot-backup.timer claudebot-doctor.timer)
 
 # 0. Check everything we need before changing anything, so this either does
 # the whole job or stops here with a clear message.
-CLAUDE_BIN=/home/claude/.local/bin/claude
+RUN_USER=$(id -un)
+CLAUDE_BIN=$HOME/.local/bin/claude
 [ -x "$ENGINE_DIR/bin/cb" ] || { echo "error: $ENGINE_DIR/bin/cb is missing" >&2; exit 1; }
 if ! sudo -n true 2>/dev/null; then
     echo "error: this user needs passwordless sudo (sudo -n true failed)" >&2
@@ -100,7 +102,7 @@ fi
 render_unit() {
     local name=$1
     [ -f "$UNIT_SRC/$name" ] || { echo "error: missing unit $UNIT_SRC/$name" >&2; exit 1; }
-    sed -e "s|@HOME@|$HOME_DIR|g" -e "s|@ENGINE@|$ENGINE_DIR|g" "$UNIT_SRC/$name" | sudo tee "$UNIT_DST/$name" > /dev/null
+    sed -e "s|@HOME@|$HOME_DIR|g" -e "s|@ENGINE@|$ENGINE_DIR|g" -e "s|@USER@|$RUN_USER|g" "$UNIT_SRC/$name" | sudo tee "$UNIT_DST/$name" > /dev/null
     echo "Installed $UNIT_DST/$name"
 }
 

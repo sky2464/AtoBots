@@ -39,7 +39,8 @@ On the server:
 ssh atoosa-vps
 cd ~/ClaudeBot
 python3 -m unittest discover -s tests
-# Re-link / restart only if install layout or units changed:
+# Re-link / restart if install layout or units changed (they did in 0.0.1:
+# the units now name the account that runs install.sh):
 #   engine/install.sh --start "Atoosa Dev" /home/claude/AtoosaDev
 sudo systemctl restart claudebot-dispatcher
 # If always-on Admin is enabled:
