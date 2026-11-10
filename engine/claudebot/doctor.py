@@ -33,13 +33,14 @@ WAKES_PER_DAY = 3       # most messages the doctor sends backend in 24 hours
 WAITING_HOURS = 48      # an item waiting on a bot this long is a finding
 # Findings that are the Owner's to act on: shown by `cb doctor` and in the chat
 # brief, never sent to a bot (a bot cannot add a remote).
-NO_WAKE = ("backup-remote", "archive-remote", "admin-live-token")
+# "models": the Owner decides a bot's model; nobody is woken to change it.
+NO_WAKE = ("backup-remote", "archive-remote", "admin-live-token", "models")
 # Every finding key the doctor can raise. `cb item new --finding` accepts only
 # these, so an item can only be tied to a finding that really exists.
 FINDING_KEYS = ("dispatcher", "admin-live", "admin-live-token", "disk",
                 "git-size", "sql-size", "database", "backup-remote",
                 "archive-remote", "backup-push", "backup-snapshot", "memory")
-FINDING_PREFIXES = ("run:", "waiting:", "bots:")
+FINDING_PREFIXES = ("run:", "waiting:", "stall:", "bots:")
 CLEAR_RUNS = 2          # clean runs without the finding before its item closes
 CLOSABLE = ("todo", "next")
 # Local alert filename under <home>/.alerts/ when the message queue cannot
@@ -268,8 +269,16 @@ def _db_checks(cfg: Config, conn: sqlite3.Connection, now: str,
                            f"{r['started_at']} UTC, longer than the "
                            f"{cfg.lease_seconds} s lease."))
     out.extend(_waiting_checks(conn, now))
+    out.extend(_stall_checks(conn, cfg, now))
     for msg in bots.check(cfg, conn):
         out.append(Finding(_bots_key(msg), f"Bot files: {msg}"))
+    mismatches = bots.model_mismatches(conn)
+    if mismatches:
+        out.append(Finding("models", "Models do not match the bot tiers: "
+                           + "; ".join(f"{b} on {m} ({p})"
+                                       for b, m, p in mismatches)
+                           + ". The Owner sets the model with cb bot set "
+                           "NAME --model MODEL."))
     return out
 
 
@@ -299,6 +308,30 @@ def _waiting_checks(conn, now: str) -> list[Finding]:
                 f"waiting:{r['id']}",
                 f"{r['id']} has been waiting on {r['waiting_on']} for over "
                 f"{WAITING_HOURS} hours (since {since} UTC) with no answer."))
+    return out
+
+
+def _stall_checks(conn, cfg: Config, now: str) -> list[Finding]:
+    """`doing` items past the lease age with no live dispatcher run for the
+    owner. The dispatcher also reverts these to todo; this surfaces them if
+    the dispatcher is down."""
+    out = []
+    limit = (datetime.fromisoformat(now)
+             - timedelta(seconds=cfg.lease_seconds)).isoformat(timespec="seconds")
+    for r in conn.execute(
+            "SELECT id, owner, title, updated_at FROM items WHERE status='doing'"
+            " AND archived_at IS NULL AND updated_at<? ORDER BY n",
+            (limit,)):
+        if conn.execute(
+                "SELECT 1 FROM runs WHERE bot=? AND ended_at IS NULL"
+                " AND COALESCE(lane,'') IN ('','normal','heavy')",
+                (r["owner"],)).fetchone():
+            continue
+        out.append(Finding(
+            f"stall:{r['id']}",
+            f"{r['id']} ({r['title']}) has been doing since {r['updated_at']} "
+            f"UTC, longer than the {cfg.lease_seconds}s lease, with no live "
+            f"run for {r['owner']}."))
     return out
 
 
@@ -448,16 +481,25 @@ def run(cfg: Config, conn: sqlite3.Connection, **kw) -> list[Finding]:
                     _mark(conn, "dispatcher:oob", f.text, now)
                     activity.record(conn, "system", "doctor.oob", f.text,
                                     f.key)
-            if f.key.startswith("waiting:") or f.key == "admin-live":
+            if (f.key.startswith("waiting:") or f.key.startswith("stall:")
+                    or f.key == "admin-live"):
                 # Admin's to chase, not backend's
                 if _due(conn, f.key, f.text, now):
                     tag = hashlib.sha256(f"{f.key}{now}".encode()).hexdigest()[:12]
-                    subject, hint = (
-                        ("The always-on Admin is not running", " Tell the "
-                         "Owner; he restarts it with sudo systemctl restart "
-                         + ADMIN_UNIT + ".") if f.key == "admin-live" else
-                        ("An item is waiting too long", " Nudge whoever it "
-                         "waits on or ask the Owner."))
+                    if f.key == "admin-live":
+                        subject, hint = (
+                            "The always-on Admin is not running",
+                            " Tell the Owner; he restarts it with sudo "
+                            "systemctl restart " + ADMIN_UNIT + ".")
+                    elif f.key.startswith("stall:"):
+                        subject, hint = (
+                            "An item is stalled in doing",
+                            " The dispatcher reverts it to todo when it is "
+                            "up; nudge the owner or ask the Owner.")
+                    else:
+                        subject, hint = (
+                            "An item is waiting too long",
+                            " Nudge whoever it waits on or ask the Owner.")
                     messages.send(conn, "system", ADMIN,
                                   subject, f.text + hint,
                                   kind="alert", level="normal",

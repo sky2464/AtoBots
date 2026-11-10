@@ -14,6 +14,12 @@ from claudebot.config import Config  # noqa: E402
 from claudebot.db import connect, init_db  # noqa: E402
 
 
+def seed_owner_session(conn, session="s1", lane="chat"):
+    conn.execute(
+        "INSERT INTO runs(bot, session_id, lane, started_at) VALUES (?,?,?,?)",
+        ("admin", session, lane, "2026-11-09T00:00:00+00:00"))
+
+
 class ItemsBase(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -99,7 +105,7 @@ class ItemTests(ItemsBase):
         for k in kids:
             r = self.row(k)
             self.assertEqual((r["status"], r["parent"], r["owner"]),
-                             ("slice", p, "backend"))
+                             ("todo", p, "backend"))
         items.set_status(self.conn, p, "done", "admin")
         ids = lambda: [r["id"] for r in items.open_items(self.conn)]  # noqa: E731
         self.assertIn(p, ids())
@@ -108,7 +114,16 @@ class ItemTests(ItemsBase):
         items.set_status(self.conn, kids[1], "parked", "admin")
         self.assertNotIn(p, ids())
 
+    def test_split_children_are_wakeable_todo(self):
+        p = self.new("big", status="doing")
+        kids = items.split(self.cfg, self.conn, p, ["step"], "backend")
+        self.assertEqual(self.row(kids[0])["status"], "todo")
+        self.assertEqual(
+            [r["id"] for r in items.next_items(self.conn, "backend")], kids)
+
     def test_decision_requires_exact_quote(self):
+        seed_owner_session(self.conn, "s1")
+        seed_owner_session(self.conn, "s")
         with self.assertRaises(ValueError):
             items.decide(self.conn, "pay", "", "2026-11-09T00:00:00+00:00", "s1", "admin")
         with self.assertRaises(ValueError):
@@ -120,6 +135,17 @@ class ItemTests(ItemsBase):
         self.assertEqual(r["quote"], "Yes, pay it\nnow")
         self.assertEqual(items.decide(self.conn, "x", "q", "t", "s", "admin"), "D-0002")
 
+    def test_decision_refuses_bot_only_session(self):
+        self.conn.execute(
+            "INSERT INTO runs(bot, session_id, lane, started_at) VALUES"
+            " ('backend','bot-sess','normal','2026-11-09T00:00:00+00:00')")
+        with self.assertRaises(PermissionError):
+            items.decide(self.conn, "pay", "go", "t", "bot-sess", "admin")
+        with self.assertRaises(PermissionError):
+            items.decide(self.conn, "pay", "go", "t", "s1", "backend")
+        with self.assertRaises(ValueError):
+            items.decide(self.conn, "pay", "go", "t", "", "admin")
+
 
 class ItemCliTests(ItemsBase):
     def run_cli(self, *argv):
@@ -130,6 +156,7 @@ class ItemCliTests(ItemsBase):
         return rc, buf.getvalue()
 
     def test_cli_flow(self):
+        seed_owner_session(self.conn, "s1")
         rc, out = self.run_cli("item", "new", "Write docs", "--owner", "admin")
         self.assertEqual((rc, out.strip()), (0, "T-0001"))
         self.assertEqual(self.run_cli("item", "pause", "T-0001", "midway")[0], 0)

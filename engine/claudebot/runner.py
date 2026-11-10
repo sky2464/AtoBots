@@ -15,13 +15,16 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import activity, bots, items, messages
+from . import activity, bots, items, messages, tasks, usage
 from .config import Config
 from .db import tx, utcnow
 
 CLAUDE_HOME = "/home/claude"
 LEVEL_ORDER = ("housekeeping", "normal", "deep", "heavy")
-LEVEL_MODEL = {"housekeeping": "haiku", "deep": "opus", "heavy": "opus"}
+# A level may lower a thinker's model, and only housekeeping does. No level
+# raises a model: deep and heavy keep the bot's own (they change lane and
+# effort, not model). Workers are already on haiku.
+LEVEL_MODEL = {"housekeeping": "haiku"}
 EFFORT_ORDER = ("low", "medium", "high", "xhigh", "max")
 
 # Text that marks a plan usage limit. Only the "hit your ... limit" family is
@@ -58,7 +61,9 @@ def settings_for(bot: bots.Bot, msgs) -> tuple:
     highest effort among its messages; unset effort falls back to the bot's."""
     levels = [m["level"] for m in msgs if m["level"] in LEVEL_ORDER]
     level = max(levels, key=LEVEL_ORDER.index, default="normal")
-    model = LEVEL_MODEL.get(level, bot.model)
+    model = bot.model
+    if bot.tier == "thinker":
+        model = LEVEL_MODEL.get(level, bot.model)
     efforts = [m["effort"] for m in msgs if m["effort"] in EFFORT_ORDER]
     effort = max(efforts, key=EFFORT_ORDER.index, default=bot.effort)
     return model, effort
@@ -78,7 +83,9 @@ def _plugin_dirs(cfg: Config, bot: bots.Bot) -> list:
 def task_packet(cfg: Config, conn: sqlite3.Connection, bot, msgs) -> str:
     """What to do now, as pointers. File contents are not included."""
     bot = _bot(conn, bot)
-    lines = [f"You are {bot.name}. New work for this run:", ""]
+    lines = [bots.memory_block(cfg, bot.name), "",
+             bots.colleagues_block(conn, bot.name), "",
+             f"You are {bot.name}. New work for this run:", ""]
     item_ids = []
     for m in msgs:
         lines.append(f"## Message {m['id']} ({m['kind']}) from {m['from_bot']}: "
@@ -89,7 +96,8 @@ def task_packet(cfg: Config, conn: sqlite3.Connection, bot, msgs) -> str:
             lines.append(f"Item: {m['item_id']}")
             if m["item_id"] not in item_ids:
                 item_ids.append(m["item_id"])
-        lines += [m["body"], ""]
+        lines += [tasks.render(m["body"], m["id"]) if m["kind"] == "task"
+                  else m["body"], ""]
     for iid in item_ids:
         row = items.get(conn, iid)
         lines.append(f"## {iid}: {row['title']} (status {row['status']})")
@@ -104,15 +112,36 @@ def task_packet(cfg: Config, conn: sqlite3.Connection, bot, msgs) -> str:
     return "\n".join(lines)
 
 
+def task_prompt_for_file(task_file: str) -> str:
+    """Short -p text that points at the private task file (body stays off argv)."""
+    return (f"Read the task file at {task_file} and follow its instructions. "
+            "Do not ask what is in the file.")
+
+
+def unit_name_for(run_id: int) -> str:
+    """Transient systemd unit name for one run (stopped on Python timeout)."""
+    return f"claudebot-run-{int(run_id)}.scope"
+
+
 def build_command(cfg: Config, bot: bots.Bot, session_id: str, prompt_file,
-                  lane: str, *, task: str = "", model: str | None = None,
+                  lane: str, *, task: str = "", task_file: str | None = None,
+                  unit: str | None = None, model: str | None = None,
                   effort: str | None = None, mcp_config=None,
                   agents: str | None = None) -> list:
     """The full command line. `prompt_file` holds the identity text and goes in
-    with --append-system-prompt-file; `task` is the prompt. `lane` only labels
-    the run (limits are the same in every lane)."""
+    with --append-system-prompt-file. The task body lives in `task_file` (mode
+    600); `-p` only carries a short path pointer so subjects/bodies stay out of
+    `ps` and the journal. `lane` only labels the run (limits are the same in
+    every lane)."""
+    if task_file:
+        prompt = task_prompt_for_file(task_file)
+    else:
+        prompt = task
     cmd = ["sudo", "systemd-run", "--wait", "--collect", "--pipe",
-           "--uid=claude",
+           "--uid=claude"]
+    if unit:
+        cmd += [f"--unit={unit}"]
+    cmd += [
            "-p", f"MemoryMax={cfg.run_memory_max}",
            # No swap: with swap, a run over MemoryMax is slowed, not killed.
            "-p", "MemorySwapMax=0",
@@ -123,7 +152,7 @@ def build_command(cfg: Config, bot: bots.Bot, session_id: str, prompt_file,
            f"--setenv=CB_BOT={bot.name}",
            f"--setenv=CB_SESSION_ID={session_id}",
            f"--setenv=CLAUDEBOT_HOME={cfg.home}",
-           cfg.claude_bin, "-p", task,
+           cfg.claude_bin, "-p", prompt,
            "--output-format", "json",
            "--dangerously-skip-permissions",
            "--setting-sources", "project,local",
@@ -144,6 +173,33 @@ def build_command(cfg: Config, bot: bots.Bot, session_id: str, prompt_file,
     if agents:
         cmd += ["--agents", agents]
     return cmd
+
+
+def _stop_unit(unit: str) -> None:
+    """Best-effort stop of a transient unit left after a Python timeout."""
+    if not unit:
+        return
+    try:
+        subprocess.run(["sudo", "systemctl", "stop", unit],
+                       stdin=subprocess.DEVNULL, capture_output=True,
+                       timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def _timeout_output(exc: subprocess.TimeoutExpired) -> str:
+    """Partial stdout/stderr from a timed-out run, plus a timeout marker."""
+    parts = []
+    for chunk in (exc.stdout, exc.stderr):
+        if chunk is None:
+            continue
+        if isinstance(chunk, bytes):
+            parts.append(chunk.decode("utf-8", errors="replace"))
+        else:
+            parts.append(str(chunk))
+    body = "\n".join(p for p in parts if p)
+    marker = "Finished with result: timeout"
+    return f"{body}\n{marker}" if body else marker
 
 
 def _parse(output: str):
@@ -250,10 +306,13 @@ def run(cfg: Config, conn: sqlite3.Connection, bot, msgs, lane: str,
     if on_start is not None:
         on_start(run_id)
     temp, exit_code, output = [], 1, ""
+    unit = unit_name_for(run_id)
     try:
         model, effort = settings_for(bot, msgs)
         ident = _private_file(bots.identity_prompt(cfg, conn, bot.name), ".md")
         temp.append(ident)
+        task_path = _private_file(task_packet(cfg, conn, bot, msgs), ".task.md")
+        temp.append(task_path)
         mcp_text = _mcp_text(cfg, bot)
         mcp = None
         if mcp_text:
@@ -261,16 +320,18 @@ def run(cfg: Config, conn: sqlite3.Connection, bot, msgs, lane: str,
             temp.append(mcp)
         cmd = build_command(
             cfg, bot, session_id, ident, lane,
-            task=task_packet(cfg, conn, bot, msgs), model=model, effort=effort,
-            mcp_config=mcp, agents=bots.agents_json(conn, bot.name))
+            task_file=task_path, unit=unit, model=model, effort=effort,
+            mcp_config=mcp)
         try:
             p = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True,
                                text=True, errors="replace",
                                timeout=cfg.run_seconds + 120)
             exit_code, output = p.returncode, p.stdout + "\n" + p.stderr
             stdout = p.stdout
-        except subprocess.TimeoutExpired:
-            exit_code, output, stdout = 143, "Finished with result: timeout", ""
+        except subprocess.TimeoutExpired as e:
+            _stop_unit(unit)
+            output = _timeout_output(e)
+            exit_code, stdout = 143, output
         reason = classify(exit_code, stdout if exit_code == 0 else output)
     except Exception as e:  # setup failed: nothing ran
         exit_code, output, stdout, reason = 1, f"{type(e).__name__}: {e}", "", "error"
@@ -291,4 +352,20 @@ def run(cfg: Config, conn: sqlite3.Connection, bot, msgs, lane: str,
             (sid, utcnow(), exit_code, reason, tin, tout, run_id))
         activity.record(conn, bot.name, "run.end",
                         f"{bot.name} run {run_id}: {reason}", str(run_id))
+    _record_usage(conn, bot, lane, msgs, run_id, data)
     return RunResult(run_id, sid, exit_code, reason, tin, tout)
+
+
+def _record_usage(conn, bot, lane, msgs, run_id, data) -> None:
+    """Write the run's token row. A ledger failure is logged as activity and
+    never fails the run."""
+    try:
+        trigger = msgs[0]["kind"] if msgs else "run"
+        usage.record(conn, bot=bot.name, lane=lane, trigger=trigger,
+                     ref=str(run_id), **usage.from_result(data))
+    except Exception as e:
+        try:
+            activity.record(conn, bot.name, "usage.record_failed",
+                            f"{type(e).__name__}: {e}", str(run_id))
+        except Exception:
+            pass

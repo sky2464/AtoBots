@@ -131,7 +131,8 @@ class Live:
                 pass
 
     def compose(self, cfg, conn, brief_text: str, summary) -> str:
-        parts = [bots.identity_prompt(cfg, conn, chat.BOT), LIVE_PROMPT
+        parts = [bots.memory_block(cfg, chat.BOT),
+                 bots.identity_prompt(cfg, conn, chat.BOT), LIVE_PROMPT
                  + "\n# Startup brief\n\n" + brief_text]
         if summary is not None:
             parts.append(

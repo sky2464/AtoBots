@@ -21,12 +21,15 @@ from .db import connect, ct_display, tx, utcnow
 
 _NAME_RE = re.compile(r"[a-z][a-z0-9-]{0,30}")
 STATUSES = ("active", "paused", "retired")
+# Thinker bots plan and decide on the big model; worker bots do routine work on
+# haiku and are handed to by a thinker through `worker`.
+TIERS = ("thinker", "worker")
 # Names the record uses for non-bot actors; no bot may take one.
 RESERVED_NAMES = ("system", "cli", "hook", "owner")
 _FILES = ("SOUL.md", "PERSONA.md", "MEMORY.md")
 _TEMPLATE_SKILLS = Path(__file__).resolve().parent.parent / "templates" / "skills"
 _LIST_FIELDS = ("skills", "mcp", "plugins")
-_PLAIN_FIELDS = ("role", "org", "reports_to", "model", "effort")
+_PLAIN_FIELDS = ("role", "org", "reports_to", "model", "effort", "tier", "worker")
 # Reserved infrastructure roles (the backend) carry this `org`. They are not
 # company bots: hidden from lists unless asked for, never created by hand.
 RESERVED_ORG = "reserved"
@@ -47,6 +50,8 @@ class Bot:
     soul_sha: str | None
     created_at: str
     connectors: bool
+    tier: str = "thinker"
+    worker: str | None = None
 
 
 def _check_name(name) -> None:
@@ -67,7 +72,7 @@ def _row_to_bot(r: sqlite3.Row) -> Bot:
     return Bot(r["name"], r["role"], r["org"], r["reports_to"], r["model"],
                r["effort"], tup(r["skills"]), tup(r["mcp"]), tup(r["plugins"]),
                r["status"], r["soul_sha"], r["created_at"],
-               bool(r["connectors"]))
+               bool(r["connectors"]), r["tier"], r["worker"])
 
 
 def _bot_dir(cfg: Config, name: str) -> Path:
@@ -117,6 +122,57 @@ def write_settings(cfg: Config, name: str) -> None:
     path.write_text(json.dumps(data, indent=2) + "\n")
 
 
+def _check_tier(tier) -> str:
+    if tier not in TIERS:
+        raise ValueError(f"tier must be one of {', '.join(TIERS)}")
+    return tier
+
+
+def is_haiku(model: str | None) -> bool:
+    """True when the model id is a Haiku / worker-class model (exact `haiku`
+    or any id that contains `haiku`, e.g. `claude-haiku-4-5`)."""
+    if not isinstance(model, str) or not model.strip():
+        return False
+    return "haiku" in model.lower()
+
+
+def tier_for_model(model: str | None) -> str:
+    return "worker" if is_haiku(model) else "thinker"
+
+
+def _check_worker(conn: sqlite3.Connection, name: str, worker) -> str | None:
+    """A worker must name another existing bot whose tier is worker."""
+    if not worker:
+        return None
+    if worker == name:
+        raise ValueError("a bot cannot be its own worker")
+    r = conn.execute("SELECT tier FROM bots WHERE name=?", (worker,)).fetchone()
+    if r is None or r["tier"] != "worker":
+        raise ValueError(f"worker must be an existing worker-tier bot: {worker}")
+    return worker
+
+
+def _check_reports_to(conn: sqlite3.Connection, name: str,
+                      reports_to) -> str | None:
+    """`reports_to` must be another existing bot, or empty/None."""
+    if reports_to is None:
+        return None
+    if not isinstance(reports_to, str):
+        raise ValueError("reports_to must be a bot name or empty")
+    reports_to = reports_to.strip()
+    if not reports_to:
+        return None
+    if reports_to == name:
+        raise ValueError("a bot cannot report to itself")
+    _check_name(reports_to)
+    try:
+        get(conn, reports_to)
+    except KeyError as e:
+        raise ValueError(f"reports_to must be an existing bot: {reports_to}"
+                         ) from e
+    return reports_to
+
+
 def get(conn: sqlite3.Connection, name: str) -> Bot:
     _check_name(name)
     r = conn.execute("SELECT * FROM bots WHERE name=?", (name,)).fetchone()
@@ -138,11 +194,21 @@ def list_bots(conn: sqlite3.Connection, status: str = "active",
 def create(cfg: Config, conn: sqlite3.Connection, name: str, role: str,
            soul: str, persona: str, org=None, reports_to="admin",
            model="sonnet", effort=None, skills=(), mcp=(), plugins=(),
-           actor="admin", connectors: bool = False) -> Bot:
+           actor="admin", connectors: bool = False, tier: str | None = None,
+           worker: str | None = None) -> Bot:
     _check_name(name)
     if org == RESERVED_ORG and actor != "system":
         raise ValueError(f"org {RESERVED_ORG!r} is for infrastructure roles")
     skills, mcp, plugins = tuple(skills), tuple(mcp), tuple(plugins)
+    if tier is None:
+        tier = tier_for_model(model)
+    _check_tier(tier)
+    worker = _check_worker(conn, name, worker)
+    # Creating Admin with the default reports_to="admin" is self-reference;
+    # treat that as unset. Any other missing manager is rejected.
+    if reports_to == name:
+        reports_to = None
+    reports_to = _check_reports_to(conn, name, reports_to)
     for s in skills:
         _skill_source(cfg, s)
     d = cfg.bots_dir / name
@@ -160,11 +226,12 @@ def create(cfg: Config, conn: sqlite3.Connection, name: str, role: str,
             conn.execute(
                 "INSERT INTO bots(name, role, org, reports_to, model, effort, "
                 "skills, mcp, plugins, status, soul_sha, created_at, "
-                "connectors) VALUES (?,?,?,?,?,?,?,?,?,'active',?,?,?)",
+                "connectors, tier, worker) "
+                "VALUES (?,?,?,?,?,?,?,?,?,'active',?,?,?,?,?)",
                 (name, role, org, reports_to, model, effort,
                  json.dumps(list(skills)), json.dumps(list(mcp)),
                  json.dumps(list(plugins)), _sha(d / "SOUL.md"), utcnow(),
-                 int(bool(connectors))))
+                 int(bool(connectors)), tier, worker))
             activity.record(conn, actor, "bot.create", f"{name}: {role}", name)
     except BaseException:
         shutil.rmtree(d, ignore_errors=True)
@@ -180,15 +247,27 @@ def update(cfg: Config, conn: sqlite3.Connection, name: str, actor: str,
     if unknown:
         raise ValueError(f"cannot update: {', '.join(sorted(unknown))}")
     get(conn, name)
+    if "model" in fields and "tier" not in fields:
+        fields["tier"] = tier_for_model(fields["model"])
+    if "tier" in fields:
+        _check_tier(fields["tier"])
+    if "worker" in fields:
+        fields["worker"] = _check_worker(conn, name, fields["worker"])
+    if "reports_to" in fields:
+        fields["reports_to"] = _check_reports_to(
+            conn, name, fields["reports_to"])
     d = _bot_dir(cfg, name)
     decision = fields.pop("decision", None)
     soul = fields.pop("soul", None)
     persona = fields.pop("persona", None)
     if soul is not None:
-        ok = decision and conn.execute(
-            "SELECT 1 FROM decisions WHERE id=?", (decision,)).fetchone()
-        if not ok:
-            raise ValueError("changing a Soul needs a recorded decision ID")
+        from .items import require_owner_decision  # late: items imports bots
+        try:
+            require_owner_decision(conn, decision)
+        except PermissionError as e:
+            raise ValueError(
+                "changing a Soul needs a recorded Owner decision "
+                "bound to a chat/live session") from e
     sets, vals = [], []
     for k in _PLAIN_FIELDS:
         if k in fields:
@@ -201,57 +280,119 @@ def update(cfg: Config, conn: sqlite3.Connection, name: str, actor: str,
     if "connectors" in fields:
         sets.append("connectors=?")
         vals.append(int(bool(fields["connectors"])))
-    if "skills" in fields:
-        _link_skills(cfg, name, tuple(fields["skills"]))
-    if persona is not None:
-        (d / "PERSONA.md").write_text(persona)
-    if soul is not None:
-        (d / "SOUL.md").write_text(soul)
-        sets.append("soul_sha=?")
-        vals.append(_sha(d / "SOUL.md"))
-    with tx(conn):
-        if sets:
-            conn.execute(f"UPDATE bots SET {', '.join(sets)} WHERE name=?",
-                         (*vals, name))
-        changed = sorted(list(fields) + [k for k, v in
-                         (("soul", soul), ("persona", persona)) if v is not None])
-        detail = f"{name}: " + ", ".join(changed)
+    # Write identity files to temps first; rename only after the DB tx so a
+    # crash cannot leave PERSONA/SOUL on disk without a matching bots row.
+    temps: list[tuple[Path, Path]] = []
+    try:
+        if persona is not None:
+            tmp = d / "PERSONA.md.tmp"
+            tmp.write_text(persona)
+            temps.append((tmp, d / "PERSONA.md"))
         if soul is not None:
-            detail += f" (decision {decision})"
-        activity.record(conn, actor, "bot.update", detail, name)
+            tmp = d / "SOUL.md.tmp"
+            tmp.write_text(soul)
+            temps.append((tmp, d / "SOUL.md"))
+            sets.append("soul_sha=?")
+            vals.append(hashlib.sha256(soul.encode()).hexdigest())
+        with tx(conn):
+            if sets:
+                conn.execute(f"UPDATE bots SET {', '.join(sets)} WHERE name=?",
+                             (*vals, name))
+            changed = sorted(list(fields) + [k for k, v in
+                             (("soul", soul), ("persona", persona))
+                             if v is not None])
+            detail = f"{name}: " + ", ".join(changed)
+            if soul is not None:
+                detail += f" (decision {decision})"
+            activity.record(conn, actor, "bot.update", detail, name)
+        for tmp, final in temps:
+            os.replace(tmp, final)
+        temps.clear()
+        if "skills" in fields:
+            _link_skills(cfg, name, tuple(fields["skills"]))
+    finally:
+        for tmp, _ in temps:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 def set_status(conn: sqlite3.Connection, name: str, status: str,
-               actor: str) -> None:
+               actor: str, decision: str | None = None) -> None:
     if status not in STATUSES:
         raise ValueError(f"status must be one of {', '.join(STATUSES)}")
     get(conn, name)
+    if name == "admin" and status in ("paused", "retired"):
+        from .items import require_owner_decision  # late: items imports bots
+        try:
+            require_owner_decision(conn, decision)
+        except PermissionError as e:
+            raise ValueError(
+                "pausing or retiring admin needs a recorded Owner decision "
+                "bound to a chat/live session") from e
     with tx(conn):
         conn.execute("UPDATE bots SET status=? WHERE name=?", (status, name))
         activity.record(conn, actor, f"bot.{status}", name, name)
 
 
 def _read_capped(path: Path, cap: int) -> str:
+    """Read at most `cap` bytes, keeping the newest suffix (memory/persona
+    append; the oldest head is what condensation drops first)."""
     try:
         data = path.read_bytes()
     except FileNotFoundError:
         return ""
-    return data[:cap].decode("utf-8", errors="ignore")
+    return data[-cap:].decode("utf-8", errors="ignore")
 
 
 def identity_prompt(cfg: Config, conn: sqlite3.Connection, name: str) -> str:
-    """Soul, Persona, Memory (each capped) and shared rules. Never skills."""
+    """Soul, Persona (each capped) and shared rules. Never skills, and never
+    Memory: it changes between runs, so it travels in the task packet (see
+    memory_block) and this text stays byte-identical for the cached prefix."""
     get(conn, name)
     d = _bot_dir(cfg, name)
     parts = [
         ("Soul", _read_capped(d / "SOUL.md", cfg.soul_cap_bytes)),
         ("Persona", _read_capped(d / "PERSONA.md", cfg.persona_cap_bytes)),
-        ("Memory", _read_capped(d / "MEMORY.md", cfg.memory_cap_bytes)),
     ]
     rules = cfg.home / "rules.md"
     if rules.is_file():
         parts.append(("Shared rules", _read_capped(rules, 4 * 1024)))
     return "\n\n".join(f"# {title}\n\n{text.strip()}" for title, text in parts)
+
+
+def memory_block(cfg: Config, name: str) -> str:
+    """The bot's MEMORY.md, capped, as a `## Memory` block for the task packet."""
+    text = _read_capped(_bot_dir(cfg, name) / "MEMORY.md", cfg.memory_cap_bytes)
+    return f"## Memory\n\n{text.strip()}"
+
+
+def colleagues_block(conn: sqlite3.Connection, exclude: str) -> str:
+    """The other active bots by name and role, for the task packet. Sorted by
+    name, so the text is the same for the same set of bots."""
+    lines = [f"- {b.name}: {b.role or b.name}" for b in list_bots(conn, "active")
+             if b.name != exclude]
+    body = "\n".join(lines) if lines else "No other active bots."
+    return ("## Colleagues\n\nHand work to a colleague with `cb send`; do not "
+            "do their work yourself.\n\n" + body)
+
+
+def model_mismatches(conn: sqlite3.Connection, include_retired: bool = False
+                     ) -> list[tuple[str, str, str]]:
+    """Bots whose tier and model disagree: a thinker on Haiku, or a worker
+    on any other model. Returns (bot, model, problem). Retired bots are
+    skipped unless `include_retired` is True."""
+    out = []
+    where = "" if include_retired else " WHERE status != 'retired'"
+    for r in conn.execute("SELECT name, model, tier FROM bots" + where +
+                          " ORDER BY name"):
+        haiku = is_haiku(r["model"])
+        if r["tier"] == "thinker" and haiku:
+            out.append((r["name"], r["model"], "thinker on haiku"))
+        elif r["tier"] == "worker" and not haiku:
+            out.append((r["name"], r["model"], "worker not on haiku"))
+    return out
 
 
 def agents_json(conn: sqlite3.Connection, exclude: str) -> str:
@@ -327,7 +468,8 @@ def _cmd_new(args) -> int:
                reports_to=args.reports_to, model=args.model or cfg.default_model,
                effort=args.effort, skills=_csv(args.skills), mcp=_csv(args.mcp),
                plugins=_csv(args.plugins), actor=_actor(),
-               connectors=args.connectors)
+               connectors=args.connectors, tier=args.tier,
+               worker=args.worker)
         print(f"created {args.name}")
         return 0
     return _run(go)
@@ -345,7 +487,7 @@ def _cmd_show(args) -> int:
     def go(cfg, conn):
         b = get(conn, args.name)
         for k in ("name", "role", "org", "reports_to", "model", "effort",
-                  "status", "connectors"):
+                  "tier", "worker", "status", "connectors"):
             print(f"{k}: {getattr(b, k)}")
         for k in _LIST_FIELDS:
             print(f"{k}: {', '.join(getattr(b, k))}")
@@ -381,7 +523,8 @@ def _cmd_set(args) -> int:
 def _status_cmd(status):
     def cmd(args) -> int:
         def go(cfg, conn):
-            set_status(conn, args.name, status, _actor())
+            decision = getattr(args, "decision", None)
+            set_status(conn, args.name, status, _actor(), decision=decision)
             return 0
         return _run(go)
     return cmd
@@ -414,6 +557,8 @@ def register(subparsers) -> None:
     n.add_argument("--mcp")
     n.add_argument("--plugins")
     n.add_argument("--connectors", action="store_true")
+    n.add_argument("--tier", help="thinker or worker (default from model)")
+    n.add_argument("--worker", help="name of a worker-tier bot to hand routine work to")
     n.set_defaults(func=_cmd_new)
     ls = sub.add_parser("list")
     ls.add_argument("--status", choices=STATUSES, default="active")
@@ -436,6 +581,9 @@ def register(subparsers) -> None:
                          ("retire", "retired")):
         p = sub.add_parser(word)
         p.add_argument("name")
+        if status in ("paused", "retired"):
+            p.add_argument("--decision",
+                           help="Owner decision id (required to pause/retire admin)")
         p.set_defaults(func=_status_cmd(status))
     c = subparsers.add_parser("check", help="check bot files")
     c.set_defaults(func=_cmd_check)

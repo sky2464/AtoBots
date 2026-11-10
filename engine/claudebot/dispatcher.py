@@ -15,7 +15,7 @@ import threading
 from datetime import datetime, timedelta
 
 from . import (activity, archive, bots, chat, gitlog, items, messages, requests, routines,
-               runner, search)
+               runner, search, tasks)
 from .config import Config
 from .db import connect, ct_display, tx, utcnow
 
@@ -23,6 +23,15 @@ PAUSED_KEY = "dispatcher.paused_until"
 _NEVER_STOP = 10 ** 9  # system wake-ups are not part of any bot-to-bot loop
 _URGENT = "urgent"
 _HOUR = 3600
+# Message kinds that need a reply or an explicit finish before an `ok` run
+# may mark them done. Notes/answers/wakes may end without a reply.
+_ACTION_KINDS = frozenset({"question", "task"})
+# Activity kinds that count as explicit progress on an item during a run.
+_PROGRESS_KINDS = frozenset({
+    "item.status", "item.pause", "item.resume", "item.assign",
+    "item.waiting", "item.unwaiting", "item.owner_waiting",
+    "task.finish",
+})
 
 
 def available_mb(path: str = "/proc/meminfo") -> int:
@@ -157,6 +166,12 @@ class Dispatcher:
                 activity.record(conn, "system", "run.crashed",
                                 f"{r['bot']} run {r['id']} was open at startup",
                                 str(r["id"]))
+        # Models that disagree with the tier rule. Recorded, never changed:
+        # the Owner sets the model.
+        with tx(conn):
+            for bot, model, problem in bots.model_mismatches(conn):
+                activity.record(conn, "system", "model.mismatch",
+                                f"{bot} is on {model}: {problem}", bot)
 
     # ---- claim / release / finish ----
 
@@ -263,16 +278,34 @@ class Dispatcher:
                  str(r["id"]))
 
     def finish(self, run_id, result, msgs) -> None:
-        """Settle a run's claimed messages. Done only on `ok`."""
+        """Settle a run's claimed messages. Done on `ok` only when the message
+        needs no action, or a reply / task finish / item progress was recorded.
+        A bare `ok` with empty progress requeues action messages (no attempt
+        burned) so they are not silently dropped."""
         conn = self._db()
         now = self.clock()
         ids = [m["id"] if hasattr(m, "keys") else m for m in msgs]
         reason = getattr(result, "reason", None) or "error"
         if reason == "ok":
-            live = [i for i in ids if conn.execute(
-                "SELECT 1 FROM messages WHERE id=? AND status='claimed'",
-                (i,)).fetchone()]
-            messages.complete(conn, live)
+            done, pending = [], []
+            for i in ids:
+                m = conn.execute(
+                    "SELECT * FROM messages WHERE id=? AND status='claimed'",
+                    (i,)).fetchone()
+                if m is None:
+                    continue
+                if self._progress_ok(conn, m, run_id):
+                    done.append(i)
+                else:
+                    pending.append(i)
+            if done:
+                messages.complete(conn, done)
+            if pending:
+                self._release(conn, pending, now, usage_limit=True)
+                for i in pending:
+                    _log(conn, "message.no_progress",
+                         f"message {i} not done: ok run with no reply/progress",
+                         str(i))
         elif reason == "usage_limit":
             self._release(conn, ids, now, usage_limit=True)
             until = _plus(now, self.cfg.usage_limit_retry_seconds)
@@ -284,6 +317,34 @@ class Dispatcher:
                                 str(run_id))
         else:
             self._release(conn, ids, now)
+
+    def _progress_ok(self, conn, m, run_id) -> bool:
+        """True when this claimed message may be marked done after an ok run.
+        Replies are not stored as a foreign key; an answer/result later in the
+        same chain, a finished task, or item activity during the run counts."""
+        if m["kind"] not in _ACTION_KINDS:
+            return True
+        if m["chain_id"] and conn.execute(
+                "SELECT 1 FROM messages WHERE chain_id=? AND id>? AND"
+                " kind IN ('answer','result') LIMIT 1",
+                (m["chain_id"], m["id"])).fetchone():
+            return True
+        if m["kind"] == "task" and tasks.finished(conn, m["id"]):
+            return True
+        if m["item_id"]:
+            since = None
+            if run_id:
+                r = conn.execute("SELECT started_at FROM runs WHERE id=?",
+                                 (run_id,)).fetchone()
+                since = r["started_at"] if r else None
+            if since and conn.execute(
+                    f"SELECT 1 FROM activity WHERE actor=? AND ref=? AND at>=?"
+                    f" AND kind IN ({','.join('?' * len(_PROGRESS_KINDS))})"
+                    f" LIMIT 1",
+                    (m["to_bot"], m["item_id"], since, *_PROGRESS_KINDS)
+                    ).fetchone():
+                return True
+        return False
 
     def _commit(self, conn, bot: str, msgs, run_id) -> None:
         item_ids = sorted({m["item_id"] for m in msgs if m["item_id"]})
@@ -390,6 +451,8 @@ class Dispatcher:
         conn = self._db()
         now = self.clock()
         for name, step in (("recover_expired", self.recover_expired),
+                           ("stall_doing",
+                            lambda: self._stall_doing(conn, now)),
                            ("routines", lambda: self._call_routines(conn, now)),
                            ("wake_assigned",
                             lambda: self._wake_assigned(conn, now)),
@@ -455,9 +518,43 @@ class Dispatcher:
         self._dirty = True
         return mid
 
+    def _stall_doing(self, conn, now) -> None:
+        """A `doing` item with no live run past the lease age is stuck: revert
+        it to `todo` so `_wake_assigned` can wake the owner again. Tell Admin
+        once per stall window when the owner is missing or inactive."""
+        limit = _plus(now, -self.cfg.lease_seconds)
+        active = {b.name for b in bots.list_bots(conn, include_reserved=True)}
+        rows = conn.execute(
+            "SELECT id, owner, title, updated_at FROM items WHERE status='doing'"
+            " AND archived_at IS NULL AND updated_at<? ORDER BY n",
+            (limit,)).fetchall()
+        for r in rows:
+            if conn.execute(
+                    "SELECT 1 FROM runs WHERE bot=? AND ended_at IS NULL"
+                    " AND COALESCE(lane,'') IN ('','normal','heavy')",
+                    (r["owner"],)).fetchone():
+                continue
+            with tx(conn):
+                cur = conn.execute(
+                    "UPDATE items SET status='todo', updated_at=? WHERE id=?"
+                    " AND status='doing'", (now, r["id"]))
+                if cur.rowcount == 0:
+                    continue
+                activity.record(conn, "system", "item.stall_revert",
+                                f"{r['id']}: doing -> todo after lease age "
+                                f"with no live run", r["id"])
+            if r["owner"] not in active:
+                self._system_send(
+                    conn, "admin", f"Stalled item {r['id']}",
+                    f"Item {r['id']} ({r['title']}) was stuck in doing past "
+                    f"the {self.cfg.lease_seconds}s lease with no live run. "
+                    f"It was reverted to todo; owner {r['owner']} is not "
+                    "active.", f"stall:{r['id']}:{r['owner']}",
+                    item_id=r["id"], now=now)
+
     def _wake_assigned(self, conn, now) -> None:
         """An item that is todo or next, waiting on nobody, wakes its owner
-        once per assignment."""
+        once per assignment. Split children are created as todo so they wake."""
         active = {b.name for b in bots.list_bots(conn, include_reserved=True)}
         rows = conn.execute(
             "SELECT i.id, i.owner, i.title, (SELECT COUNT(*) FROM activity a"
@@ -468,15 +565,44 @@ class Dispatcher:
         for r in rows:
             if r["owner"] not in active:
                 continue
+            if tasks.failures(conn, r["id"]) >= tasks.ESCALATE_AT:
+                continue  # a worker failed it twice: Admin has been told
             key = f"assign:{r['id']}:{r['owner']}:{r['assigns']}"
             if conn.execute("SELECT 1 FROM messages WHERE dedupe_key=?",
                             (key,)).fetchone():
                 continue
-            self._system_send(conn, r["owner"], f"{r['id']} is yours: "
-                              f"{r['title']}",
-                              f"Item {r['id']} is assigned to you. Read its "
-                              "folder and handoff notes and carry on.", key,
+            text = (f"Item {r['id']} is assigned to you. Read its folder and "
+                    "handoff notes and carry on.")
+            target = self._wake_target(conn, r["owner"], now)
+            body = text if target == r["owner"] else tasks.wake_body(
+                conn, r["id"], target, text)
+            self._system_send(conn, target, f"{r['id']} is yours: "
+                              f"{r['title']}", body, key,
                               item_id=r["id"], now=now)
+
+    def _wake_target(self, conn, owner: str, now: str) -> str:
+        """The owner's worker when it is an active worker-tier bot, else the
+        owner. Without one, `worker.missing` is recorded once per bot per day."""
+        worker = bots.get(conn, owner).worker
+        if worker:
+            try:
+                w = bots.get(conn, worker)
+            except KeyError:
+                w = None
+            if w is not None and w.status == "active" and w.tier == "worker":
+                return worker
+        day = now[:10]
+        key = f"worker.missing.{owner}"
+        r = conn.execute("SELECT value FROM meta WHERE key=?",
+                         (key,)).fetchone()
+        if r is None or r["value"] != day:
+            with tx(conn):
+                conn.execute("INSERT OR REPLACE INTO meta(key, value)"
+                             " VALUES (?,?)", (key, day))
+                activity.record(conn, "system", "worker.missing",
+                                f"{owner} has no active worker; its work is "
+                                "done by its own session", owner)
+        return owner
 
     def _wake_admin(self, conn, now) -> None:
         """Admin goes back to open work when nothing is queued for it and the
@@ -548,9 +674,12 @@ class Dispatcher:
                                  " VALUES (?,?)", (k, v))
 
     def _wake_capped(self, conn, bot: str, now: str) -> bool:
-        n = conn.execute("SELECT COUNT(*) FROM runs WHERE bot=? AND"
-                         " started_at>?", (bot, _plus(now, -_HOUR))
-                         ).fetchone()[0]
+        """Count only dispatcher lanes (`normal`/`heavy`); chat/live Admin
+        sessions must not burn the worker wake cap."""
+        n = conn.execute(
+            "SELECT COUNT(*) FROM runs WHERE bot=? AND started_at>?"
+            " AND COALESCE(lane,'normal') IN ('normal','heavy')",
+            (bot, _plus(now, -_HOUR))).fetchone()[0]
         if n < self.cfg.wakes_per_bot_per_hour:
             return False
         self._system_send(

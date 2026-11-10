@@ -30,8 +30,23 @@ class BotsBase(unittest.TestCase):
         d.mkdir(parents=True, exist_ok=True)
         (d / "SKILL.md").write_text(f"---\nname: {name}\n---\nbody\n")
 
+    def ensure_admin(self):
+        try:
+            bots.get(self.conn, "admin")
+        except KeyError:
+            bots.create(self.cfg, self.conn, "admin", role="Chief",
+                        soul="I am a soul.", persona="Calm and brief.",
+                        reports_to=None)
+
     def new(self, name="backend", **kw):
         kw.setdefault("role", "Backend engineer")
+        if name != "admin" and kw.get("reports_to", "admin") not in (None, ""):
+            # Default manager is admin; create it when tests never did.
+            try:
+                bots.get(self.conn, kw.get("reports_to", "admin"))
+            except KeyError:
+                if kw.get("reports_to", "admin") == "admin":
+                    self.ensure_admin()
         return bots.create(self.cfg, self.conn, name, soul="I am a soul.",
                            persona="Calm and brief.", **kw)
 
@@ -67,9 +82,11 @@ class CreateTests(BotsBase):
         for bad in ("../admin", "Admin", "a b", "", "a" * 32, "admin\n", "1x"):
             with self.assertRaises(ValueError, msg=repr(bad)):
                 self.new(bad)
-        self.assertFalse(self.cfg.bots_dir.exists()
-                         and any(self.cfg.bots_dir.iterdir()))
-        self.assertFalse((self.cfg.home / "admin").exists())
+        # ensure_admin may have created admin while trying a create that then
+        # failed the name check; no other bot dirs should exist.
+        names = ({p.name for p in self.cfg.bots_dir.iterdir()}
+                 if self.cfg.bots_dir.exists() else set())
+        self.assertTrue(names <= {"admin"})
         with self.assertRaises(ValueError):
             bots.get(self.conn, "../admin")
 
@@ -82,14 +99,16 @@ class CreateTests(BotsBase):
         with self.assertRaises(ValueError):
             self.new(skills=("nope",))
         self.assertFalse((self.cfg.bots_dir / "backend").exists())
-        self.assertIsNone(self.conn.execute(
-            "SELECT 1 FROM bots").fetchone())
+        names = [r["name"] for r in self.conn.execute("SELECT name FROM bots")]
+        self.assertTrue(set(names) <= {"admin"})
 
     def test_created_bot_survives_reload(self):
         self.new()
         c2 = connect(self.cfg)
         try:
-            self.assertEqual([b.name for b in bots.list_bots(c2)], ["backend"])
+            self.assertEqual(
+                sorted(b.name for b in bots.list_bots(c2)),
+                ["admin", "backend"])
             self.assertEqual(bots.get(c2, "backend").role, "Backend engineer")
         finally:
             c2.close()
@@ -103,13 +122,30 @@ class LifecycleTests(BotsBase):
         for f in ("SOUL.md", "PERSONA.md", "MEMORY.md"):
             self.assertTrue((d / f).exists())
         self.assertEqual(bots.get(self.conn, "backend").status, "retired")
-        self.assertEqual(bots.list_bots(self.conn), [])
+        self.assertEqual([b.name for b in bots.list_bots(self.conn)], ["admin"])
         self.assertEqual(len(bots.list_bots(self.conn, status="retired")), 1)
 
     def test_bad_status_rejected(self):
         self.new()
         with self.assertRaises(ValueError):
             bots.set_status(self.conn, "backend", "gone", "admin")
+
+    def test_admin_pause_retire_need_owner_decision(self):
+        self.ensure_admin()
+        with self.assertRaises(ValueError):
+            bots.set_status(self.conn, "admin", "paused", "cli")
+        with self.assertRaises(ValueError):
+            bots.set_status(self.conn, "admin", "retired", "cli")
+        self.assertEqual(bots.get(self.conn, "admin").status, "active")
+        self.conn.execute(
+            "INSERT INTO runs(bot, session_id, lane, started_at) VALUES"
+            " ('admin','owner-sess','chat','2026-11-09T00:00:00+00:00')")
+        self.conn.execute(
+            "INSERT INTO decisions(id,title,quote,said_at,session,recorded_by,"
+            "created_at) VALUES('D-0001','pause admin','pause it','t',"
+            "'owner-sess','admin','x')")
+        bots.set_status(self.conn, "admin", "paused", "cli", decision="D-0001")
+        self.assertEqual(bots.get(self.conn, "admin").status, "paused")
 
     def test_update_fields_and_skills(self):
         self.make_skill("a")
@@ -123,6 +159,25 @@ class LifecycleTests(BotsBase):
         self.assertTrue((self.cfg.bots_dir / "backend" / ".claude" / "skills" / "a").is_symlink())
         bots.update(self.cfg, self.conn, "backend", "admin", skills=())
         self.assertEqual(list((self.cfg.bots_dir / "backend" / ".claude" / "skills").iterdir()), [])
+
+    def test_update_persona_atomic_temp_then_rename(self):
+        self.new()
+        path = self.cfg.bots_dir / "backend" / "PERSONA.md"
+        bots.update(self.cfg, self.conn, "backend", "admin", persona="Atomic.")
+        self.assertEqual(path.read_text(), "Atomic.")
+        self.assertFalse((path.parent / "PERSONA.md.tmp").exists())
+
+    def test_reports_to_must_be_existing_bot(self):
+        self.ensure_admin()
+        self.new()
+        with self.assertRaises(ValueError):
+            bots.update(self.cfg, self.conn, "backend", "admin",
+                        reports_to="nobody")
+        with self.assertRaises(ValueError):
+            bots.update(self.cfg, self.conn, "backend", "admin",
+                        reports_to="backend")
+        bots.update(self.cfg, self.conn, "backend", "admin", reports_to="")
+        self.assertIsNone(bots.get(self.conn, "backend").reports_to)
 
     def test_update_unknown_field(self):
         self.new()
@@ -162,10 +217,21 @@ class CheckTests(BotsBase):
                         decision="D-0099")
         self.assertEqual((self.cfg.bots_dir / "backend" / "SOUL.md").read_text(),
                          "I am a soul.")
+        # Bare decision row without Owner session provenance is refused.
         self.conn.execute(
-            "INSERT INTO decisions(id,title,created_at) VALUES('D-0001','t','x')")
+            "INSERT INTO decisions(id,title,quote,said_at,session,recorded_by,"
+            "created_at) VALUES('D-0001','t','q','t','bot-only','admin','x')")
+        with self.assertRaises(ValueError):
+            bots.update(self.cfg, self.conn, "backend", "admin", soul="new",
+                        decision="D-0001")
+        self.conn.execute(
+            "INSERT INTO runs(bot, session_id, lane, started_at) VALUES"
+            " ('admin','owner-sess','chat','2026-11-09T00:00:00+00:00')")
+        self.conn.execute(
+            "INSERT INTO decisions(id,title,quote,said_at,session,recorded_by,"
+            "created_at) VALUES('D-0002','t','q','t','owner-sess','admin','x')")
         bots.update(self.cfg, self.conn, "backend", "admin", soul="new soul",
-                    decision="D-0001")
+                    decision="D-0002")
         self.assertEqual(bots.check(self.cfg, self.conn), [])
         self.assertEqual((self.cfg.bots_dir / "backend" / "SOUL.md").read_text(),
                          "new soul")
@@ -184,8 +250,10 @@ class PromptTests(BotsBase):
         (self.cfg.home / "rules.md").write_text("RULES-TEXT")
         p = bots.identity_prompt(self.cfg, self.conn, "backend")
         order = [p.index(x) for x in ("I am a soul.", "Calm and brief.",
-                                      "MEM-TEXT", "RULES-TEXT")]
+                                      "RULES-TEXT")]
         self.assertEqual(order, sorted(order))
+        # Memory is not part of the identity: it moved to the task packet
+        self.assertNotIn("MEM-TEXT", p)
 
     def test_rules_optional(self):
         self.new()
@@ -239,6 +307,7 @@ class CliTests(BotsBase):
         home = Path(self._tmp.name)
         (home / "soul.md").write_text("soul text")
         (home / "persona.md").write_text("persona text")
+        self.ensure_admin()
         rc, _ = self.run_cli("bot", "new", "backend", "--role", "Dev",
                              "--soul-file", str(home / "soul.md"),
                              "--persona-file", str(home / "persona.md"))
@@ -259,5 +328,123 @@ class CliTests(BotsBase):
         self.assertEqual(rc, 0)
 
 
+
+class StablePrefixTests(BotsBase):
+    def test_prefix_bytes_identical_when_memory_changes(self):
+        self.new()
+        d = self.cfg.bots_dir / "backend"
+        (d / "MEMORY.md").write_text("first memory")
+        before = bots.identity_prompt(self.cfg, self.conn, "backend").encode()
+        (d / "MEMORY.md").write_text("second memory, edited between runs")
+        after = bots.identity_prompt(self.cfg, self.conn, "backend").encode()
+        self.assertEqual(before, after)
+
+    def test_memory_block_reads_capped_memory(self):
+        self.new()
+        (self.cfg.bots_dir / "backend" / "MEMORY.md").write_text("MEM-TEXT")
+        block = bots.memory_block(self.cfg, "backend")
+        self.assertTrue(block.startswith("## Memory\n\n"))
+        self.assertIn("MEM-TEXT", block)
+        (self.cfg.bots_dir / "backend" / "MEMORY.md").write_text(
+            "M" * (self.cfg.memory_cap_bytes + 500))
+        self.assertLessEqual(len(bots.memory_block(self.cfg, "backend").encode()),
+                             self.cfg.memory_cap_bytes + 64)
+
+    def test_read_capped_keeps_newest_suffix(self):
+        self.new()
+        cap = self.cfg.memory_cap_bytes
+        body = ("OLD-" * 3000) + ("NEW-" * 3000)
+        path = self.cfg.bots_dir / "backend" / "MEMORY.md"
+        path.write_bytes(body.encode())
+        self.assertGreater(path.stat().st_size, cap)
+        text = bots._read_capped(path, cap)
+        self.assertLessEqual(len(text.encode()), cap)
+        self.assertIn("NEW-", text[-40:])
+        self.assertNotIn("OLD-", text[:40])
+
+    def test_colleagues_block_lists_other_active_bots(self):
+        self.new("admin", role="Chief")
+        self.new("backend", role="Backend engineer")
+        self.new("old", role="Retired one")
+        self.new("pausy", role="Paused one")
+        bots.set_status(self.conn, "old", "retired", "admin")
+        bots.set_status(self.conn, "pausy", "paused", "admin")
+        block = bots.colleagues_block(self.conn, exclude="admin")
+        self.assertTrue(block.startswith("## Colleagues\n"))
+        self.assertIn("- backend: Backend engineer", block)
+        self.assertNotIn("admin", block)
+        self.assertNotIn("old", block)
+        self.assertNotIn("pausy", block)
+        self.assertEqual(block, bots.colleagues_block(self.conn, exclude="admin"))
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class TierTests(BotsBase):
+    def test_create_defaults_tier_from_model(self):
+        self.assertEqual(self.new("runner", model="haiku").tier, "worker")
+        self.assertEqual(self.new("planner", model="opus").tier, "thinker")
+        self.assertEqual(self.new("explicit", model="haiku", tier="thinker").tier, "thinker")
+        self.assertEqual(
+            self.new("dated", model="claude-haiku-4-5-20251001").tier, "worker")
+
+    def test_create_rejects_unknown_tier(self):
+        with self.assertRaises(ValueError):
+            self.new("odd", tier="boss")
+
+    def test_model_change_updates_tier(self):
+        self.new("switcher", model="sonnet")
+        self.assertEqual(bots.get(self.conn, "switcher").tier, "thinker")
+        bots.update(self.cfg, self.conn, "switcher", "admin",
+                    model="claude-haiku-4-5")
+        b = bots.get(self.conn, "switcher")
+        self.assertEqual((b.model, b.tier), ("claude-haiku-4-5", "worker"))
+        bots.update(self.cfg, self.conn, "switcher", "admin", model="opus")
+        self.assertEqual(bots.get(self.conn, "switcher").tier, "thinker")
+
+    def test_model_mismatches_flags_thinker_on_haiku_and_worker_on_sonnet(self):
+        self.new("planner", model="opus")
+        self.new("gofer", model="haiku")
+        self.new("badthinker", model="haiku", tier="thinker")
+        self.new("badworker", model="sonnet", tier="worker")
+        self.new("idhaiku", model="claude-haiku-4-5", tier="thinker")
+        self.assertEqual(sorted(bots.model_mismatches(self.conn)), [
+            ("badthinker", "haiku", "thinker on haiku"),
+            ("badworker", "sonnet", "worker not on haiku"),
+            ("idhaiku", "claude-haiku-4-5", "thinker on haiku"),
+        ])
+
+    def test_model_mismatches_skips_retired_unless_asked(self):
+        self.new("badthinker", model="haiku", tier="thinker")
+        self.conn.execute("UPDATE bots SET status='retired' WHERE name=?",
+                          ("badthinker",))
+        self.assertEqual(bots.model_mismatches(self.conn), [])
+        self.assertEqual(bots.model_mismatches(self.conn,
+                                               include_retired=True),
+                         [("badthinker", "haiku", "thinker on haiku")])
+
+    def test_set_worker_must_be_existing_worker_bot(self):
+        self.new("planner", model="opus")
+        self.new("gofer", model="haiku")
+        self.new("boss", model="opus")
+        bots.update(self.cfg, self.conn, "planner", "admin", worker="gofer")
+        self.assertEqual(bots.get(self.conn, "planner").worker, "gofer")
+        for bad in ("planner", "boss", "nobody"):
+            with self.assertRaises(ValueError, msg=bad):
+                bots.update(self.cfg, self.conn, "planner", "admin", worker=bad)
+        bots.update(self.cfg, self.conn, "planner", "admin", worker="")
+        self.assertIsNone(bots.get(self.conn, "planner").worker)
+
+    def test_create_takes_worker(self):
+        self.new("gofer", model="haiku")
+        b = self.new("planner", model="opus", worker="gofer")
+        self.assertEqual(b.worker, "gofer")
+        with self.assertRaises(ValueError):
+            self.new("planner2", model="opus", worker="planner")
+        self.assertFalse((self.cfg.bots_dir / "planner2").exists())
+
+    def test_usage_table_exists(self):
+        self.assertTrue(self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage'").fetchone())
