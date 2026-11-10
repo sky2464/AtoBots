@@ -11,7 +11,8 @@ marker and sends SIGTERM to the claude process named in the pid file (Admin's
 Bash tool is a child of claude, but not always its direct child, so the parent
 pid is not used). chat_loop sees the marker, archives the old transcript and
 starts claude again with the summary in its prompt. The live Admin's rollover
-is started by the engine itself (rotation.py); the Stop hook no longer blocks.
+is started by the engine itself (rotation.py) for both the live Admin and
+`cb chat`; the Stop hook no longer blocks.
 """
 import fcntl
 import json
@@ -299,7 +300,9 @@ def settings_for_chat(cfg: Config) -> dict:
     def hook(sub):
         return [{"hooks": [{"type": "command", "command": f"{cb} hook {sub}",
                             "timeout": 30}]}]
-    return {"hooks": {"UserPromptSubmit": hook("prompt"), "Stop": hook("stop")}}
+    # No Stop hook: rotation is done by the engine (rotation.py). The
+    # `cb hook stop` subcommand still exists for settings written earlier.
+    return {"hooks": {"UserPromptSubmit": hook("prompt")}}
 
 
 def cmd_hook_stop(args) -> int:
@@ -527,10 +530,10 @@ def _one_session(cfg, conn, summary, token, first: bool, live=None) -> str:
         # The marker stays until this session ends well; the summary file is
         # never deleted.
         _write_private(pid_path(cfg), f"{proc.pid}\n")
-        if live:  # the engine rotates a long live session (rotation.py)
-            from . import rotation
-            watch = rotation.Watch(cfg, session_id, token)
-            watch.start()
+        from . import rotation  # the engine rotates long sessions
+        watch = rotation.Watch(cfg, session_id, token,
+                               ttl=None if live else rotation.CHAT_CACHE_TTL)
+        watch.start()
         code = _wait(proc, cfg, token, live.stop if live else None)
         now_token = _read_token(cfg)
         if live and live.stop.is_set():

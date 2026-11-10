@@ -202,11 +202,10 @@ class StopHookTests(Base):
 class SettingsTests(Base):
     def test_settings_has_both_hooks_with_absolute_path(self):
         s = chat.settings_for_chat(self.cfg)
-        cmds = {ev: s["hooks"][ev][0]["hooks"][0]["command"]
-                for ev in ("UserPromptSubmit", "Stop")}
-        self.assertTrue(cmds["UserPromptSubmit"].endswith("/bin/cb hook prompt"))
-        self.assertTrue(cmds["Stop"].endswith("/bin/cb hook stop"))
-        self.assertTrue(cmds["Stop"].startswith("/"))
+        self.assertEqual(set(s["hooks"]), {"UserPromptSubmit"})
+        cmd = s["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+        self.assertTrue(cmd.endswith("/bin/cb hook prompt"))
+        self.assertTrue(cmd.startswith("/"))
 
 
 class MemoryMaxTests(Base):
@@ -325,7 +324,7 @@ class LoopTests(Base):
             self.assertIn(flag, a)
         self.assertEqual(a[a.index("--setting-sources") + 1], "project,local")
         self.assertEqual(a[a.index("--model") + 1], "sonnet")
-        self.assertIn("hook stop", c["settings"])
+        self.assertNotIn("hook stop", c["settings"])
         run = self.conn.execute("SELECT * FROM runs WHERE lane='chat'").fetchone()
         self.assertEqual(run["bot"], "admin")
         self.assertIsNotNone(run["ended_at"])

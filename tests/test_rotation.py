@@ -36,7 +36,8 @@ class Base(unittest.TestCase):
 
     def write_transcript(self, tokens, age_seconds):
         self.transcript.write_text(json.dumps({"type": "assistant", "message": {
-            "role": "assistant",
+            "role": "assistant", "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": "done"}],
             "usage": {"input_tokens": tokens, "output_tokens": 0}}}) + "\n")
         when = time.time() - age_seconds
         os.utime(self.transcript, (when, when))
@@ -121,8 +122,11 @@ class CheckOnceTests(Base):
 
     def test_idle_large_context_rotates_once(self):
         p = self.write_transcript(90000, 4000)  # idle past the cache TTL
+        state = {}  # a rotation needs two consecutive qualifying looks
+        self.assertFalse(rotation.check_once(self.cfg, self.conn, p,
+                                             kill=self.kill, state=state))
         self.assertTrue(rotation.check_once(self.cfg, self.conn, p,
-                                            kill=self.kill))
+                                            kill=self.kill, state=state))
         self.assertEqual(len(self.kills), 1)
         self.assertTrue(chat.marker_path(self.cfg).exists())
         self.assertTrue(chat.rollover_path(self.cfg).is_file())
