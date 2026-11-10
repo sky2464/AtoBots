@@ -6,7 +6,7 @@ Each employee (a *bot*) has its own identity, memory, and job. Bots sleep when i
 
 ClaudeBot is built on [Claude Code](https://claude.com/claude-code). The engine is reusable and knows nothing about any one business. Each company gets its own install and its own company home.
 
-> **Status:** early and private. Interfaces may change without notice. Current package version: **0.0.1** (`cb version`).
+> **Status:** early and private. Interfaces may change without notice. Current package version: **0.0.2** (`cb version`).
 
 ---
 
@@ -104,6 +104,7 @@ engine/
   systemd/               service and timer units
   templates/             starting files for Admin and new bots
   install.sh             server installer
+  update.sh              moves a running install to a release tag
 tests/                   unit tests (run with unittest discover)
 docs/                    deploy, branch cleanup, design and plans
 .github/workflows/       CI (unittest discover on push and pull requests)
@@ -123,17 +124,40 @@ Secret-store tests are skipped when GnuPG is not installed (expect skips on a
 typical Mac without gpg). GitHub Actions runs the same discover command on every
 push and pull request.
 
-## Deploy
+## Updating a running install
 
-Ship a tagged checkout and rsync with `--delete` so the server matches the tag.
-See [docs/deploy.md](docs/deploy.md). Branch cleanup notes for stale remotes are
-in [docs/branch-cleanup.md](docs/branch-cleanup.md).
+The server holds a Git clone of this repository; releases are `v*` tags.
+
+```bash
+cb version
+```
+
+```bash
+engine/update.sh
+```
+
+The script backs up the company database, moves the clone to the newest
+release, applies database changes, restarts the services and runs `cb doctor`.
+If it fails it prints how to go back.
+
+- **Coming from 0.0.1:** a few steps are done by hand after the script. Follow
+  "Updating from 0.0.1 to 0.0.2" in [UPDATING.md](UPDATING.md).
+- **Engine files were copied to the server (no `.git`):** move to a clone once;
+  see "Moving a copied install to a clone" in [UPDATING.md](UPDATING.md).
+- Read the release's "Manual steps after updating" and "Known issues" in
+  [CHANGELOG.md](CHANGELOG.md) first. Do not rsync into the clone.
+
+Maintainers: how a release is cut is in [docs/deploy.md](docs/deploy.md).
+Branch cleanup notes for stale remotes are in
+[docs/branch-cleanup.md](docs/branch-cleanup.md).
 
 ## Documentation
 
 - [Design specification](docs/superpowers/specs/2026-11-08-claudebot-engine-design.md): intent, roles, bot lifecycle, and safety rules
 - [Implementation plan](docs/superpowers/plans/2026-11-08-claudebot-engine.md): the build plan and task breakdown
-- [Deploy from a tag](docs/deploy.md)
+- [Updating a running install](UPDATING.md)
+- [Changelog](CHANGELOG.md)
+- [Cutting a release](docs/deploy.md)
 - [Branch cleanup](docs/branch-cleanup.md)
 - [Hygiene leftovers](docs/hygiene-leftovers.md): deferred dead-code notes (no security/cost work)
 
