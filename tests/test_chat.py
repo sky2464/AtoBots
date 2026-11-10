@@ -166,46 +166,13 @@ class TokenTests(unittest.TestCase):
         self.assertEqual(chat.context_tokens(p), 10)
 
 
-class StopHookTests(Base):
-    def run_hook(self, payload, tokens):
-        tp = self.root / "t.jsonl"
-        tp.write_text(json.dumps({"type": "assistant", "message": {
-            "usage": {"input_tokens": tokens, "output_tokens": 0}}}) + "\n")
-        payload = dict({"transcript_path": str(tp), "session_id": "s"},
-                       **payload)
-        stdin = types.SimpleNamespace(
-            buffer=io.BytesIO(json.dumps(payload).encode()))
-        out = io.StringIO()
-        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.cfg.home)}), \
-                mock.patch("sys.stdin", stdin), redirect_stdout(out):
-            rc = chat.cmd_hook_stop(None)
-        return rc, out.getvalue()
-
-    def test_stop_hook_never_blocks_any_more(self):
-        # Rotation is engine-driven now (rotation.py): the hook stays silent
-        # however long the transcript is.
-        for tokens in (0, 99999, 100000, 150000, 500000):
-            rc, out = self.run_hook({"stop_hook_active": False}, tokens)
-            self.assertEqual((rc, out), (0, ""), tokens)
-
-    def test_stop_hook_never_breaks_the_chat(self):
-        out = io.StringIO()
-        stdin = types.SimpleNamespace(buffer=io.BytesIO(b"{broken"))
-        with mock.patch("sys.stdin", stdin), redirect_stdout(out):
-            self.assertEqual(chat.cmd_hook_stop(None), 0)
-        self.assertEqual(out.getvalue(), "")
-        rc, out = self.run_hook({"stop_hook_active": False,
-                                 "transcript_path": "/nonexistent"}, 0)
-        self.assertEqual((rc, out), (0, ""))
-
-
 class SettingsTests(Base):
-    def test_settings_has_both_hooks_with_absolute_path(self):
+    def test_settings_has_the_prompt_hook_with_absolute_path(self):
         s = chat.settings_for_chat(self.cfg)
-        self.assertEqual(set(s["hooks"]), {"UserPromptSubmit"})
         cmd = s["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
         self.assertTrue(cmd.endswith("/bin/cb hook prompt"))
         self.assertTrue(cmd.startswith("/"))
+        self.assertNotIn("Stop", s["hooks"])  # the engine rotates sessions
 
 
 class MemoryMaxTests(Base):
@@ -237,7 +204,7 @@ class MemoryMaxTests(Base):
                          dict(os.environ), self.cfg)
         self.assertEqual(len(seen), 1)
         self.assertEqual(seen[0][0], "/usr/bin/systemd-run")
-        self.assertIn("--pty", seen[0])
+        self.assertIn("--scope", seen[0])
         self.assertIn(f"MemoryMax={self.cfg.run_memory_max}", seen[0])
 
 
@@ -287,17 +254,9 @@ class LoopTests(Base):
         p = mock.patch.dict(os.environ, env)
         p.start()
         self.addCleanup(p.stop)
-        # LoopTests drive a fake claude binary. CI runners have systemd-run,
-        # which memory_wrap would put in front of that fake and never exec it.
-        wrap = mock.patch("claudebot.chat.memory_wrap",
-                          side_effect=lambda cfg, cmd: list(cmd))
-        wrap.start()
-        self.addCleanup(wrap.stop)
 
     def calls(self):
         d = self.fake_dir / "calls"
-        if not d.is_dir():
-            return []
         return [json.loads((d / f).read_text())
                 for f in sorted(os.listdir(d), key=lambda x: int(x[:-5]))]
 
@@ -324,7 +283,7 @@ class LoopTests(Base):
             self.assertIn(flag, a)
         self.assertEqual(a[a.index("--setting-sources") + 1], "project,local")
         self.assertEqual(a[a.index("--model") + 1], "sonnet")
-        self.assertNotIn("hook stop", c["settings"])
+        self.assertIn("hook prompt", c["settings"])
         run = self.conn.execute("SELECT * FROM runs WHERE lane='chat'").fetchone()
         self.assertEqual(run["bot"], "admin")
         self.assertIsNotNone(run["ended_at"])
