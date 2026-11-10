@@ -478,7 +478,14 @@ class Dispatcher:
         last = get(key)
         if last and _before(now, _plus(last["value"], _HOUR)):
             return
-        unhandled = requests.unhandled(conn)
+        # A request the always-on or chat session is already handling (it came
+        # from a live session, recently) is not a reason for a second Admin.
+        recent = _plus(now, -30 * 60)
+        unhandled = [r for r in requests.unhandled(conn)
+                     if not (r["received_at"] > recent and conn.execute(
+                         "SELECT 1 FROM runs WHERE session_id=? AND"
+                         " ended_at IS NULL AND lane IN ('chat','live')",
+                         (r["session_id"],)).fetchone())]
         paused = conn.execute(
             "SELECT id, title FROM items WHERE status='paused'"
             " AND archived_at IS NULL AND COALESCE(owner_waiting,0)=0"

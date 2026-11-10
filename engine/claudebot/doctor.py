@@ -17,7 +17,7 @@ from pathlib import Path
 
 from . import activity, backup, bots, dispatcher, messages
 from .config import Config
-from .db import connect, utcnow
+from .db import connect, tx, utcnow
 
 DISPATCHER_UNIT = "claudebot-dispatcher.service"
 ADMIN_UNIT = "claudebot-admin.service"
@@ -277,6 +277,30 @@ def _wakes_today(conn, now: str) -> int:
         (BACKEND, since)).fetchone()[0]
 
 
+def close_cleared(conn: sqlite3.Connection, current: set, now: str) -> list:
+    """Close open items opened for a finding (`cb item new --finding KEY`)
+    when the doctor no longer sees that finding. Returns the closed ids."""
+    closed = []
+    rows = conn.execute(
+        "SELECT i.id, a.detail FROM items i JOIN activity a ON a.ref=i.id"
+        " AND a.kind='item.finding' WHERE i.status NOT IN ('done','parked')"
+        " AND i.archived_at IS NULL ORDER BY a.id").fetchall()
+    keys = {}
+    for r in rows:  # the latest tag on an item wins
+        keys[r["id"]] = r["detail"][len("finding:"):]
+    for id, key in keys.items():
+        if key in current:
+            continue
+        with tx(conn):
+            conn.execute("UPDATE items SET status='done', updated_at=?"
+                         " WHERE id=?", (now, id))
+            activity.record(conn, "system", "item.status",
+                            f"{id}: closed, the health check no longer "
+                            f"reports finding {key}", id)
+        closed.append(id)
+    return closed
+
+
 def run(cfg: Config, conn: sqlite3.Connection, **kw) -> list[Finding]:
     """Run the checks and tell `backend` about each finding on the first
     sighting, when its text changes, or after 7 days; never more than 3 times
@@ -284,6 +308,10 @@ def run(cfg: Config, conn: sqlite3.Connection, **kw) -> list[Finding]:
     same backoff. Returns all current findings."""
     now = kw.get("now") or utcnow()
     found = checks(cfg, conn, **kw)
+    try:
+        close_cleared(conn, {f.key for f in found}, now)
+    except sqlite3.Error as e:
+        print(f"doctor: could not close cleared items: {e}", file=sys.stderr)
     for f in found:
         if f.key in NO_WAKE:
             continue
@@ -312,7 +340,9 @@ def run(cfg: Config, conn: sqlite3.Connection, **kw) -> list[Finding]:
                     _wakes_today(conn, now) < WAKES_PER_DAY:
                 messages.send(conn, "system", BACKEND, f"Health check: {f.key}",
                               f.text + " Look into it; fix only what is safe "
-                              "and tell Admin the rest.", kind="alert",
+                              "and tell Admin the rest. If you open an item "
+                              f"for it, use cb item new --finding {f.key} so "
+                              "it closes when the problem clears.", kind="alert",
                               level="normal",
                               dedupe_key=f"doctor:{f.key}:{tag}",
                               hop_limit=_NEVER_STOP, now=now)

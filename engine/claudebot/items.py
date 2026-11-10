@@ -49,7 +49,8 @@ def folder(cfg: Config, id: str) -> Path:
 
 def new(cfg: Config, conn: sqlite3.Connection, title: str, owner: str,
         status: str = "todo", parent: str | None = None, priority: int = 0,
-        owner_waiting: bool = False, actor: str | None = None) -> str:
+        owner_waiting: bool = False, actor: str | None = None,
+        finding: str | None = None) -> str:
     _check_status(status)
     if not isinstance(title, str) or not title.strip():
         raise ValueError("title is required")
@@ -66,6 +67,12 @@ def new(cfg: Config, conn: sqlite3.Connection, title: str, owner: str,
         id = f"T-{cur.lastrowid:04d}"
         conn.execute("UPDATE items SET id=? WHERE n=?", (id, cur.lastrowid))
         activity.record(conn, actor or owner, "item.new", f"{id}: {title}", id)
+        if finding:
+            # Kept in the activity record, not the note, so pausing or handing
+            # off the item cannot erase it. The doctor closes the item when
+            # this finding is gone (see doctor.close_cleared).
+            activity.record(conn, actor or owner, "item.finding",
+                            f"finding:{finding}", id)
     folder(cfg, id).mkdir(parents=True, exist_ok=True)
     return id
 
@@ -207,7 +214,8 @@ def _cmd_new(args):
     def go(cfg, conn):
         print(new(cfg, conn, args.title, args.owner, status=args.status,
                   parent=args.parent, priority=args.priority,
-                  owner_waiting=args.owner_waiting, actor=_actor()))
+                  owner_waiting=args.owner_waiting, actor=_actor(),
+                  finding=args.finding))
         return 0
     return _run(go)
 
@@ -330,6 +338,8 @@ def register(subparsers) -> None:
     n.add_argument("--parent")
     n.add_argument("--priority", type=int, default=0)
     n.add_argument("--owner-waiting", action="store_true")
+    n.add_argument("--finding", help="health-check finding key this item is "
+                   "for; the item closes itself when the problem clears")
     n.set_defaults(func=_cmd_new)
     s = sub.add_parser("status")
     s.add_argument("id")

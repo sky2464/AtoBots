@@ -21,7 +21,18 @@ def capture(conn: sqlite3.Connection, text: str, session_id: str) -> int:
     return cur.lastrowid
 
 
+def _request_number(value) -> int:
+    """2, "2" or "R-2" (any case) all mean request 2."""
+    if isinstance(value, int):
+        return value
+    m = re.fullmatch(r"\s*(?:R-?)?(\d+)\s*", str(value), re.IGNORECASE)
+    if not m:
+        raise ValueError(f"not a request number: {value!r}")
+    return int(m.group(1))
+
+
 def link(conn: sqlite3.Connection, request_id: int, item_ids: list) -> None:
+    request_id = _request_number(request_id)
     if conn.execute("SELECT 1 FROM owner_requests WHERE id=?",
                     (request_id,)).fetchone() is None:
         raise KeyError(request_id)
@@ -84,6 +95,17 @@ def channel_messages(prompt: str):
     return found
 
 
+def _caller() -> str:
+    """Who ran the hook, so an input that Claude Code could not have sent
+    (like `{}`) can be traced. Linux only; empty when unknown."""
+    try:
+        raw = Path(f"/proc/{os.getppid()}/cmdline").read_bytes()
+        return " [parent: " + raw.replace(b"\0", b" ").decode(
+            "utf-8", "replace").strip()[:200] + "]"
+    except OSError:
+        return ""
+
+
 def _hook_failed(raw: bytes, reason: str) -> None:
     """Record the raw hook input so nothing the Owner typed is lost."""
     text = raw.decode("utf-8", errors="replace")
@@ -91,7 +113,8 @@ def _hook_failed(raw: bytes, reason: str) -> None:
         cfg = Config.load()
         conn = connect(cfg)
         try:
-            activity.record(conn, "hook", "capture.failed", f"{reason}: {text}")
+            activity.record(conn, "hook", "capture.failed",
+                            f"{reason}: {text}{_caller()}")
         finally:
             conn.close()
         return
@@ -104,6 +127,17 @@ def _hook_failed(raw: bytes, reason: str) -> None:
                 f.write(raw + b"\n")
     except Exception:
         pass
+
+
+def _skip_command(conn, text: str) -> bool:
+    """A prompt that starts with `/` is a slash command, not a request. Only
+    the command name is recorded: its arguments can hold secrets."""
+    stripped = text.lstrip()
+    if not stripped.startswith("/"):
+        return False
+    name = stripped.split(None, 1)[0]
+    activity.record(conn, "hook", "request.skipped_command", name)
+    return True
 
 
 def _cmd_hook_prompt(args) -> int:
@@ -119,6 +153,8 @@ def _cmd_hook_prompt(args) -> int:
         conn = connect(Config.load())
         try:
             wrapped = channel_messages(text)
+            if wrapped is None and _skip_command(conn, text):
+                return 0
             if wrapped is None:
                 capture(conn, text, str(session))
             for source, inner in wrapped or ():
@@ -165,7 +201,7 @@ def register(subparsers) -> None:
     sp = subparsers.add_parser("request", help="Owner requests")
     sub = sp.add_subparsers(dest="request_cmd", required=True)
     ln = sub.add_parser("link")
-    ln.add_argument("request_id", type=int)
+    ln.add_argument("request_id", help="2 or R-2")
     ln.add_argument("items", nargs="+")
     ln.set_defaults(func=_cmd_link)
     un = sub.add_parser("unhandled")

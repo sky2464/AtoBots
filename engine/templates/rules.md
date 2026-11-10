@@ -24,7 +24,7 @@ Follow them even when no one is watching.
 - Sending email, replying to comments, editing or deleting videos, signups and
   commitments to other people are prepared by bots and need the Owner's direct
   word to Admin, recorded the same way.
-- Admin may read email and the video platform on its own, read-only, including on routines.
+- Admin may read email and the video platform on its own, read-only, including on routines, once they are set up.
 
 ## Whose words count
 
