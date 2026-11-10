@@ -47,7 +47,8 @@ class Config:
     chain_window_s: int = 900
     wakes_per_bot_per_hour: int = 12
     # Soft hourly wake caps by model (cost control). Unknown models fall back
-    # to wakes_per_bot_per_hour. Overridable in config.json.
+    # to wakes_per_bot_per_hour. Admin's urgent messages bypass the cap.
+    # Overridable in config.json.
     wake_cap_opus: int = 3
     wake_cap_sonnet: int = 6
     wake_cap_haiku: int = 12

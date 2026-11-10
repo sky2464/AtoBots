@@ -209,13 +209,14 @@ class StartTests(Base):
         self.assertEqual(self.tick(d), [])
         self.tick(d)
         self.assertEqual(self.run_fn.bots_run, [])
-        notes = self.system_notes()
-        self.assertEqual(len(notes), 1)
-        self.assertIn("backend", notes[0]["subject"])
-        self.assertIn(str(self.cfg.wake_cap_sonnet), notes[0]["body"])
-        # an hour later the old wakes have aged out
+        self.assertEqual(self.system_notes(), [])
+        capped = self.kinds("wake.capped")
+        self.assertEqual(len(capped), 1)
+        self.assertEqual(capped[0]["ref"], "backend")
+        # an hour later the old wakes have aged out; no Admin message was sent
         self.clock.advance(3601)
-        self.assertEqual(self.tick(d).__len__(), 2)  # backend + the admin note
+        self.assertEqual(len(self.tick(d)), 1)
+        self.assertEqual(self.run_fn.bots_run, ["backend"])
 
     def test_wake_cap_ignores_chat_and_live_lanes(self):
         for lane in ("chat", "live"):
@@ -242,11 +243,10 @@ class StartTests(Base):
         d = self.make()
         self.assertEqual(self.tick(d), [])
         self.assertEqual(self.run_fn.bots_run, [])
-        notes = self.system_notes()
-        self.assertEqual(len(notes), 1)
-        self.assertIn("limit (3)", notes[0]["body"])
+        self.assertEqual(self.system_notes(), [])
+        self.assertEqual(len(self.kinds("wake.capped")), 1)
 
-    def test_owner_message_bypasses_cap(self):
+    def test_owner_named_message_does_not_bypass_cap(self):
         bots.update(self.cfg, self.conn, "backend", "admin", model="opus")
         for _ in range(3):
             self.conn.execute(
@@ -262,8 +262,37 @@ class StartTests(Base):
             "'queued',?)", (self.clock(),))
         self.ready()
         d = self.make()
-        self.assertEqual(len(self.tick(d)), 1)
-        self.assertEqual(self.run_fn.bots_run, ["backend"])
+        self.assertEqual(self.tick(d), [])
+        self.assertEqual(self.run_fn.bots_run, [])
+        self.assertEqual(len(self.kinds("wake.capped")), 1)
+
+    def test_wake_cap_is_once_per_hour_and_doctor_flags_the_third(self):
+        from claudebot import doctor
+        bots.update(self.cfg, self.conn, "backend", "admin", model="opus")
+        d = self.make()
+        for hour in range(3):
+            if hour:
+                self.clock.advance(3600)
+            for _ in range(3):
+                self.conn.execute(
+                    "INSERT INTO runs(bot, started_at, ended_at, reason)"
+                    " VALUES ('backend',?,?,'ok')",
+                    (self.clock(), self.clock()))
+            self.send("backend", subject=f"h{hour}")
+            self.ready()
+            self.assertEqual(self.tick(d), [])
+            if hour == 0:
+                self.assertEqual(self.tick(d), [])
+                self.assertEqual(len(self.kinds("wake.capped")), 1)
+        self.assertEqual(self.system_notes(), [])
+        self.assertEqual(len(self.kinds("wake.capped")), 3)
+        found = doctor.checks(
+            self.cfg, self.conn, active_fn=lambda: True,
+            mem_fn=lambda: 4000, live_enabled_fn=lambda: False,
+            live_session_fn=lambda: False, token_fn=lambda c: True,
+            track=False, now=self.clock())
+        self.assertIn("wakecap:backend", [f.key for f in found])
+        self.assertTrue(doctor.valid_finding_key("wakecap:backend"))
 
     def test_admin_urgent_bypasses_cap(self):
         bots.update(self.cfg, self.conn, "backend", "admin", model="opus")

@@ -42,7 +42,7 @@ FINDING_KEYS = ("dispatcher", "admin-live", "admin-live-token", "disk",
                 "git-size", "sql-size", "database", "backup-remote",
                 "archive-remote", "backup-push", "backup-snapshot", "memory",
                 "workers")
-FINDING_PREFIXES = ("run:", "waiting:", "stall:", "bots:")
+FINDING_PREFIXES = ("run:", "waiting:", "stall:", "bots:", "wakecap:")
 CLEAR_RUNS = 2          # clean runs without the finding before its item closes
 CLOSABLE = ("todo", "next")
 # Local alert filename under <home>/.alerts/ when the message queue cannot
@@ -272,6 +272,7 @@ def _db_checks(cfg: Config, conn: sqlite3.Connection, now: str,
                            f"{cfg.lease_seconds} s lease."))
     out.extend(_waiting_checks(conn, now))
     out.extend(_stall_checks(conn, cfg, now))
+    out.extend(_wakecap_checks(conn, now))
     for msg in bots.check(cfg, conn):
         text = f"Bot files: {msg}"
         if "is not linked" in msg:
@@ -301,6 +302,25 @@ def _bots_key(msg: str) -> str:
     what = (f"skill-{words[1]}" if words[:1] == ["skill"] and len(words) > 1
             else (words[0] if words else "files"))
     return f"bots:{name}:{what}"
+
+
+def _wakecap_checks(conn, now: str) -> list[Finding]:
+    """A bot that was capped in three different hours of the last day."""
+    start = (datetime.fromisoformat(now) - timedelta(hours=24)
+             ).isoformat(timespec="seconds")
+    hours: dict[str, set[str]] = {}
+    for r in conn.execute(
+            "SELECT ref, at FROM activity WHERE kind='wake.capped' AND at>=?"
+            " AND ref IS NOT NULL ORDER BY id", (start,)):
+        hours.setdefault(r["ref"], set()).add(r["at"][:13])
+    out = []
+    for bot, seen in sorted(hours.items()):
+        if len(seen) >= 3:
+            out.append(Finding(
+                f"wakecap:{bot}",
+                f"{bot} hit the wake cap in {len(seen)} hours of the last day. "
+                "Its queued work waits during a capped hour."))
+    return out
 
 
 def _waiting_checks(conn, now: str) -> list[Finding]:

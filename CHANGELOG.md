@@ -98,8 +98,8 @@ The cost-control release.
   and the list of colleagues travel in the task packet.
 - `cb usage` reports tokens, cache hits and the model that really served
   each run.
-- Hourly wake caps depend on the model (Opus 3, Sonnet 6, Haiku 12); Owner
-  messages and Admin's urgent wakes bypass them. Worker messages wait 60 s so
+- Hourly wake caps depend on the model (Opus 3, Sonnet 6, Haiku 12); Admin's
+  urgent wakes bypass them. Worker messages wait 60 s so
   several land in one run.
 - The engine restarts a long session itself, with a summary built from the
   records: when the context passes `chat_rollover_tokens`, or when it is over

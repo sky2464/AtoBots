@@ -4,7 +4,7 @@ It decides who has work and whether there is room to run them. Each pass
 (`tick`) recovers expired claims, fires due routines, queues wake-ups, and
 starts one session per bot that has ready work, within the limits for
 concurrency, the heavy lane, free memory and the soft hourly wake cap
-(per model: opus/sonnet/haiku; Owner and Admin-urgent traffic bypass it).
+(per model: opus/sonnet/haiku; Admin's urgent messages bypass the cap).
 
 Every run gets its own worker thread and its own database connection. All
 time comes from the injected `clock` and all memory readings from `mem_fn`.
@@ -713,11 +713,9 @@ class Dispatcher:
         return self.cfg.wakes_per_bot_per_hour
 
     def _owner_bypasses_cap(self, msgs) -> bool:
-        """Owner traffic and Admin urgent wakes are never soft-capped."""
-        return any(
-            m["from_bot"] == "owner" or
-            (m["from_bot"] == "admin" and m["priority"] == _URGENT)
-            for m in msgs)
+        """Admin's urgent messages are never soft-capped."""
+        return any(m["from_bot"] == "admin" and m["priority"] == _URGENT
+                   for m in msgs)
 
     def _wake_capped(self, conn, bot, now: str, msgs) -> bool:
         if self._owner_bypasses_cap(msgs):
@@ -732,12 +730,20 @@ class Dispatcher:
             (name, _plus(now, -_HOUR))).fetchone()[0]
         if n < limit:
             return False
-        self._system_send(
-            conn, "admin", f"Wake cap reached for {name}",
-            f"{name} has been started {n} times in the last hour, which is the "
-            f"limit ({limit}). Its queued work "
-            "waits. Check whether it is looping.", f"wakecap:{name}:{now[:13]}",
-            now=now)
+        key = f"wakecap.{name}"
+        hour = now[:13]
+        prev = conn.execute("SELECT value FROM meta WHERE key=?",
+                            (key,)).fetchone()
+        if prev is None or prev["value"] != hour:
+            with tx(conn):
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta(key, value) VALUES (?,?)",
+                    (key, hour))
+                conn.execute(
+                    "INSERT INTO activity(at, actor, kind, detail, ref)"
+                    " VALUES (?,?,?,?,?)",
+                    (now, "system", "wake.capped",
+                     f"{name} hit the wake cap", name))
         return True
 
     def _load_surfaced(self, conn) -> tuple | None:
