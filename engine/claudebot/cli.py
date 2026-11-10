@@ -6,12 +6,13 @@ from pathlib import Path
 
 from . import (admin_live, archive, backup, bots, chat, dispatcher, doctor,
                gitlog, items, messages, requests, routines, search, store,
-               usage)
+               tasks, usage)
 from .config import Config
 from .db import connect, init_db
 
 MODULES = [store, bots, items, messages, requests, search, routines,
-           dispatcher, archive, chat, doctor, backup, admin_live, usage]
+           dispatcher, archive, chat, doctor, backup, admin_live, usage,
+           tasks]
 
 
 TEMPLATES = Path(__file__).resolve().parent.parent / "templates"

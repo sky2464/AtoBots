@@ -15,7 +15,7 @@ import threading
 from datetime import datetime, timedelta
 
 from . import (activity, archive, bots, chat, gitlog, items, messages, requests, routines,
-               runner, search)
+               runner, search, tasks)
 from .config import Config
 from .db import connect, ct_display, tx, utcnow
 
@@ -454,15 +454,44 @@ class Dispatcher:
         for r in rows:
             if r["owner"] not in active:
                 continue
+            if tasks.failures(conn, r["id"]) >= tasks.ESCALATE_AT:
+                continue  # a worker failed it twice: Admin has been told
             key = f"assign:{r['id']}:{r['owner']}:{r['assigns']}"
             if conn.execute("SELECT 1 FROM messages WHERE dedupe_key=?",
                             (key,)).fetchone():
                 continue
-            self._system_send(conn, r["owner"], f"{r['id']} is yours: "
-                              f"{r['title']}",
-                              f"Item {r['id']} is assigned to you. Read its "
-                              "folder and handoff notes and carry on.", key,
+            text = (f"Item {r['id']} is assigned to you. Read its folder and "
+                    "handoff notes and carry on.")
+            target = self._wake_target(conn, r["owner"], now)
+            body = text if target == r["owner"] else tasks.wake_body(
+                conn, r["id"], target, text)
+            self._system_send(conn, target, f"{r['id']} is yours: "
+                              f"{r['title']}", body, key,
                               item_id=r["id"], now=now)
+
+    def _wake_target(self, conn, owner: str, now: str) -> str:
+        """The owner's worker when it is an active worker-tier bot, else the
+        owner. Without one, `worker.missing` is recorded once per bot per day."""
+        worker = bots.get(conn, owner).worker
+        if worker:
+            try:
+                w = bots.get(conn, worker)
+            except KeyError:
+                w = None
+            if w is not None and w.status == "active" and w.tier == "worker":
+                return worker
+        day = now[:10]
+        key = f"worker.missing.{owner}"
+        r = conn.execute("SELECT value FROM meta WHERE key=?",
+                         (key,)).fetchone()
+        if r is None or r["value"] != day:
+            with tx(conn):
+                conn.execute("INSERT OR REPLACE INTO meta(key, value)"
+                             " VALUES (?,?)", (key, day))
+                activity.record(conn, "system", "worker.missing",
+                                f"{owner} has no active worker; its work is "
+                                "done by its own session", owner)
+        return owner
 
     def _wake_admin(self, conn, now) -> None:
         """Admin goes back to open work when nothing is queued for it and the

@@ -10,7 +10,7 @@ from pathlib import Path
 ENGINE = Path(__file__).resolve().parent.parent / "engine"
 sys.path.insert(0, str(ENGINE))
 
-from claudebot import bots, cli, dispatcher, items, messages, requests  # noqa: E402
+from claudebot import bots, cli, dispatcher, items, messages, requests, tasks  # noqa: E402
 from claudebot.config import Config  # noqa: E402
 from claudebot.db import connect, init_db  # noqa: E402
 from claudebot.runner import RunResult  # noqa: E402
@@ -732,6 +732,69 @@ class MemoryTests(unittest.TestCase):
             f.flush()
             self.assertEqual(dispatcher.available_mb(f.name), 1500)
         self.assertEqual(dispatcher.available_mb("/nonexistent/meminfo"), 0)
+
+
+class WorkerWakeTests(Base):
+    names = ("admin", "backend", "design", "scout")
+
+    def setUp(self):
+        super().setUp()
+        self.conn.execute("UPDATE bots SET model='haiku', tier='worker'"
+                          " WHERE name='scout'")
+        self.conn.execute("UPDATE bots SET worker='scout' WHERE name='backend'")
+
+    def wakes(self, bot, item_id):
+        return self.conn.execute(
+            "SELECT * FROM messages WHERE from_bot='system' AND to_bot=?"
+            " AND item_id=?", (bot, item_id)).fetchall()
+
+    def test_wake_assigned_goes_to_worker(self):
+        i = items.new(self.cfg, self.conn, "build it", "backend", status="todo")
+        d = self.make()
+        d.tick()
+        self.assertEqual(self.wakes("backend", i), [])
+        self.assertEqual(len(self.wakes("scout", i)), 1)
+        self.assertIn("Item " + i, self.wakes("scout", i)[0]["body"])
+
+    def test_wake_assigned_uses_existing_task_as_body(self):
+        i = items.new(self.cfg, self.conn, "build it", "backend", status="todo")
+        tid = tasks.send_task(self.conn, "backend", "scout", i, "list files",
+                              [], ["work/x.md"], "exists")
+        d = self.make()
+        d.tick()
+        body = self.wakes("scout", i)[0]["body"]
+        self.assertIn(f"cb task finish {tid} --status done|failed", body)
+        self.assertIn("Goal: list files", body)
+
+    def test_wake_assigned_falls_back_to_owner_without_worker_and_flags(self):
+        self.conn.execute("UPDATE bots SET worker=NULL WHERE name='backend'")
+        i = items.new(self.cfg, self.conn, "one", "backend", status="todo")
+        j = items.new(self.cfg, self.conn, "two", "backend", status="todo")
+        d = self.make()
+        d.tick()
+        self.assertEqual(len(self.wakes("backend", i)), 1)
+        self.assertEqual(len(self.wakes("backend", j)), 1)
+        self.assertEqual(len(self.kinds("worker.missing")), 1)  # once a day
+        self.clock.advance(24 * 3600)
+        k = items.new(self.cfg, self.conn, "three", "backend", status="todo")
+        self.tick(d)
+        self.assertEqual(len(self.wakes("backend", k)), 1)
+        self.assertEqual(len(self.kinds("worker.missing")), 2)
+
+    def test_paused_worker_falls_back_to_owner(self):
+        self.conn.execute("UPDATE bots SET status='paused' WHERE name='scout'")
+        i = items.new(self.cfg, self.conn, "one", "backend", status="todo")
+        self.make().tick()
+        self.assertEqual(len(self.wakes("backend", i)), 1)
+        self.assertEqual(self.wakes("scout", i), [])
+        self.assertEqual(len(self.kinds("worker.missing")), 1)
+
+    def test_items_with_two_failures_are_not_woken(self):
+        i = items.new(self.cfg, self.conn, "build it", "backend", status="todo")
+        self.conn.execute("INSERT INTO meta(key, value) VALUES ('task.fail.' || ?,"
+                          " '2')", (i,))
+        self.make().tick()
+        self.assertEqual(self.wakes("scout", i), [])
 
 
 if __name__ == "__main__":
