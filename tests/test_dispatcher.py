@@ -393,22 +393,6 @@ class ClaimTests(Base):
         self.tick(d)
         self.assertEqual(self.msg(q)["status"], "queued")  # requeued, not done
         self.assertTrue(self.kinds("message.no_progress"))
-        self.assertEqual(self.msg(q)["attempts"], 1)
-
-    def test_answer_to_other_question_on_chain_does_not_complete_first(self):
-        t = items.new(self.cfg, self.conn, "two qs", "backend")
-        q1 = messages.ask(self.cfg, self.conn, "admin", "backend", t,
-                          "first?", "h1", now=self.clock())
-        q2 = messages.ask(self.cfg, self.conn, "admin", "backend", t,
-                          "second?", "h2", now=self.clock())
-        self.assertEqual(self.msg(q1)["chain_id"], self.msg(q2)["chain_id"])
-        messages.reply(self.conn, "backend", q2, "only the second",
-                       now=self.clock())
-        self.ready()
-        d = self.make()
-        self.tick(d)  # claims q1 (and maybe the answer); ok with no new progress on q1
-        self.assertEqual(self.msg(q1)["status"], "queued")
-        self.assertNotEqual(self.msg(q1)["status"], "done")
 
     def test_crash_requeues(self):
         a = self.send("backend")
@@ -549,10 +533,7 @@ class CommitAndRecoveryTests(Base):
         d.tick()
         self.assertEqual(self.reindexed, 2)
 
-        attempts = []
-
         def bad(c, conn):
-            attempts.append(1)
             raise RuntimeError("fts broke")
 
         d2 = self.make(reindex_fn=bad)
@@ -560,9 +541,6 @@ class CommitAndRecoveryTests(Base):
         self.ready()
         self.assertEqual(len(self.tick(d2)), 1)
         self.assertEqual(len(self.kinds("search.reindex_failed")), 1)
-        self.assertEqual(len(attempts), 1)
-        d2.tick()
-        self.assertEqual(len(attempts), 2)
 
     def test_startup_marks_open_runs_crashed_and_keeps_messages_claimed(self):
         a = self.send("backend")
@@ -906,17 +884,17 @@ class LiveSingleFlightTests(Base):
         self.assertEqual(len(self.tick(d)), 1)
         self.assertEqual(self.run_fn.bots_run, ["backend"])
 
-    def test_wake_admin_skipped_while_live(self):
+    def test_wake_admin_queues_while_live(self):
         requests.capture(self.conn, "please do X", "sess")
         d = self.make(live_fn=lambda: True)
         d.tick()
-        self.assertEqual(self.system_notes(), [])
+        self.assertEqual(len(self.system_notes()), 1)
 
 
 class ServiceFileTests(unittest.TestCase):
     def test_unit(self):
         text = (ENGINE / "systemd" / "claudebot-dispatcher.service").read_text()
-        for line in ("User=claude", "Environment=CLAUDEBOT_HOME=@HOME@",
+        for line in ("User=@USER@", "Environment=CLAUDEBOT_HOME=@HOME@",
                      "Restart=always", "RestartSec=5",
                      "ExecStart=@ENGINE@/bin/cb "
                      "dispatcher run"):

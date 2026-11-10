@@ -124,16 +124,30 @@ class ItemTests(ItemsBase):
     def test_decision_requires_exact_quote(self):
         seed_owner_session(self.conn, "s1")
         seed_owner_session(self.conn, "s")
-        with self.assertRaises(ValueError):
-            items.decide(self.conn, "pay", "", "2026-11-09T00:00:00+00:00", "s1", "admin")
-        with self.assertRaises(ValueError):
-            items.decide(self.conn, "pay", "  ", "2026-11-09T00:00:00+00:00", "s1", "admin")
-        d = items.decide(self.conn, "pay", "Yes, pay it\nnow", "2026-11-09T00:00:00+00:00",
-                         "s1", "admin")
+        env = {"CB_SESSION_ID": "s1"}
+        with mock.patch.dict(os.environ, env, clear=False):
+            with self.assertRaises(ValueError):
+                items.decide(self.conn, "pay", "", "2026-11-09T00:00:00+00:00",
+                             "s1", "admin")
+            with self.assertRaises(ValueError):
+                items.decide(self.conn, "pay", "  ", "2026-11-09T00:00:00+00:00",
+                             "s1", "admin")
+            d = items.decide(self.conn, "pay", "Yes, pay it\nnow",
+                             "2026-11-09T00:00:00+00:00", "s1", "admin")
         self.assertEqual(d, "D-0001")
         r = self.conn.execute("SELECT * FROM decisions WHERE id=?", (d,)).fetchone()
         self.assertEqual(r["quote"], "Yes, pay it\nnow")
-        self.assertEqual(items.decide(self.conn, "x", "q", "t", "s", "admin"), "D-0002")
+        self.assertEqual(r["owner_session"], 1)
+        with mock.patch.dict(os.environ, {"CB_SESSION_ID": "s"}, clear=False):
+            self.assertEqual(items.decide(self.conn, "x", "q", "t", "s", "admin"),
+                             "D-0002")
+
+    def test_decision_requires_matching_session(self):
+        seed_owner_session(self.conn, "s1")
+        with self.assertRaises(PermissionError):
+            items.decide(self.conn, "pay", "go", "t", "s1", "admin")
+        with mock.patch.dict(os.environ, {"CB_SESSION_ID": "s1"}, clear=False):
+            items.decide(self.conn, "pay", "go", "t", "s1", "admin")
 
     def test_decision_refuses_bot_only_session(self):
         self.conn.execute(

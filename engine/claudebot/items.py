@@ -123,6 +123,8 @@ def assign(conn: sqlite3.Connection, id: str, to_bot: str, actor: str,
             keep = f"{keep}\n{note}" if keep else note
         conn.execute("UPDATE items SET owner=?, status='todo', note=?,"
                      " updated_at=? WHERE id=?", (to_bot, keep, utcnow(), id))
+        conn.execute("DELETE FROM meta WHERE key=?",
+                     ("task.fail." + id,))
         activity.record(conn, actor, "item.assign",
                         f"{id}: {r['owner']} -> {to_bot}", id)
 
@@ -209,7 +211,7 @@ def require_owner_decision(conn: sqlite3.Connection, decision_id: str):
     if r["recorded_by"] not in OWNER_DECISION_ACTORS:
         raise PermissionError(
             f"{decision_id} was not recorded by Admin or the Owner")
-    if not owner_session_ok(conn, r["session"] or ""):
+    if not r["owner_session"]:
         raise PermissionError(
             f"{decision_id} is not bound to an Owner chat/live session")
     return r
@@ -230,10 +232,15 @@ def decide(conn: sqlite3.Connection, title: str, quote: str, said_at: str,
         raise PermissionError(
             "decision session must be an Owner chat/live session "
             "or a captured owner request")
+    caller_session = os.environ.get("CB_SESSION_ID") or ""
+    if actor != "cli" or caller_session:
+        if caller_session != session:
+            raise PermissionError(
+                "decision session must match this session (CB_SESSION_ID)")
     with tx(conn):
         cur = conn.execute(
             "INSERT INTO decisions(title, quote, said_at, session, recorded_by,"
-            " created_at) VALUES (?,?,?,?,?,?)",
+            " created_at, owner_session) VALUES (?,?,?,?,?,?,1)",
             (title, quote, said_at, session, actor, utcnow()))
         id = f"D-{cur.lastrowid:04d}"
         conn.execute("UPDATE decisions SET id=? WHERE n=?", (id, cur.lastrowid))
@@ -243,8 +250,7 @@ def decide(conn: sqlite3.Connection, title: str, quote: str, said_at: str,
 
 # ---- CLI ----
 
-def _actor() -> str:
-    return os.environ.get("CB_BOT", "cli")
+_actor = activity.actor
 
 
 def _run(fn):

@@ -10,6 +10,7 @@ Every run gets its own worker thread and its own database connection. All
 time comes from the injected `clock` and all memory readings from `mem_fn`.
 """
 import hashlib
+import json
 import signal
 import sys
 import threading
@@ -81,8 +82,8 @@ class Dispatcher:
                  daily_fn=archive.daily, live_fn=None,
                  surface_fn=None):
         """`routines_fn(cfg, conn, now)` fires due routines by queueing
-        messages (Task 10). `owner_fn()` says whether the Owner is connected
-        to a chat (Task 12) — that holds *all* new runs. `live_fn()` says
+        messages. `owner_fn()` says whether the Owner is connected
+        to a chat — that holds *all* new runs. `live_fn()` says
         whether always-on Admin is up; that only blocks a second Admin run
         (bots keep working). `surface_fn` delivers Admin-bound results to
         live/Telegram when the second Admin is skipped."""
@@ -99,7 +100,8 @@ class Dispatcher:
         self._running: dict[str, _Worker] = {}
         self._dv = None
         self._dirty = False
-        self._surfaced = None  # last surfaced admin-queue fingerprint
+        self._surfaced = None  # last surfaced admin-queue message ids
+        self._step_errors: dict[str, str] = {}
 
     def _live_up(self) -> bool:
         """Always-on Admin is running (single-flight: no second Admin)."""
@@ -180,8 +182,8 @@ class Dispatcher:
         """Move this bot's queued messages (and any whose lease ran out) to
         claimed in one transaction, with a lease and one more attempt. A run
         takes at most `batch_max_messages` messages and `batch_max_bytes` of
-        text (`-p` is one argument, capped by the OS); the rest wait for the
-        next run. While the Owner is in a chat (`hold`) only Admin's urgent
+        text; the rest wait for the next run. While the Owner is in a chat
+        (`hold`) only Admin's urgent
         messages to other bots are taken."""
         conn = self._db()
         now = self.clock()
@@ -281,8 +283,9 @@ class Dispatcher:
     def finish(self, run_id, result, msgs) -> None:
         """Settle a run's claimed messages. Done on `ok` only when the message
         needs no action, or a reply / task finish / item progress was recorded.
-        A bare `ok` with empty progress requeues action messages (no attempt
-        burned) so they are not silently dropped."""
+        A bare `ok` with empty progress requeues action messages (this uses one
+        attempt; after `retry_attempts` the message fails) so they are not
+        silently dropped."""
         conn = self._db()
         now = self.clock()
         ids = [m["id"] if hasattr(m, "keys") else m for m in msgs]
@@ -302,7 +305,7 @@ class Dispatcher:
             if done:
                 messages.complete(conn, done)
             if pending:
-                self._release(conn, pending, now)
+                self._release(conn, pending, now, usage_limit=True)
                 for i in pending:
                     _log(conn, "message.no_progress",
                          f"message {i} not done: ok run with no reply/progress",
@@ -321,23 +324,16 @@ class Dispatcher:
 
     def _progress_ok(self, conn, m, run_id) -> bool:
         """True when this claimed message may be marked done after an ok run.
-        Progress must tie to this message: a task finish, a result for this
-        task, a direct answer (next hop on the chain), or item activity during
-        the run. Another message's answer on the same chain does not count."""
+        Replies are not stored as a foreign key; an answer/result later in the
+        same chain, a finished task, or item activity during the run counts."""
         if m["kind"] not in _ACTION_KINDS:
             return True
-        if m["kind"] == "task" and tasks.finished(conn, m["id"]):
-            return True
-        if conn.execute(
-                "SELECT 1 FROM messages WHERE id>? AND kind='result'"
-                " AND dedupe_key=? LIMIT 1",
-                (m["id"], f"result:{m['id']}")).fetchone():
-            return True
         if m["chain_id"] and conn.execute(
-                "SELECT 1 FROM messages WHERE chain_id=? AND id>? AND kind='answer'"
-                " AND hop=? AND to_bot=? AND from_bot=? LIMIT 1",
-                (m["chain_id"], m["id"], (m["hop"] or 0) + 1,
-                 m["from_bot"], m["to_bot"])).fetchone():
+                "SELECT 1 FROM messages WHERE chain_id=? AND id>? AND"
+                " kind IN ('answer','result') LIMIT 1",
+                (m["chain_id"], m["id"])).fetchone():
+            return True
+        if m["kind"] == "task" and tasks.finished(conn, m["id"]):
             return True
         if m["item_id"]:
             since = None
@@ -471,8 +467,13 @@ class Dispatcher:
             try:
                 step()
             except Exception as e:  # noqa: BLE001
-                _log(conn, "tick.step_failed",
-                     f"{name}: {type(e).__name__}: {e}")
+                text = f"{type(e).__name__}: {e}"
+                prev = self._step_errors.get(name)
+                if prev != text:
+                    self._step_errors[name] = text
+                    _log(conn, "tick.step_failed", f"{name}: {text}")
+            else:
+                self._step_errors.pop(name, None)
         if self._paused(conn, now):
             return []
         hold = False
@@ -496,14 +497,12 @@ class Dispatcher:
         dv = conn.execute("PRAGMA data_version").fetchone()[0]
         if dv == self._dv and not self._dirty:
             return
+        self._dirty = False
         try:
             self.reindex_fn(self.cfg, conn)
         except Exception as e:  # noqa: BLE001
             _log(conn, "search.reindex_failed", f"{type(e).__name__}: {e}")
-            self._dirty = True
-        else:
-            self._dirty = False
-            self._dv = conn.execute("PRAGMA data_version").fetchone()[0]
+        self._dv = conn.execute("PRAGMA data_version").fetchone()[0]
 
     def _paused(self, conn, now) -> bool:
         r = conn.execute("SELECT value FROM meta WHERE key=?",
@@ -540,8 +539,7 @@ class Dispatcher:
             (limit,)).fetchall()
         for r in rows:
             if conn.execute(
-                    "SELECT 1 FROM runs WHERE bot=? AND ended_at IS NULL"
-                    " AND COALESCE(lane,'') IN ('','normal','heavy')",
+                    "SELECT 1 FROM runs WHERE bot=? AND ended_at IS NULL",
                     (r["owner"],)).fetchone():
                 continue
             with tx(conn):
@@ -559,7 +557,7 @@ class Dispatcher:
                     f"Item {r['id']} ({r['title']}) was stuck in doing past "
                     f"the {self.cfg.lease_seconds}s lease with no live run. "
                     f"It was reverted to todo; owner {r['owner']} is not "
-                    "active.", f"stall:{r['id']}:{r['owner']}:{now[:10]}",
+                    "active.", f"stall:{r['id']}:{r['owner']}",
                     item_id=r["id"], now=now)
 
     def _wake_assigned(self, conn, now) -> None:
@@ -577,7 +575,19 @@ class Dispatcher:
                 continue
             if tasks.failures(conn, r["id"]) >= tasks.ESCALATE_AT:
                 continue  # a worker failed it twice: Admin has been told
+            stall_n = conn.execute(
+                "SELECT COUNT(*) FROM activity WHERE kind='item.stall_revert'"
+                " AND ref=?", (r["id"],)).fetchone()[0]
             key = f"assign:{r['id']}:{r['owner']}:{r['assigns']}"
+            if stall_n > 0:
+                key += f":s{stall_n}"
+            if stall_n >= 3:
+                self._system_send(
+                    conn, "admin", f"Item {r['id']} keeps stalling",
+                    f"Item {r['id']} ({r['title']}) has been reverted from "
+                    "doing to todo at least three times. Check what is blocking "
+                    "it.", f"stall-limit:{r['id']}", item_id=r["id"], now=now)
+                continue
             if conn.execute("SELECT 1 FROM messages WHERE dedupe_key=?",
                             (key,)).fetchone():
                 continue
@@ -626,8 +636,6 @@ class Dispatcher:
         with self._lock:
             if bot in self._running:
                 return
-        if self._live_up():
-            return
         if conn.execute("SELECT 1 FROM messages WHERE to_bot=? AND status IN"
                         " ('queued','claimed')", (bot,)).fetchone():
             return
@@ -703,12 +711,12 @@ class Dispatcher:
             for m in msgs)
 
     def _wake_capped(self, conn, bot, now: str, msgs) -> bool:
-        """Count only dispatcher lanes (`normal`/`heavy`); chat/live Admin
-        sessions must not burn the worker wake cap."""
         if self._owner_bypasses_cap(msgs):
             return False
         limit = self._wake_limit(bot)
         name = bot if isinstance(bot, str) else bot.name
+        # Only dispatcher lanes count: chat/live Admin sessions must not
+        # burn the wake cap.
         n = conn.execute(
             "SELECT COUNT(*) FROM runs WHERE bot=? AND started_at>?"
             " AND COALESCE(lane,'normal') IN ('normal','heavy')",
@@ -723,11 +731,28 @@ class Dispatcher:
             now=now)
         return True
 
+    def _load_surfaced(self, conn) -> tuple | None:
+        if self._surfaced is not None:
+            return self._surfaced
+        r = conn.execute("SELECT value FROM meta WHERE key=?",
+                         ("admin.surfaced",)).fetchone()
+        if r is None:
+            self._surfaced = None
+            return None
+        self._surfaced = tuple(json.loads(r["value"]))
+        return self._surfaced
+
+    def _save_surfaced(self, conn, ids: tuple) -> None:
+        self._surfaced = ids
+        with tx(conn):
+            conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?,?)",
+                         ("admin.surfaced", json.dumps(list(ids))))
+
     def _surface_admin(self, conn, msgs, now: str) -> None:
         """When live Admin is up, do not start a second Admin: leave the
         messages queued and surface a digest to the live session / Telegram."""
         ids = tuple(m["id"] for m in msgs)
-        if ids == self._surfaced:
+        if ids == self._load_surfaced(conn):
             return
         lines = [f"{len(msgs)} message(s) waiting for Admin while always-on "
                  "is up (cb inbox). Not starting a second Admin."]
@@ -742,7 +767,7 @@ class Dispatcher:
                 from . import admin_live
                 admin_live.surface(self.cfg, text, key="admin-queue",
                                    conn=conn, now=now)
-            self._surfaced = ids
+            self._save_surfaced(conn, ids)
             _log(conn, "admin_live.surface",
                  f"surfaced {len(msgs)} queued Admin message(s)", "admin")
         except Exception as e:  # noqa: BLE001
@@ -880,10 +905,29 @@ def _cmd_status(args) -> int:
     return 0
 
 
+def dispatcher_idle(conn: sqlite3.Connection) -> bool:
+    """True when no non-chat/live run is still open."""
+    return conn.execute(
+        "SELECT 1 FROM runs WHERE ended_at IS NULL"
+        " AND COALESCE(lane,'') NOT IN ('chat','live') LIMIT 1"
+    ).fetchone() is None
+
+
+def _cmd_idle(_args) -> int:
+    cfg = Config.load()
+    conn = connect(cfg)
+    try:
+        return 0 if dispatcher_idle(conn) else 1
+    finally:
+        conn.close()
+
+
 def register(subparsers) -> None:
     d = subparsers.add_parser("dispatcher", help="the always-on dispatcher")
     dsub = d.add_subparsers(dest="dispatcher_command", required=True)
     r = dsub.add_parser("run", help="run the dispatcher loop (systemd does this)")
     r.set_defaults(func=_cmd_run)
+    idle = dsub.add_parser("idle", help="exit 0 when no bot run is active")
+    idle.set_defaults(func=_cmd_idle)
     s = subparsers.add_parser("status", help="running bots, queue, pauses")
     s.set_defaults(func=_cmd_status)

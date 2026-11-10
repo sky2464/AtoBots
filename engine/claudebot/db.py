@@ -1,9 +1,7 @@
 """SQLite access: connection, schema, transactions, time helpers."""
-import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .config import Config
@@ -17,9 +15,9 @@ CREATE TABLE IF NOT EXISTS usage(
 );
 """
 
-# Questions the Admin put to the Owner that he has not answered yet (cost
-# control: a bare acknowledgement is refused when none is open).
-OWNER_QUESTIONS_TABLE = """
+# Questions Admin has put to the Owner and that still wait for an answer. A
+# bare "ok" or thumbs up counts as a request only while one is open.
+QUESTIONS_TABLE = """
 CREATE TABLE IF NOT EXISTS owner_questions(
   id INTEGER PRIMARY KEY, asked_at TEXT, text TEXT, answered_at TEXT
 );
@@ -55,7 +53,8 @@ CREATE TABLE IF NOT EXISTS request_items(
 );
 CREATE TABLE IF NOT EXISTS decisions(
   n INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE, title TEXT, quote TEXT,
-  said_at TEXT, session TEXT, recorded_by TEXT, created_at TEXT
+  said_at TEXT, session TEXT, recorded_by TEXT, created_at TEXT,
+  owner_session INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS runs(
   id INTEGER PRIMARY KEY AUTOINCREMENT, bot TEXT, session_id TEXT, lane TEXT, started_at TEXT,
@@ -77,27 +76,24 @@ BEGIN SELECT RAISE(ABORT, 'append-only'); END;
 CREATE TRIGGER IF NOT EXISTS activity_no_delete BEFORE DELETE ON activity
 BEGIN SELECT RAISE(ABORT, 'append-only'); END;
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
-""" + USAGE_TABLE + OWNER_QUESTIONS_TABLE
+""" + USAGE_TABLE + QUESTIONS_TABLE
 
-_CT = ZoneInfo("America/Chicago")
-
-
-def _chmod_private(path: Path) -> None:
-    try:
-        if path.exists():
-            os.chmod(path, 0o600)
-        for suffix in ("-wal", "-shm"):
-            side = Path(f"{path}{suffix}")
-            if side.exists():
-                os.chmod(side, 0o600)
-    except OSError:
-        pass
+_zone = ZoneInfo("America/Chicago")
 
 
-def harden_data_files(cfg: Config) -> None:
-    """Mode 600 on company.db and search.db when they exist."""
-    for name in ("company.db", "search.db"):
-        _chmod_private(cfg.home / name)
+def set_zone(name: str) -> None:
+    """The zone for times shown to people and for routine schedules
+    (`timezone` in config.json)."""
+    global _zone
+    _zone = ZoneInfo(name)
+
+
+def zone_name() -> str:
+    return _zone.key
+
+
+def _zone_label(d: datetime) -> str:
+    return "CT" if _zone.key == "America/Chicago" else (d.tzname() or _zone.key)
 
 
 def connect(cfg: Config) -> sqlite3.Connection:
@@ -108,7 +104,6 @@ def connect(cfg: Config) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     _migrate(conn)
-    harden_data_files(cfg)
     return conn
 
 
@@ -135,8 +130,21 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE bots ADD COLUMN worker TEXT")
         except sqlite3.OperationalError:
             pass
+    dcols = [r[1] for r in conn.execute("PRAGMA table_info(decisions)")]
+    if dcols and "owner_session" not in dcols:
+        try:
+            conn.execute("ALTER TABLE decisions ADD COLUMN owner_session "
+                         "INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+        else:
+            conn.execute(
+                "UPDATE decisions SET owner_session=1 WHERE session IN ("
+                " SELECT session_id FROM runs WHERE lane IN ('chat','live'))"
+                " OR session IN (SELECT session_id FROM owner_requests"
+                " WHERE session_id IS NOT NULL AND session_id != '')")
     conn.execute(USAGE_TABLE)
-    conn.execute(OWNER_QUESTIONS_TABLE)
+    conn.execute(QUESTIONS_TABLE)
 
 
 def init_db(cfg: Config) -> None:
@@ -166,7 +174,7 @@ def ct_display(iso: str) -> str:
     d = datetime.fromisoformat(iso)
     if d.tzinfo is None:
         d = d.replace(tzinfo=timezone.utc)
-    d = d.astimezone(_CT)
+    d = d.astimezone(_zone)
     hour = d.hour % 12 or 12
     return (f"{d:%a %b} {d.day}, {d.year}, {hour}:{d:%M} "
-            f"{'AM' if d.hour < 12 else 'PM'} CT")
+            f"{'AM' if d.hour < 12 else 'PM'} {_zone_label(d)}")

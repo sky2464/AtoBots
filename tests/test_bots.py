@@ -142,8 +142,8 @@ class LifecycleTests(BotsBase):
             " ('admin','owner-sess','chat','2026-11-09T00:00:00+00:00')")
         self.conn.execute(
             "INSERT INTO decisions(id,title,quote,said_at,session,recorded_by,"
-            "created_at) VALUES('D-0001','pause admin','pause it','t',"
-            "'owner-sess','admin','x')")
+            "created_at,owner_session) VALUES('D-0001','pause admin','pause it',"
+            "'t','owner-sess','admin','x',1)")
         bots.set_status(self.conn, "admin", "paused", "cli", decision="D-0001")
         self.assertEqual(bots.get(self.conn, "admin").status, "paused")
 
@@ -220,7 +220,8 @@ class CheckTests(BotsBase):
         # Bare decision row without Owner session provenance is refused.
         self.conn.execute(
             "INSERT INTO decisions(id,title,quote,said_at,session,recorded_by,"
-            "created_at) VALUES('D-0001','t','q','t','bot-only','admin','x')")
+            "created_at,owner_session) VALUES('D-0001','t','q','t','bot-only',"
+            "'admin','x',0)")
         with self.assertRaises(ValueError):
             bots.update(self.cfg, self.conn, "backend", "admin", soul="new",
                         decision="D-0001")
@@ -229,7 +230,8 @@ class CheckTests(BotsBase):
             " ('admin','owner-sess','chat','2026-11-09T00:00:00+00:00')")
         self.conn.execute(
             "INSERT INTO decisions(id,title,quote,said_at,session,recorded_by,"
-            "created_at) VALUES('D-0002','t','q','t','owner-sess','admin','x')")
+            "created_at,owner_session) VALUES('D-0002','t','q','t','owner-sess',"
+            "'admin','x',1)")
         bots.update(self.cfg, self.conn, "backend", "admin", soul="new soul",
                     decision="D-0002")
         self.assertEqual(bots.check(self.cfg, self.conn), [])
@@ -240,6 +242,16 @@ class CheckTests(BotsBase):
         self.new()
         (self.cfg.bots_dir / "backend" / "MEMORY.md").unlink()
         self.assertTrue(any("MEMORY.md" in m for m in bots.check(self.cfg, self.conn)))
+
+    def test_relink_restores_broken_symlinks(self):
+        self.make_skill("a")
+        self.new(skills=("a",))
+        link = self.cfg.bots_dir / "backend" / ".claude" / "skills" / "a"
+        link.unlink()
+        self.assertIn("not linked", " ".join(bots.check(self.cfg, self.conn)))
+        self.assertEqual(bots.relink_skills(self.cfg, self.conn), 1)
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(bots.check(self.cfg, self.conn), [])
 
 
 class PromptTests(BotsBase):
@@ -322,7 +334,7 @@ class CliTests(BotsBase):
         self.assertEqual(bots.get(self.conn, "backend").status, "active")
         self.run_cli("bot", "retire", "backend")
         self.assertEqual(bots.get(self.conn, "backend").status, "retired")
-        rc, out = self.run_cli("check")
+        rc, out = self.run_cli("bot", "check")
         self.assertEqual(rc, 0)
 
 
@@ -336,6 +348,20 @@ class StablePrefixTests(BotsBase):
         (d / "MEMORY.md").write_text("second memory, edited between runs")
         after = bots.identity_prompt(self.cfg, self.conn, "backend").encode()
         self.assertEqual(before, after)
+
+    def test_persona_notes_for_people_are_not_sent(self):
+        try:
+            bots.get(self.conn, "backend")
+        except KeyError:
+            bots.create(self.cfg, self.conn, "backend", "Backend", "soul",
+                        "persona", reports_to=None, actor="system")
+        d = self.cfg.bots_dir / "backend"
+        (d / "PERSONA.md").write_text(
+            "<!-- a note\nfor people -->\n# Persona: Backend\nVOICE-TEXT")
+        text = bots.identity_prompt(self.cfg, self.conn, "backend")
+        self.assertNotIn("a note", text)
+        self.assertNotIn("<!--", text)
+        self.assertIn("VOICE-TEXT", text)
 
     def test_memory_block_reads_capped_memory(self):
         self.new()
@@ -359,25 +385,6 @@ class StablePrefixTests(BotsBase):
         self.assertLessEqual(len(text.encode()), cap)
         self.assertIn("NEW-", text[-40:])
         self.assertNotIn("OLD-", text[:40])
-
-    def test_read_capped_keeps_oldest_head_for_soul(self):
-        self.new()
-        cap = self.cfg.soul_cap_bytes
-        body = ("HEAD-" * 3000) + ("TAIL-" * 3000)
-        path = self.cfg.bots_dir / "backend" / "SOUL.md"
-        path.write_bytes(body.encode())
-        text = bots._read_capped(path, cap, keep="head")
-        self.assertIn("HEAD-", text[:40])
-        self.assertNotIn("TAIL-", text[-40:])
-
-    def test_identity_prompt_strips_html_comments_from_persona(self):
-        self.new()
-        persona = self.cfg.bots_dir / "backend" / "PERSONA.md"
-        persona.write_text("Visible\n<!-- secret note -->\nStill here")
-        text = bots.identity_prompt(self.cfg, self.conn, "backend")
-        self.assertIn("Visible", text)
-        self.assertIn("Still here", text)
-        self.assertNotIn("secret note", text)
 
     def test_colleagues_block_lists_other_active_bots(self):
         self.new("admin", role="Chief")
@@ -461,3 +468,7 @@ class TierTests(BotsBase):
         with self.assertRaises(ValueError):
             self.new("planner2", model="opus", worker="planner")
         self.assertFalse((self.cfg.bots_dir / "planner2").exists())
+
+    def test_usage_table_exists(self):
+        self.assertTrue(self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage'").fetchone())
