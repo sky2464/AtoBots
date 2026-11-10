@@ -1,8 +1,9 @@
 """Secure store: gpg-encrypted secret items, never in argv, logs or stdout.
 
 Each item is encrypted with `gpg --symmetric` (AES256) using a random key file
-inside the 0700 `.secrets/` folder. This is a working rule plus file modes, not
-a technical lock: every bot runs as the same server user.
+inside the 0700 `.secrets/` folder. Masking hides the raw, base64 and hex forms
+only. Any bot can read the store key. The store keeps secrets out of chat, logs
+and Git, not away from the bots themselves.
 """
 import argparse
 import base64

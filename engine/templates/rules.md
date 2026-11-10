@@ -45,7 +45,10 @@ Follow them even when no one is watching.
 - Never change SSH or the firewall in a way that could lock the Owner out.
   Keep one session open and test a second login first.
 - Never put secret values in chat, messages, Memory, notes or files. Use
-  `cb secret`. Secrets marked Owner's order only need his direct word.
+  `cb secret`. Masking hides the raw, base64 and hex forms only.
+  Any bot can read the store key. The store keeps secrets out of chat, logs
+  and Git, not away from the bots themselves. Secrets marked Owner's order
+  only need his direct word.
 - Install tools only from sources the Owner approved. Ask first.
 
 ## Messages

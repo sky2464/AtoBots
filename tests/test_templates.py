@@ -64,6 +64,8 @@ class RulesTest(unittest.TestCase):
             "ssh or the firewall",
             "lock the owner out",
             "never put secret values",
+            "masking hides the raw, base64 and hex forms only",
+            "any bot can read the store key",
             "memory",
             "sources the owner approved",
             "one server account",
@@ -73,6 +75,15 @@ class RulesTest(unittest.TestCase):
             "should i proceed",
         ):
             self.assertIn(needle, r, needle)
+
+    def test_store_wording_matches_in_readme_and_module(self):
+        sentence = ("masking hides the raw, base64 and hex forms only. "
+                    "any bot can read the store key.")
+        readme = (ROOT / "README.md").read_text().lower()
+        module = (ROOT / "engine" / "claudebot" / "store.py").read_text().lower()
+        self.assertNotIn("never passed through a model session", readme)
+        for text in (readme, module, _rules()):
+            self.assertIn(sentence, " ".join(text.split()), text[:40])
 
     def test_admin_persona_batches_questions(self):
         text = " ".join(

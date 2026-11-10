@@ -16,7 +16,7 @@ ClaudeBot is built on [Claude Code](https://claude.com/claude-code). The engine 
 - **Admin as the front door.** One bot is created at install. New bots are created by conversation, with the owner approving each identity before it is set.
 - **Always-on Admin over Telegram.** Admin can run as a long-lived session with the official Telegram channel, so the owner can reach it from a phone.
 - **Work queue and wake-ups.** A dispatcher runs bot sessions under a concurrency limit, pauses when usage limits are reached, and keeps messages instead of losing them.
-- **Secure secret store.** Secrets are entered at a hidden prompt and are never passed through a model session, logged, or committed.
+- **Secret store.** Secrets are entered at a hidden prompt. Masking hides the raw, base64 and hex forms only. Any bot can read the store key. The store keeps secrets out of chat, logs and Git, not away from the bots themselves.
 - **Backups and archiving.** Scheduled backups go to Git remotes. Old conversation history is archived with a retry-safe process.
 - **Health checks.** `cb doctor` verifies the install, services, and backups.
 
