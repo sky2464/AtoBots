@@ -85,9 +85,13 @@ def _insert(conn, frm, to, subject, body, item_id, kind, priority, level,
             item_id = prev["item_id"]
     elif item_id is not None:
         items.get(conn, item_id)
-        prev = conn.execute(
-            "SELECT * FROM messages WHERE item_id=? AND chain_id IS NOT NULL"
-            " ORDER BY id DESC LIMIT 1", (item_id,)).fetchone()
+        chain_kinds = ("task",) if kind == "task" else None
+        sql = ("SELECT * FROM messages WHERE item_id=? AND chain_id IS NOT NULL")
+        if chain_kinds:
+            sql += f" AND kind IN ({','.join('?' * len(chain_kinds))})"
+        sql += " ORDER BY id DESC LIMIT 1"
+        prev = conn.execute(sql, (item_id, *chain_kinds) if chain_kinds
+                            else (item_id,)).fetchone()
     elif frm != SYSTEM and to != SYSTEM:
         # Bot↔bot traffic with no item and no reply link still chains when the
         # other side of the same pair spoke inside the window (ping-pong).
@@ -215,12 +219,15 @@ def reply(conn: sqlite3.Connection, frm: str, message_id: int, body: str,
                       m["item_id"], "answer", m["priority"], m["level"],
                       m["effort"], message_id, None, hop_limit,
                       now or utcnow(), chain_window_s)
+        ts = now or utcnow()
         if m["item_id"] and mid:
             conn.execute("UPDATE items SET waiting_on=NULL, updated_at=?"
                          " WHERE id=? AND waiting_on=?",
-                         (utcnow(), m["item_id"], frm))
-            activity.record(conn, frm, "item.unwaiting",
-                            f"{m['item_id']}: answered", m["item_id"])
+                         (ts, m["item_id"], frm))
+            conn.execute(
+                "INSERT INTO activity(at, actor, kind, detail, ref) VALUES (?,?,?,?,?)",
+                (ts, frm, "item.unwaiting", f"{m['item_id']}: answered",
+                 m["item_id"]))
     return mid
 
 
