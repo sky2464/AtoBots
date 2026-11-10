@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the reusable ClaudeBot engine and install it on the VPS as **Atoosa Dev** (product line: DecisionTreeByNavid), shipping with one bot, Admin, that can create permanent bots with their own Soul, Persona and Memory.
+**Goal:** Build the reusable ClaudeBot engine and install it on the VPS as **`<COMPANY>`** (product line: `<PRODUCT>`), shipping with one bot, Admin, that can create permanent bots with their own Soul, Persona and Memory.
 
 **Architecture:** A small AI-free dispatcher, kept alive by systemd, watches one SQLite database and starts short `claude -p` sessions, one per bot with work, when the server has room. Bots use only the `cb` tool to reach the database, share work through plain files, exit while they wait, and have their file changes committed to Git by the dispatcher. Old conversations move to a compressed, searchable archive, so starting context never grows.
 
@@ -25,7 +25,7 @@
 - Models use latest aliases (`opus`, `sonnet`, `haiku`) unless a bot is pinned. Default model `sonnet`.
 - The engine contains no company-specific text. Company data lives only under the company home.
 - Never change SSH or the firewall in a way that could lock the Owner out.
-- Don't modify `/Users/chicademy/Documents/Code/ClaudeBots/`.
+- Don't modify the older design checkout outside this repo.
 - Commits end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Work on a branch, not `main`.
 
 ## Layout
@@ -43,7 +43,7 @@ engine/install.sh
 tests/              test_*.py  (run: python3 -m unittest discover -s tests)
 ```
 
-Server: engine at `~/ClaudeBot/`, company home at `~/AtoosaDev/` (live name; older notes said `~/DTbyNavid` / `~/Atoosa` during renames), holding `company.db`, `search.db`, `bots/<name>/`, `work/T-0001/`, `knowledge/`, `archive/`, `.secrets/` (git-ignored, mode 700).
+Server: engine at `~/ClaudeBot/`, company home at `$CLAUDEBOT_HOME/` (live name; older notes used earlier `/home/claude/<COMPANY>` paths during renames), holding `company.db`, `search.db`, `bots/<name>/`, `work/T-0001/`, `knowledge/`, `archive/`, `.secrets/` (git-ignored, mode 700).
 
 ## Review Focus
 
@@ -67,7 +67,7 @@ Server: engine at `~/ClaudeBot/`, company home at `~/AtoosaDev/` (live name; old
 - [ ] **Step 2: Measure.** Use one `claude -p --model haiku "Reply OK"` on the server, sampling peak RSS with `/usr/bin/time -v` or `/proc`. Record it, and revise the floor and `MemoryMax` if needed. This uses a small amount of the Owner's usage.
 - [ ] **Step 3: Verify flags.** Record exact behavior of `--append-system-prompt-file`, `--agents`, `--model`, `--effort`, `--mcp-config`, `--plugin-dir`, `--settings`, `--session-id`, `--output-format json`, the transcript path under `~/.claude/projects/`, and whether skills in `<cwd>/.claude/skills/` load in `-p` mode. Record the JSON or text that a usage-limit failure produces; if it can't be triggered safely, record the documented form and mark it unverified.
 - [ ] **Step 4: Check hooks.** Confirm `UserPromptSubmit` and `Stop` hook input fields (`prompt`, `transcript_path`) from current docs.
-- [ ] **Step 5: Check the folders.** List `~/DTbyNavid` and `~/ClaudeBot` on the server. If `~/DTbyNavid` holds anything, **ask the Owner** before using it.
+- [ ] **Step 5: Check the folders.** List `$CLAUDEBOT_HOME` and `~/ClaudeBot` on the server. If `$CLAUDEBOT_HOME` holds anything, **ask the Owner** before using it.
 - [ ] **Step 6: Check connectors.** Record which models and connectors the plan provides, and whether account connectors work in unattended server runs. Where they don't, note MCP plus a store token as the path.
 - [ ] **Step 7: Commit** the notes.
 
@@ -391,7 +391,7 @@ This is the feature that keeps 10 interrupted requests from being lost.
   - `test_rules_have_required_lines` (each rule above).
   - `test_init_ships_only_admin`: `list_bots` returns `["admin"]`; the `backend` role is added by Task 14.
   - `test_init_is_idempotent`: a second run changes no identity files.
-  - `test_engine_has_no_company_text`: a search of `engine/` for `DecisionTree`, `DTbyNavid`, `Navid` and `Atoosa` finds nothing, because templates refer to "the Owner".
+  - `test_engine_has_no_company_text`: a search of `engine/` for the comma-separated terms in `CB_BANNED_TERMS` finds nothing, because templates refer to "the Owner". The check is skipped when that variable is unset.
   - `test_admin_has_all_three_skills`.
   - `test_admin_soul_under_cap`.
 - [ ] **Step 2: Run the tests.** Expected: FAIL.
@@ -430,13 +430,13 @@ This is the feature that keeps 10 interrupted requests from being lost.
 
 ### Task 15: Install on the VPS and accept with the Owner
 
-Live, against the Owner's usage. Each check gets pass or fail plus evidence in `docs/superpowers/plans/acceptance-notes.md`.
+Live, against the Owner's usage. Each check gets pass or fail plus evidence in the Owner-only acceptance notes (not in this repo).
 
 **Files:**
-- Create: `docs/superpowers/plans/acceptance-notes.md`
+- Create: Owner-only acceptance notes, outside this repo
 - Modify: `CLAUDE.md` (status and how to run)
 
-- [ ] **Step 1: Deploy.** Prefer a tagged checkout and `rsync -a --delete` of `engine/` and `tests/` to `atoosa-vps:~/ClaudeBot/` (see [docs/deploy.md](../../deploy.md)). Run the suite there; expected all PASS. Run `CLAUDEBOT_HOME=~/AtoosaDev cb init --company "Atoosa Dev"` and `install.sh` when setting up a fresh home. Verify with a second SSH login that access is unaffected, and `systemctl status claudebot-dispatcher` is active.
+- [ ] **Step 1: Deploy.** Prefer a tagged checkout and `rsync -a --delete` of `engine/` and `tests/` to `<VPS_ALIAS>:~/ClaudeBot/` (see [docs/deploy.md](../../deploy.md)). Run the suite there; expected all PASS. Run `CLAUDEBOT_HOME=/home/claude/<COMPANY> cb init --company "<COMPANY>"` and `install.sh` when setting up a fresh home. Verify with a second SSH login that access is unaffected, and `systemctl status claudebot-dispatcher` is active.
 - [ ] **Step 2: OWNER DOES:** create the private GitHub `backup` and `archive` repos and add the deploy keys. Add first store items with `cb secret add` in his own terminal. Wait for "done". Never ask for values in chat.
 - [ ] **Step 3: Measure** idle dispatcher RSS and 2 concurrent sessions. Set the floor, `MemoryMax` and concurrency from real numbers, and record them.
 - [ ] **Step 4: Owner tests Admin:** he runs `cb chat` from an SSH session and gets an accurate brief.
