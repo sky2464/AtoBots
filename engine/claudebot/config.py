@@ -228,3 +228,7 @@ class Config:
     @property
     def secrets_dir(self) -> Path:
         return self.home / ".secrets"
+
+    @property
+    def logs_dir(self) -> Path:
+        return self.home / "logs"

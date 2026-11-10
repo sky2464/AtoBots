@@ -364,6 +364,12 @@ class TemplatesTest(unittest.TestCase):
         self.assertLess(stop, text.index("checkout --quiet --detach"))
         self.assertIn('"$CB" dispatcher release', text)
         self.assertIn("--force", text)
+        self.assertIn("/proc/self/cgroup", text)
+        self.assertIn("claudebot-admin.service", text)
+        self.assertIn("run cb update", text)
+        self.assertIn("sudo systemctl restart claudebot-admin.service", text)
+        self.assertNotIn("sudo systemctl stop claudebot-admin.service", text)
+        self.assertIn("sudo systemctl start claudebot-dispatcher.service", text)
 
     def test_units_are_rendered_in_one_place(self):
         lib = ROOT / "engine" / "lib" / "units.sh"

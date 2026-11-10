@@ -32,12 +32,28 @@ while [ "$#" -gt 0 ]; do
             FORCE=1
             shift
             ;;
-        *) usage ;;
+        -*)
+            usage
+            ;;
+        *)
+            if [ -z "$TAG" ]; then
+                TAG=$1
+                EXPLICIT_TAG=1
+                shift
+            else
+                usage
+            fi
+            ;;
     esac
 done
 if [ -n "$TAG" ] && ! [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo "error: --tag must look like v0.0.1" >&2
     exit 2
+fi
+
+if [ -f /proc/self/cgroup ] && grep -F -q "claudebot-admin.service" /proc/self/cgroup; then
+    echo "run cb update ${TAG:-TAG} instead" >&2
+    exit 1
 fi
 
 if [ "$(id -u)" -eq 0 ]; then
@@ -90,6 +106,10 @@ on_error() {
     "$CB" dispatcher release >/dev/null 2>&1 || true
     echo "" >&2
     if [ "$CHANGED" -eq 0 ]; then
+        sudo systemctl start claudebot-dispatcher.service 2>/dev/null || true
+        if systemctl is-enabled --quiet claudebot-admin.service 2>/dev/null; then
+            sudo systemctl start claudebot-admin.service 2>/dev/null || true
+        fi
         echo "The update stopped (exit $status). Nothing was changed." >&2
         return
     fi
