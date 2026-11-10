@@ -284,6 +284,7 @@ def _db_checks(cfg: Config, conn: sqlite3.Connection, now: str,
     out.extend(_waiting_checks(conn, now))
     out.extend(_stall_checks(conn, cfg, now))
     out.extend(_wakecap_checks(conn, now))
+    out.extend(_change_checks(conn, now))
     for msg in bots.check(cfg, conn):
         text = f"Bot files: {msg}"
         if "is not linked" in msg:
@@ -331,6 +332,25 @@ def _wakecap_checks(conn, now: str) -> list[Finding]:
                 f"wakecap:{bot}",
                 f"{bot} hit the wake cap in {len(seen)} hours of the last day. "
                 "Its queued work waits during a capped hour."))
+    return out
+
+
+def _change_checks(conn, now: str) -> list[Finding]:
+    """Report changes left approved for more than 24 hours with no done."""
+    out = []
+    try:
+        rows = conn.execute(
+            "SELECT id, title, approved_at FROM changes WHERE status='approved' AND completed_at IS NULL"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return out
+    for r in rows:
+        app_at = r["approved_at"]
+        if app_at and _age_hours(app_at, now) > 24:
+            out.append(Finding(
+                f"change:{r['id']}",
+                f"Change {r['id']} ({r['title']}) was approved "
+                "more than 24 hours ago and has not been marked done."))
     return out
 
 

@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from .config import Config
 
 # 1 is every database made by 0.0.1 or 0.0.2. Raising this runs _migrate once.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Token use per run, one row per model call (cost control).
 USAGE_TABLE = """
@@ -23,6 +23,16 @@ CREATE TABLE IF NOT EXISTS usage(
 QUESTIONS_TABLE = """
 CREATE TABLE IF NOT EXISTS owner_questions(
   id INTEGER PRIMARY KEY, asked_at TEXT, text TEXT, answered_at TEXT
+);
+"""
+
+# Written, approved plans for system changes (Task E3).
+CHANGES_TABLE = """
+CREATE TABLE IF NOT EXISTS changes(
+  n INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE, title TEXT, steps TEXT,
+  touches TEXT, status TEXT NOT NULL DEFAULT 'planned', created_at TEXT,
+  approved_at TEXT, approved_by_quote TEXT, session_id TEXT, completed_at TEXT,
+  notes TEXT
 );
 """
 
@@ -84,7 +94,7 @@ BEGIN SELECT RAISE(ABORT, 'append-only'); END;
 CREATE TRIGGER IF NOT EXISTS activity_no_delete BEFORE DELETE ON activity
 BEGIN SELECT RAISE(ABORT, 'append-only'); END;
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
-""" + USAGE_TABLE + QUESTIONS_TABLE
+""" + USAGE_TABLE + QUESTIONS_TABLE + CHANGES_TABLE
 
 _zone = ZoneInfo("UTC")
 
@@ -186,6 +196,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 " WHERE session_id IS NOT NULL AND session_id != '')")
     conn.execute(USAGE_TABLE)
     conn.execute(QUESTIONS_TABLE)
+    conn.execute(CHANGES_TABLE)
     _ensure_indexes(conn)
     conn.execute(
         "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")

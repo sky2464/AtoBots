@@ -1,6 +1,8 @@
 """Append-only activity record. UPDATE and DELETE are blocked by triggers."""
 import os
+import re
 import sqlite3
+import sys
 from dataclasses import dataclass
 
 from .config import Config
@@ -169,11 +171,41 @@ def since(conn: sqlite3.Connection, iso: str) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+RISKY_WORDS = re.compile(
+    r"\b(systemctl\s+(?:stop|restart|disable|mask)|rm|mv|apt|pip|npm|install)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_change_approved(conn: sqlite3.Connection, change_id: str | None) -> bool:
+    if not change_id:
+        return False
+    from . import changes
+    try:
+        cid = changes.normalize_id(change_id)
+        row = conn.execute("SELECT status FROM changes WHERE id=?", (cid,)).fetchone()
+        return row is not None and row["status"] == "approved"
+    except (ValueError, sqlite3.OperationalError):
+        return False
+
+
 def _cmd_sudo(args) -> int:
     cfg = Config.load()
     conn = connect(cfg)
     try:
-        record(conn, actor(), "sudo", args.text)
+        change_ref = None
+        if args.change:
+            from . import changes
+            try:
+                change_ref = changes.normalize_id(args.change)
+            except ValueError:
+                change_ref = args.change
+
+        if RISKY_WORDS.search(args.text) and not _is_change_approved(conn, args.change):
+            record(conn, actor(), "change.unplanned", args.text, ref=change_ref)
+            print("warning: risky sudo command recorded without an approved change plan",
+                  file=sys.stderr)
+        record(conn, actor(), "sudo", args.text, ref=change_ref)
         return 0
     finally:
         conn.close()
@@ -183,5 +215,6 @@ def register(subparsers) -> None:
     log = subparsers.add_parser("log", help="record notable actions")
     lsub = log.add_subparsers(dest="log_cmd", required=True)
     sudo = lsub.add_parser("sudo", help='record a sudo command ("what and why")')
+    sudo.add_argument("--change", help="approved change id (e.g. C-0001)")
     sudo.add_argument("text")
     sudo.set_defaults(func=_cmd_sudo)
