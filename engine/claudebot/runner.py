@@ -15,7 +15,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import activity, bots, items, messages, usage
+from . import activity, bots, items, messages, tasks, usage
 from .config import Config
 from .db import tx, utcnow
 
@@ -96,7 +96,8 @@ def task_packet(cfg: Config, conn: sqlite3.Connection, bot, msgs) -> str:
             lines.append(f"Item: {m['item_id']}")
             if m["item_id"] not in item_ids:
                 item_ids.append(m["item_id"])
-        lines += [m["body"], ""]
+        lines += [tasks.render(m["body"], m["id"]) if m["kind"] == "task"
+                  else m["body"], ""]
     for iid in item_ids:
         row = items.get(conn, iid)
         lines.append(f"## {iid}: {row['title']} (status {row['status']})")
