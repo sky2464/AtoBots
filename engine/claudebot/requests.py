@@ -250,6 +250,15 @@ def _open_owner_session(conn, session: str) -> bool:
         " AND lane IN ('chat','live')", (session,)).fetchone() is not None
 
 
+def _cmd_hook_stop(_args) -> int:
+    """Kept for sessions started by an older engine; does nothing."""
+    try:
+        sys.stdin.buffer.read()
+    except Exception:
+        pass
+    return 0
+
+
 def _cmd_hook_prompt(args) -> int:
     """UserPromptSubmit hook. No AI cost, always exits 0. Silent, except that
     a bare acknowledgement ("ok", a thumbs up) while no question is open is
@@ -385,3 +394,5 @@ def register(subparsers) -> None:
     hs = h.add_subparsers(dest="hook_cmd", required=True)
     hp = hs.add_parser("prompt")
     hp.set_defaults(func=_cmd_hook_prompt)
+    hs.add_parser("stop", help="kept for sessions started by an older engine; "
+                  "does nothing").set_defaults(func=_cmd_hook_stop)

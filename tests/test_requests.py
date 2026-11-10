@@ -222,6 +222,13 @@ class HookTests(RequestsBase):
         self.assertEqual(len(denied), 1)
         self.assertNotIn("publish everything", denied[0]["detail"])
 
+    def test_hook_stop_discards_stdin_and_exits_0(self):
+        stdin = mock.Mock()
+        stdin.buffer = io.BytesIO(b"old engine still calls this")
+        with mock.patch("sys.stdin", stdin):
+            self.assertEqual(cli.main(["hook", "stop"]), 0)
+        self.assertEqual(self.count(), 0)
+
     def test_hook_exits_0_when_home_missing(self):
         stdin = mock.Mock()
         stdin.buffer = io.BytesIO(b"{}")
