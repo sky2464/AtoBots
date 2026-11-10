@@ -122,3 +122,11 @@ Throwaway company `/home/claude/cbtest-clean` (`cb init`, no install.sh, no syst
 
 **c)** "What is the backend bot?"
 > The `backend` bot is a reserved role the system uses for health checks, which run through `cb doctor`. It does no company work, and it's hidden from `cb bot list`... That comes from my own setup notes. I haven't run `cb doctor` or looked at it live just now.
+
+## Fresh start: Atoosa Dev (2026-11-09)
+- Old test home `~/Atoosa` and its Claude history folders archived (tar, sha256 verified on both sides) to `backups/` on the Mac (git-ignored), then deleted from the server. Server /tmp tars removed. Old Telegram pairing (`access.json`) kept.
+- New company `Atoosa Dev` at `/home/claude/AtoosaDev` (`cb init` accepts the space). Token `telegram-bot` copied old to new with store.py's own functions, never printed; `cb secret list` shows it; getMe through `cb secret run` printed `ok AtoosaHub_Bot`.
+- install.sh run without `--start`, then with `--start`. `.bashrc` updated (backup `.bashrc.bak-20261109-freshstart`); `/etc/claudebot.env`, units and settings have no mention of `/home/claude/Atoosa`.
+- After `--start`: dispatcher, claudebot-admin, backup.timer, doctor.timer active and enabled; tmux `admin-live` up; `cb status` shows Always-on Admin up; `cb doctor` all good; `cb bot list` admin only; ufw output identical before and after; fresh SSH login via `atoosa-vps` works. The mode-600 plugin `.env` is present while running.
+- Finding: in the new `bots/admin` folder Claude Code asks "Is this a project you created or one you trust?" at first start, so the always-on session waits at that dialog and the Telegram plugin (bun) does not start until someone answers it in `tmux attach -t admin-live`. Left for the Owner.
+- Backups: remotes `backup` and `archive` added in `~/AtoosaDev`; `git ls-remote archive` works. The `claudebot-backup` deploy key on atoosa-hub/backup is PENDING (Owner adds it in GitHub); push and restore test not yet done.

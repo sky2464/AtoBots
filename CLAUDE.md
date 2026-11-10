@@ -7,8 +7,10 @@ Owner: Navid (Atoosa). Goal: a fresh VPS that Claude Code is installed on and ma
 - IP: 192.210.190.169, SSH port 22
 - Debian 13 (trixie) 64-bit, 2 vCPU, 2 GB RAM, 35 GB disk
 - Freshly reset on 2026-11-08 (all old data and the old `adminuser` are gone)
-- Company home: `~/Atoosa` (company Atoosa; renamed from DTbyNavid on 2026-11-09). DecisionTreeByNavid is one product of the company
-- Engine: `~/ClaudeBot` (`engine/`); `cb` is linked into `/usr/local/bin`, `CLAUDEBOT_HOME=/home/claude/Atoosa` (also in `/etc/claudebot.env`)
+- Company home: `~/AtoosaDev` (company Atoosa Dev; fresh start 2026-11-09, the old `~/Atoosa` test home was archived to `backups/` on the Mac and deleted). Line of business: DecisionTreeByNavid (YouTube channel)
+- Engine repo: github.com/sky2464/claudebot (private). Backups: `atoosa-hub/backup` (hourly push, remote `backup`) and `atoosa-hub/archive` (remote `archive`). The `backup` deploy key is pending (Owner adds it in GitHub); until then the first push fails
+- Always-on Admin with Telegram @AtoosaHub_Bot via `claudebot-admin.service` (tmux `admin-live`)
+- Engine: `~/ClaudeBot` (`engine/`); `cb` is linked into `/usr/local/bin`, `CLAUDEBOT_HOME=/home/claude/AtoosaDev` (also in `/etc/claudebot.env`)
 - Navid talks to Admin with `cb chat`
 
 ## Access from this Mac
@@ -19,11 +21,11 @@ Owner: Navid (Atoosa). Goal: a fresh VPS that Claude Code is installed on and ma
 - The old host key for 192.210.190.169 was removed from `known_hosts` and the new ed25519 key was added.
 
 ## Always-on Admin with Telegram (set up 2026-11-09)
-- Runs as `claudebot-admin.service` (starts at boot once enabled), inside tmux session `admin-live`, as `cb admin serve`: Admin with `--channels plugin:telegram@claude-plugins-official --dangerously-skip-permissions`. It does not pause bots (only `cb chat` does). State is in `~/Atoosa/.admin-live/`.
+- Runs as `claudebot-admin.service` (starts at boot once enabled), inside tmux session `admin-live`, as `cb admin serve`: Admin with `--channels plugin:telegram@claude-plugins-official --dangerously-skip-permissions`. It does not pause bots (only `cb chat` does). State is in `~/AtoosaDev/.admin-live/`.
 - Attach: `ssh atoosa-vps` then `tmux attach -t admin-live`. Detach without stopping it: Ctrl-b then d. Never press Ctrl-c or type `/exit` unless you want it restarted (it restarts after 10 s).
 - Check: `systemctl status claudebot-admin`, `tmux ls`, `cb doctor`.
 - Stop: `sudo systemctl stop claudebot-admin` (also ends the tmux session). Disable at boot: `sudo systemctl disable claudebot-admin`.
-- The Telegram plugin is installed at local scope for `~/Atoosa` (bun in `~/.bun/bin`; it is enabled for the session by `--settings`, not in any file); access lives in `access.json` next to the `.env`. The bot token lives only in the secure store (`cb secret add telegram-bot --kind token`, typed at a hidden prompt, never through a Claude session). At each start `cb admin serve` writes it into the plugin's own `~/.claude/channels/telegram/.env` (mode 600, outside the company home, so never in Git or the backup) and removes the file when the session ends or the service stops; each use is recorded by name. Pairing and allowlist changes are made only in the attached terminal.
+- The Telegram plugin is installed at local scope for `~/AtoosaDev` (bun in `~/.bun/bin`; it is enabled for the session by `--settings`, not in any file); access lives in `access.json` next to the `.env`. The bot token lives only in the secure store (`cb secret add telegram-bot --kind token`, typed at a hidden prompt, never through a Claude session). At each start `cb admin serve` writes it into the plugin's own `~/.claude/channels/telegram/.env` (mode 600, outside the company home, so never in Git or the backup) and removes the file when the session ends or the service stops; each use is recorded by name. Pairing and allowlist changes are made only in the attached terminal.
 
 ## vps-bootstrap.sh (in this folder) — run once as root on the server
 Does: full-upgrade + tools (git, curl, ripgrep, jq, tmux, build-essential, python3), creates user `claude` with passwordless sudo,
