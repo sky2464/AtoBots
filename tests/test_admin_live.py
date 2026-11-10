@@ -202,5 +202,104 @@ class MemoryWrapTests(unittest.TestCase):
         self.assertEqual(wrapped[wrapped.index("--") + 1:], cmd)
 
 
+class UpdatePendingTests(Base):
+    def test_check_pending_update_no_marker(self):
+        called = []
+        self.assertFalse(admin_live.check_pending_update(
+            self.cfg, notify_fn=lambda *a, **k: called.append(a)))
+        self.assertEqual(called, [])
+
+    def test_check_pending_update_sends_notification_and_deletes_marker(self):
+        sd = admin_live.state_dir(self.cfg)
+        sd.mkdir(parents=True, exist_ok=True)
+        marker = sd / admin_live.UPDATE_PENDING_FILE
+        marker.write_text(json.dumps({
+            "old_version": "v0.0.1",
+            "new_version": "v0.0.2",
+            "time": "2026-11-10T12:00:00Z",
+        }))
+        messages = []
+
+        def fake_notify(cfg, text, conn=None):
+            messages.append(text)
+            return True
+
+        self.assertTrue(admin_live.check_pending_update(self.cfg, notify_fn=fake_notify))
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0], "ClaudeBot updated v0.0.1 to v0.0.2. Admin is back.")
+        self.assertFalse(marker.exists())
+
+    def test_supervise_triggers_check_pending_update(self):
+        sd = admin_live.state_dir(self.cfg)
+        sd.mkdir(parents=True, exist_ok=True)
+        marker = sd / admin_live.UPDATE_PENDING_FILE
+        marker.write_text(json.dumps({
+            "old_version": "v0.0.1",
+            "new_version": "v0.0.2",
+        }))
+        stop = threading.Event()
+        checked = []
+
+        def fake_check(cfg):
+            checked.append(1)
+            stop.set()
+
+        def has_sess():
+            return not stop.is_set()
+
+        with mock.patch("claudebot.admin_live.has_session", side_effect=has_sess), \
+             mock.patch("claudebot.admin_live.kill_session"):
+            admin_live.supervise(self.cfg, stop, check_update_fn=fake_check)
+        self.assertTrue(len(checked) >= 1)
+
+
+class VerifyServicesTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.cfg = Config(Path(self._tmp.name) / "home")
+
+    def test_verify_services_all_pass(self):
+        def fake_run(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 0)
+
+        ok, lines = admin_live.verify_services(self.cfg, runner=fake_run)
+        self.assertTrue(ok)
+        self.assertEqual(lines, ["claudebot-dispatcher: PASS", "claudebot-admin: PASS"])
+
+    def test_verify_services_dispatcher_down(self):
+        def fake_run(cmd, **kw):
+            if "claudebot-dispatcher.service" in cmd:
+                return subprocess.CompletedProcess(cmd, 3)
+            return subprocess.CompletedProcess(cmd, 0)
+
+        ok, lines = admin_live.verify_services(self.cfg, runner=fake_run)
+        self.assertFalse(ok)
+        self.assertEqual(lines, ["claudebot-dispatcher: FAIL", "claudebot-admin: PASS"])
+
+    def test_verify_services_admin_not_enabled(self):
+        def fake_run(cmd, **kw):
+            if "is-enabled" in cmd:
+                return subprocess.CompletedProcess(cmd, 1)
+            return subprocess.CompletedProcess(cmd, 0)
+
+        ok, lines = admin_live.verify_services(self.cfg, runner=fake_run)
+        self.assertTrue(ok)
+        self.assertEqual(lines, ["claudebot-dispatcher: PASS", "claudebot-admin: PASS (not enabled)"])
+
+    def test_cli_verify_services(self):
+        from claudebot import cli
+        import io
+        from contextlib import redirect_stdout
+        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.cfg.home)}), \
+             mock.patch("claudebot.admin_live.verify_services",
+                        return_value=(True, ["claudebot-dispatcher: PASS", "claudebot-admin: PASS"])):
+            out = io.StringIO()
+            with redirect_stdout(out):
+                rc = cli.main(["verify", "services"])
+            self.assertEqual(rc, 0)
+            self.assertIn("claudebot-dispatcher: PASS", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

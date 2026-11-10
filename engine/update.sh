@@ -113,6 +113,12 @@ on_error() {
         echo "The update stopped (exit $status). Nothing was changed." >&2
         return
     fi
+    local err_log=${CB_UPDATE_LOG:-}
+    if [ -z "$err_log" ]; then
+        # shellcheck disable=SC2012
+        err_log=$(ls -1t "$HOME_DIR/logs"/update-*.log 2>/dev/null | head -n 1 || true)
+    fi
+    "$CB" admin notify "ClaudeBot update FAILED (exit $status). Log: ${err_log:-unknown}" >/dev/null 2>&1 || true
     cat >&2 <<EOF
 The update FAILED (exit $status). To go back to ClaudeBot $OLD_VERSION:
   1. Stop the services:
@@ -290,7 +296,17 @@ sudo systemctl daemon-reload
 echo "Starting services ..."
 sudo systemctl start claudebot-dispatcher.service
 "$CB" dispatcher release
+MARKER=""
 if systemctl is-enabled --quiet claudebot-admin.service 2>/dev/null; then
+    ADMIN_STATE_DIR=$HOME_DIR/.admin-live
+    mkdir -p "$ADMIN_STATE_DIR"
+    chmod 700 "$ADMIN_STATE_DIR" 2>/dev/null || true
+    MARKER=$ADMIN_STATE_DIR/update-pending.json
+    NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    cat > "$MARKER" <<EOF
+{"old_version": "$OLD_VERSION", "new_version": "$NEW_VERSION", "time": "$NOW_ISO"}
+EOF
+    chmod 600 "$MARKER" 2>/dev/null || true
     if [ "$ADMIN_RENDERED" != "$ADMIN_INSTALLED" ] || [ "$OLD_VERSION" != "$NEW_VERSION" ]; then
         sudo systemctl restart claudebot-admin.service
         echo "Restarted claudebot-admin. The conversation will restart."
@@ -299,6 +315,79 @@ if systemctl is-enabled --quiet claudebot-admin.service 2>/dev/null; then
     fi
 else
     echo "claudebot-admin is not enabled, so it was not restarted."
+fi
+
+# 9. Verify services and marker removal
+echo ""
+echo "Verifying services ..."
+LOG_PATH=${CB_UPDATE_LOG:-}
+if [ -z "$LOG_PATH" ]; then
+    # shellcheck disable=SC2012
+    LOG_PATH=$(ls -1t "$HOME_DIR/logs"/update-*.log 2>/dev/null | head -n 1 || true)
+fi
+
+DEADLINE=$((SECONDS + 180))
+DISP_PASS=0
+ADMIN_PASS=0
+MARKER_PASS=0
+
+ADMIN_ENABLED=0
+if systemctl is-enabled --quiet claudebot-admin.service 2>/dev/null; then
+    ADMIN_ENABLED=1
+else
+    ADMIN_PASS=1
+    MARKER_PASS=1
+fi
+
+while [ "$SECONDS" -lt "$DEADLINE" ]; do
+    if [ "$DISP_PASS" -eq 0 ] && systemctl is-active --quiet claudebot-dispatcher.service 2>/dev/null; then
+        DISP_PASS=1
+    fi
+    if [ "$ADMIN_ENABLED" -eq 1 ]; then
+        if [ "$ADMIN_PASS" -eq 0 ] && systemctl is-active --quiet claudebot-admin.service 2>/dev/null; then
+            ADMIN_PASS=1
+        fi
+        if [ "$MARKER_PASS" -eq 0 ] && [ ! -f "$MARKER" ]; then
+            MARKER_PASS=1
+        fi
+    fi
+    if [ "$DISP_PASS" -eq 1 ] && [ "$ADMIN_PASS" -eq 1 ] && [ "$MARKER_PASS" -eq 1 ]; then
+        break
+    fi
+    sleep 2
+done
+
+FAILED_CHECKS=()
+if [ "$DISP_PASS" -eq 1 ]; then
+    echo "claudebot-dispatcher: PASS"
+else
+    echo "claudebot-dispatcher: FAIL"
+    FAILED_CHECKS+=("claudebot-dispatcher")
+fi
+
+if [ "$ADMIN_ENABLED" -eq 1 ]; then
+    if [ "$ADMIN_PASS" -eq 1 ]; then
+        echo "claudebot-admin: PASS"
+    else
+        echo "claudebot-admin: FAIL"
+        FAILED_CHECKS+=("claudebot-admin")
+    fi
+    if [ "$MARKER_PASS" -eq 1 ]; then
+        echo "update-pending marker: PASS"
+    else
+        echo "update-pending marker: FAIL"
+        FAILED_CHECKS+=("update-pending marker")
+    fi
+else
+    echo "claudebot-admin: PASS (not enabled)"
+fi
+
+if [ "${#FAILED_CHECKS[@]}" -gt 0 ]; then
+    FAIL_STR=$(IFS=", "; echo "${FAILED_CHECKS[*]}")
+    FAIL_MSG="ClaudeBot update verification failed ($FAIL_STR). Log: ${LOG_PATH:-unknown}"
+    echo "error: $FAIL_MSG" >&2
+    "$CB" admin notify "$FAIL_MSG" >/dev/null 2>&1 || true
+    exit 1
 fi
 
 # 9. Health check. Findings are reported, not treated as a failed update: a

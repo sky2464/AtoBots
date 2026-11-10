@@ -43,6 +43,7 @@ TOKEN_VAR = "TELEGRAM_BOT_TOKEN"
 TOKEN_SECRET = "telegram-bot"  # name in the secure store (cb secret add)
 CHECK_KEY = "admin_live.last_check"
 STATE_DIRNAME = ".admin-live"
+UPDATE_PENDING_FILE = "update-pending.json"
 RESTART_DELAY = 10          # seconds before claude is started again
 MAX_DELAY = 300             # longest back-off
 QUICK_SECONDS = 60          # a session shorter than this counts as a failure
@@ -439,10 +440,37 @@ def kill_session() -> None:
         pass
 
 
+def check_pending_update(cfg: Config, notify_fn=None) -> bool:
+    """When update-pending.json exists, send Telegram confirmation and remove it."""
+    notify_fn = notify_fn or notify_telegram
+    marker = state_dir(cfg) / UPDATE_PENDING_FILE
+    if not marker.exists():
+        return False
+    try:
+        data = json.loads(marker.read_text())
+    except (OSError, ValueError, TypeError):
+        data = {}
+    old = data.get("old_version", "unknown")
+    new = data.get("new_version", "unknown")
+    msg = f"ClaudeBot updated {old} to {new}. Admin is back."
+    conn = connect(cfg)
+    try:
+        notify_fn(cfg, msg, conn=conn)
+    finally:
+        conn.close()
+    try:
+        marker.unlink()
+    except OSError:
+        pass
+    return True
+
+
 def supervise(cfg: Config, stop: threading.Event, sleep=None,
-              clock=time.monotonic, poll: float = 5.0) -> None:
+              clock=time.monotonic, poll: float = 5.0,
+              check_update_fn=None) -> None:
     """Keep tmux session `admin-live` alive until `stop` is set, then end it."""
     sleep = sleep or (lambda s: stop.wait(s))
+    check_update = check_update_fn or check_pending_update
     fails, started = 0, None
     if not has_session():
         scrub_token(cfg)  # a killed session may have left the token file
@@ -464,11 +492,77 @@ def supervise(cfg: Config, stop: threading.Event, sleep=None,
             if not _start_session(cfg):
                 print(f"could not start tmux session {SESSION}",
                       file=sys.stderr, flush=True)
+            elif has_session():
+                check_update(cfg)
+        else:
+            check_update(cfg)
         sleep(poll)
     kill_session()
     deadline = clock() + STOP_WAIT
     while has_session() and clock() < deadline:
         time.sleep(0.5)
+
+
+def verify_services(cfg: Config, runner=subprocess.run) -> tuple[bool, list[str]]:
+    """Verify claudebot-dispatcher and (if enabled) claudebot-admin are active."""
+    lines = []
+    all_ok = True
+
+    try:
+        r = runner(["systemctl", "is-active", "--quiet", "claudebot-dispatcher.service"],
+                   timeout=10)
+        disp_ok = (r.returncode == 0)
+    except (OSError, subprocess.TimeoutExpired):
+        disp_ok = False
+
+    if disp_ok:
+        lines.append("claudebot-dispatcher: PASS")
+    else:
+        lines.append("claudebot-dispatcher: FAIL")
+        all_ok = False
+
+    try:
+        r_en = runner(["systemctl", "is-enabled", "--quiet", "claudebot-admin.service"],
+                      timeout=10)
+        admin_enabled = (r_en.returncode == 0)
+    except (OSError, subprocess.TimeoutExpired):
+        admin_enabled = False
+
+    if admin_enabled:
+        try:
+            r_act = runner(["systemctl", "is-active", "--quiet", "claudebot-admin.service"],
+                           timeout=10)
+            admin_ok = (r_act.returncode == 0)
+        except (OSError, subprocess.TimeoutExpired):
+            admin_ok = False
+
+        if admin_ok:
+            lines.append("claudebot-admin: PASS")
+        else:
+            lines.append("claudebot-admin: FAIL")
+            all_ok = False
+    else:
+        lines.append("claudebot-admin: PASS (not enabled)")
+
+    return all_ok, lines
+
+
+def _cmd_verify_services(args) -> int:
+    cfg = Config.load()
+    ok, lines = verify_services(cfg)
+    for line in lines:
+        print(line)
+    return 0 if ok else 1
+
+
+def _cmd_notify(args) -> int:
+    cfg = Config.load()
+    conn = connect(cfg)
+    try:
+        ok = notify_telegram(cfg, args.text, conn=conn)
+    finally:
+        conn.close()
+    return 0 if ok else 1
 
 
 def _cmd_run(args) -> int:
@@ -507,3 +601,11 @@ def register(subparsers) -> None:
                    ).set_defaults(func=_cmd_run)
     sub.add_parser("has-token", help="exit 0 when the Telegram token is in "
                    "the store").set_defaults(func=_cmd_has_token)
+    np = sub.add_parser("notify", help="send a direct Telegram notice to the Owner")
+    np.add_argument("text", help="message text")
+    np.set_defaults(func=_cmd_notify)
+
+    vp = subparsers.add_parser("verify", help="verify system status")
+    vsub = vp.add_subparsers(dest="verify_cmd", required=True)
+    vsub.add_parser("services", help="verify required system services are active"
+                    ).set_defaults(func=_cmd_verify_services)

@@ -370,6 +370,9 @@ class TemplatesTest(unittest.TestCase):
         self.assertIn("sudo systemctl restart claudebot-admin.service", text)
         self.assertNotIn("sudo systemctl stop claudebot-admin.service", text)
         self.assertIn("sudo systemctl start claudebot-dispatcher.service", text)
+        self.assertIn("update-pending.json", text)
+        self.assertIn("update-pending marker", text)
+        self.assertIn("Verifying services", text)
 
     def test_units_are_rendered_in_one_place(self):
         lib = ROOT / "engine" / "lib" / "units.sh"
