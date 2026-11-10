@@ -35,13 +35,13 @@ WAITING_HOURS = 48      # an item waiting on a bot this long is a finding
 # brief, never sent to a bot (a bot cannot add a remote).
 # "models": the Owner decides a bot's model; nobody is woken to change it.
 NO_WAKE = ("backup-remote", "archive-remote", "admin-live-token", "models",
-           "workers", "rules-new", "timezone-unset")
+           "workers", "rules-new", "timezone-unset", "transcribe-cmd")
 # Every finding key the doctor can raise. `cb item new --finding` accepts only
 # these, so an item can only be tied to a finding that really exists.
 FINDING_KEYS = ("dispatcher", "admin-live", "admin-live-token", "disk",
                 "git-size", "sql-size", "database", "backup-remote",
                 "archive-remote", "backup-push", "backup-snapshot", "memory",
-                "workers", "rules-new", "timezone-unset")
+                "workers", "rules-new", "timezone-unset", "transcribe-cmd")
 FINDING_PREFIXES = ("run:", "waiting:", "stall:", "bots:", "wakecap:")
 CLEAR_RUNS = 2          # clean runs without the finding before its item closes
 CLOSABLE = ("todo", "next")
@@ -148,6 +148,14 @@ def checks(cfg: Config, conn: sqlite3.Connection | None = None,
             "rules-new",
             "rules.md has local changes; the new version is in rules.md.new. "
             "Compare them and keep the company's rules."))
+    if getattr(cfg, "transcribe_cmd", None):
+        cmd = cfg.transcribe_cmd.strip()
+        exe = cmd.split()[0] if cmd.split() else ""
+        if exe and not shutil.which(exe) and not Path(exe).is_file():
+            out.append(Finding(
+                "transcribe-cmd",
+                f"transcribe_cmd is set to {cfg.transcribe_cmd!r} but executable {exe!r} "
+                "was not found on PATH."))
     mb = mem_fn()
     own = conn is None
     try:
