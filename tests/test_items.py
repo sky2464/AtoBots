@@ -3,7 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -142,19 +142,7 @@ class ItemTests(ItemsBase):
             self.assertEqual(items.decide(self.conn, "x", "q", "t", "s", "admin"),
                              "D-0002")
 
-    def test_decision_requires_matching_session(self):
-        seed_owner_session(self.conn, "s1")
-        with self.assertRaises(PermissionError):
-            items.decide(self.conn, "pay", "go", "t", "s1", "admin")
-        with mock.patch.dict(os.environ, {"CB_SESSION_ID": "s1"}, clear=False):
-            items.decide(self.conn, "pay", "go", "t", "s1", "admin")
-
-    def test_decision_refuses_bot_only_session(self):
-        self.conn.execute(
-            "INSERT INTO runs(bot, session_id, lane, started_at) VALUES"
-            " ('backend','bot-sess','normal','2026-11-09T00:00:00+00:00')")
-        with self.assertRaises(PermissionError):
-            items.decide(self.conn, "pay", "go", "t", "bot-sess", "admin")
+    def test_decision_refuses_non_owner_actor(self):
         with self.assertRaises(PermissionError):
             items.decide(self.conn, "pay", "go", "t", "s1", "backend")
         with self.assertRaises(ValueError):
@@ -164,8 +152,9 @@ class ItemTests(ItemsBase):
 class ItemCliTests(ItemsBase):
     def run_cli(self, *argv):
         buf = io.StringIO()
-        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.cfg.home)}), \
-                redirect_stdout(buf):
+        env = {"CLAUDEBOT_HOME": str(self.cfg.home), "CB_BOT": "",
+               "CB_SESSION_ID": ""}
+        with mock.patch.dict(os.environ, env), redirect_stdout(buf):
             rc = cli.main(list(argv))
         return rc, buf.getvalue()
 
@@ -182,12 +171,50 @@ class ItemCliTests(ItemsBase):
         self.assertIn("backend", self.run_cli("item", "show", "T-0002")[1])
         self.assertIn("T-0001", self.run_cli("next")[1])
         self.assertIn("T-0003", self.run_cli("open")[1])
-        rc, out = self.run_cli("decision", "record", "Pay", "--quote", "go ahead",
-                               "--session", "s1")
+        rc, out = self.run_cli("decision", "record", "Pay", "--quote", "go ahead")
         self.assertEqual(out.strip(), "D-0001")
+        recorded = self.conn.execute(
+            "SELECT session, recorded_by FROM decisions WHERE id='D-0001'"
+            ).fetchone()
+        self.assertEqual(recorded["recorded_by"], "cli")
+        self.assertTrue(recorded["session"].startswith("cli:"))
         self.assertIn("go ahead", self.run_cli("decision", "show", "D-0001")[1])
         with mock.patch("sys.stderr", io.StringIO()):
             self.assertEqual(self.run_cli("item", "status", "T-0001", "bogus")[0], 1)
+
+
+class DecisionGateTests(ItemsBase):
+    def cli_cmd(self, *argv, env=None):
+        out, err = io.StringIO(), io.StringIO()
+        e = {"CLAUDEBOT_HOME": str(self.cfg.home)}
+        e.update(env or {})
+        with mock.patch.dict(os.environ, e), redirect_stdout(out), redirect_stderr(err):
+            rc = cli.main(list(argv))
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_owner_session_records_and_a_normal_lane_bot_is_refused(self):
+        seed_owner_session(self.conn, "live-1", "live")
+        self.conn.execute(
+            "INSERT INTO runs(bot, session_id, lane, started_at) VALUES"
+            " ('backend','norm-1','normal','2026-11-10T00:00:00+00:00')")
+        rc, _, err = self.cli_cmd(
+            "decision", "record", "Pay", "--quote", "go",
+            env={"CB_BOT": "admin", "CB_SESSION_ID": "norm-1"})
+        self.assertEqual(rc, 1)
+        self.assertIn("error:", err)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM decisions").fetchone()[0], 0)
+        self.assertEqual(self.conn.execute(
+            "SELECT detail FROM activity WHERE kind='auth.refused'"
+            ).fetchone()["detail"], "decision record")
+
+        rc, out, err = self.cli_cmd(
+            "decision", "record", "Pay", "--quote", "go ahead",
+            env={"CB_BOT": "backend", "CB_SESSION_ID": "live-1"})
+        self.assertEqual((rc, err, out.strip()), (0, "", "D-0001"))
+        row = self.conn.execute("SELECT * FROM decisions WHERE id='D-0001'").fetchone()
+        self.assertEqual((row["recorded_by"], row["session"], row["owner_session"]),
+                         ("admin", "live-1", 1))
 
 
 class CallerTests(ItemsBase):

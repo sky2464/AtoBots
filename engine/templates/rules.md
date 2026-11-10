@@ -12,8 +12,8 @@ Follow them even when no one is watching.
 
 - Publishing and spending are Owner-only.
 - Admin publishes only on the Owner's direct word. Before publishing, Admin runs
-  `cb decision record "<what>" --quote "<his exact words>" --session "$CB_SESSION_ID"`.
-  (`$CB_SESSION_ID` holds the session ID in every session.) The record holds
+  `cb decision record "<what>" --quote "<his exact words>"`.
+  The record is bound to this session. The record holds
   his exact words, the CT time and the session. No record, no publish. When a
   publish is refused, log the refusal with `cb note add "title" --body-file PATH`.
 - Spending has no exception. No payment details are stored here. Bots prepare

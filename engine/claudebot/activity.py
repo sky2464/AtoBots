@@ -138,6 +138,22 @@ def caller(conn, *, environ=None, environ_of=None, parent_of=None,
     return _resolve(conn, inherited)
 
 
+def allows_owner(who: Caller) -> bool:
+    """Owner session: Admin in chat or live, or a person at the shell."""
+    return who.owner_session or who.actor == "cli"
+
+
+def allows_admin(who: Caller) -> bool:
+    """Admin in any lane, or a person at the shell."""
+    return who.actor in ("admin", "cli")
+
+
+def refuse(conn, who: Caller, command: str, reason: str) -> None:
+    """Record the refusal (command name only, never its arguments) and raise."""
+    record(conn, who.actor, "auth.refused", command)
+    raise PermissionError(reason)
+
+
 def actor() -> str:
     """Label only, never for permission checks.
 

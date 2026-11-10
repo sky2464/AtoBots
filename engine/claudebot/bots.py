@@ -465,7 +465,15 @@ def check(cfg: Config, conn: sqlite3.Connection) -> list[str]:
 
 # ---- CLI wiring -----------------------------------------------------------
 
-_actor = activity.actor
+_GATED_SET = frozenset({"model", "tier", "worker", "persona"})
+
+
+def _require_admin(conn, command: str):
+    who = activity.caller(conn)
+    if not activity.allows_admin(who):
+        activity.refuse(conn, who, command,
+                        "only Admin or the Owner may do that")
+    return who
 
 
 def _csv(v):
@@ -481,7 +489,7 @@ def _run(fn):
     conn = connect(cfg)
     try:
         return fn(cfg, conn)
-    except (ValueError, KeyError, OSError) as e:
+    except (ValueError, KeyError, OSError, PermissionError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
     finally:
@@ -490,11 +498,15 @@ def _run(fn):
 
 def _cmd_new(args) -> int:
     def go(cfg, conn):
+        who = activity.caller(conn)
+        if not activity.allows_admin(who):
+            activity.refuse(conn, who, "bot new",
+                            "only Admin or the Owner may create a bot")
         create(cfg, conn, args.name, args.role, _read(args.soul_file),
                _read(args.persona_file), org=args.org,
                reports_to=args.reports_to, model=args.model or cfg.default_model,
                effort=args.effort, skills=_csv(args.skills), mcp=_csv(args.mcp),
-               plugins=_csv(args.plugins), actor=_actor(),
+               plugins=_csv(args.plugins), actor=who.actor,
                connectors=args.connectors, tier=args.tier,
                worker=args.worker)
         print(f"created {args.name}")
@@ -525,6 +537,10 @@ def _cmd_show(args) -> int:
 
 def _cmd_set(args) -> int:
     def go(cfg, conn):
+        who = activity.caller(conn)
+        if args.name == "admin" and not activity.allows_owner(who):
+            activity.refuse(conn, who, "bot set",
+                            "only an Owner session may change Admin")
         f = {}
         for k in _PLAIN_FIELDS:
             v = getattr(args, k)
@@ -542,7 +558,10 @@ def _cmd_set(args) -> int:
             f["persona"] = _read(args.persona_file)
         if args.decision:
             f["decision"] = args.decision
-        update(cfg, conn, args.name, _actor(), **f)
+        if _GATED_SET.intersection(f) and not activity.allows_admin(who):
+            activity.refuse(conn, who, "bot set",
+                            "only Admin or the Owner may change that setting")
+        update(cfg, conn, args.name, who.actor, **f)
         return 0
     return _run(go)
 
@@ -550,8 +569,12 @@ def _cmd_set(args) -> int:
 def _status_cmd(status):
     def cmd(args) -> int:
         def go(cfg, conn):
+            if status == "retired":
+                who = _require_admin(conn, "bot retire")
+            else:
+                who = activity.caller(conn)
             decision = getattr(args, "decision", None)
-            set_status(conn, args.name, status, _actor(), decision=decision)
+            set_status(conn, args.name, status, who.actor, decision=decision)
             return 0
         return _run(go)
     return cmd

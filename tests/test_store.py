@@ -1,4 +1,5 @@
 import io
+import json
 import multiprocessing
 import os
 import shutil
@@ -7,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -262,6 +264,73 @@ class StoreTests(unittest.TestCase):
                 self.assertEqual(cli.main(["secret", "rm", "t"]), 1)
         kinds = [r[0] for r in self.conn.execute("SELECT kind FROM activity")]
         self.assertEqual(kinds, ["secret.add", "secret.rm"])
+
+
+class SecretGateTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.cfg = Config(Path(self.tmp.name))
+        init_db(self.cfg)
+        self.conn = connect(self.cfg)
+        self.addCleanup(self.conn.close)
+        self.conn.execute(
+            "INSERT INTO runs(bot, session_id, lane, started_at) VALUES"
+            " ('backend','norm-1','normal','2026-11-10T00:00:00+00:00'),"
+            " ('admin','live-1','chat','2026-11-10T00:00:00+00:00')")
+
+    def index(self, owner_order_only=True):
+        d = self.cfg.secrets_dir
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "index.json").write_text(json.dumps(
+            {"t": {"kind": "token", "owner_order_only": owner_order_only}}))
+
+    def cli_cmd(self, *argv, env=None):
+        out, err = io.StringIO(), io.StringIO()
+        e = {"CLAUDEBOT_HOME": self.tmp.name}
+        e.update(env or {})
+        with mock.patch.dict(os.environ, e), redirect_stdout(out), redirect_stderr(err):
+            rc = cli.main(list(argv))
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_replace_and_remove_need_an_owner_session(self):
+        self.index()
+        worker = {"CB_BOT": "admin", "CB_SESSION_ID": "norm-1"}
+        with mock.patch("claudebot.store.add") as add, \
+                mock.patch("claudebot.store.getpass", return_value="new-value"):
+            rc, _, err = self.cli_cmd(
+                "secret", "add", "t", "--kind", "token", env=worker)
+            self.assertEqual(rc, 1)
+            self.assertIn("error:", err)
+            add.assert_not_called()
+        self.assertEqual(self.conn.execute(
+            "SELECT detail FROM activity WHERE kind='auth.refused'"
+            ).fetchone()["detail"], "secret add")
+        rc, _, err = self.cli_cmd("secret", "rm", "t", env=worker)
+        self.assertEqual(rc, 1)
+        self.assertIn("t", json.loads(
+            (self.cfg.secrets_dir / "index.json").read_text()))
+        with mock.patch("claudebot.store.add") as add, \
+                mock.patch("claudebot.store.getpass", return_value="new-value"):
+            rc, _, err = self.cli_cmd(
+                "secret", "add", "t", "--kind", "token",
+                env={"CB_SESSION_ID": "live-1"})
+            self.assertEqual((rc, err), (0, ""))
+            self.assertEqual(add.call_args.args[1:],
+                             ("t", "token", "new-value", True))
+        rc, _, err = self.cli_cmd("secret", "rm", "t", env={"CB_SESSION_ID": "live-1"})
+        self.assertEqual((rc, err), (0, ""))
+        self.assertNotIn("t", json.loads(
+            (self.cfg.secrets_dir / "index.json").read_text()))
+
+    def test_new_name_is_allowed_from_a_normal_lane(self):
+        with mock.patch("claudebot.store.add") as add, \
+                mock.patch("claudebot.store.getpass", return_value="v"):
+            rc, _, err = self.cli_cmd(
+                "secret", "add", "fresh", "--kind", "token",
+                env={"CB_SESSION_ID": "norm-1"})
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(add.call_args.args[1:], ("fresh", "token", "v", False))
 
 
 if __name__ == "__main__":

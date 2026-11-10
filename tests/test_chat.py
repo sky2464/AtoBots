@@ -408,6 +408,38 @@ class RolloverCommandTests(Base):
         self.assertEqual(rc, 1)
         self.assertIn(str(os.getpid()), err.getvalue())
 
+    def test_rollover_follows_the_open_session(self):
+        self.conn.execute(
+            "INSERT INTO runs(bot, session_id, lane, started_at) VALUES"
+            " ('backend','norm-1','normal','2026-11-10T00:00:00+00:00'),"
+            " ('admin','live-1','live','2026-11-10T00:00:00+00:00')")
+        f = self.root / "s.md"
+        f.write_text("the summary")
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, {
+                "CLAUDEBOT_HOME": str(self.cfg.home),
+                "CB_BOT": "admin", "CB_SESSION_ID": "norm-1"}), \
+                redirect_stderr(err):
+            rc = cli.main(["chat-rollover", "--summary-file", str(f)])
+        self.assertEqual(rc, 1)
+        self.assertIn("error:", err.getvalue())
+        self.assertFalse(chat.marker_path(self.cfg).exists())
+        self.assertEqual(self.conn.execute(
+            "SELECT detail FROM activity WHERE kind='auth.refused'"
+            ).fetchone()["detail"], "chat-rollover")
+        lock = chat.acquire_lock(self.cfg)
+        self.addCleanup(lock.close)
+        chat.pid_path(self.cfg).write_text("99999999")
+        with mock.patch.dict(os.environ, {
+                "CLAUDEBOT_HOME": str(self.cfg.home),
+                "CB_BOT": "backend", "CB_SESSION_ID": "live-1"}):
+            rc = cli.main(["chat-rollover", "--summary-file", str(f)])
+        self.assertEqual(rc, 0)
+        self.assertEqual(chat.rollover_path(self.cfg).read_text(), "the summary")
+        self.assertEqual(self.conn.execute(
+            "SELECT actor FROM activity WHERE kind='chat.rollover'"
+            ).fetchone()["actor"], "admin")
+
     def test_cli_chat_rollover_reads_the_file(self):
         f = self.root / "s.md"
         f.write_text("")

@@ -28,27 +28,26 @@ def _check_body(body) -> None:
             "file and send the file's path instead")
 
 
-def bound_actor() -> str | None:
-    """When CB_BOT is set, this process may only act as that bot."""
-    return os.environ.get("CB_BOT") or None
+def resolve_from(conn, requested: str | None = None, *,
+                 command: str = "send") -> str:
+    """From-field for a command: the bound caller, or the request when cli."""
+    who = activity.caller(conn)
+    if who.actor == "cli":
+        return requested or "cli"
+    if requested not in (None, who.actor):
+        activity.refuse(conn, who, command, "cannot act as another bot")
+    return who.actor
 
 
-def resolve_from(requested: str | None = None) -> str:
-    """CLI/library from-field: force CB_BOT when set; else requested or cli."""
-    me = bound_actor()
-    if me:
-        return me
-    return requested or "cli"
-
-
-def _check_sender(frm: str) -> None:
-    """Reject reserved spoof (admin/system) and any from≠CB_BOT when bound."""
-    me = bound_actor()
-    if not me:
+def _check_sender(conn, frm: str, command: str = "send") -> None:
+    """Reject a from-field that is not the bound caller. Call outside a transaction."""
+    who = activity.caller(conn)
+    if who.actor == "cli":
         return
-    if frm != me:
-        raise PermissionError(
-            f"cannot send as {frm!r}: this process is bound to {me!r}")
+    if frm != who.actor:
+        activity.refuse(
+            conn, who, command,
+            f"cannot send as {frm!r}: this process is bound to {who.actor!r}")
 
 
 def _insert(conn, frm, to, subject, body, item_id, kind, priority, level,
@@ -60,8 +59,6 @@ def _insert(conn, frm, to, subject, body, item_id, kind, priority, level,
     if _engine_system:
         if frm != SYSTEM:
             raise ValueError("_engine_system requires from=system")
-    else:
-        _check_sender(frm)
     if frm != SYSTEM:
         bots.get(conn, frm)
     if bots.get(conn, to).status == "retired":
@@ -148,6 +145,7 @@ def send(conn: sqlite3.Connection, frm: str, to: str, subject: str, body: str,
     """Queue a message and return its id (the original id for a repeated
     dedupe_key). Returns 0 if the hop limit stopped the chain; Admin is told
     once per chain."""
+    _check_sender(conn, frm, "send")
     with tx(conn):
         return _insert(conn, frm, to, subject, body, item_id, kind, priority,
                        level, effort, in_reply_to, dedupe_key, hop_limit,
@@ -167,6 +165,7 @@ def ask(cfg: Config, conn: sqlite3.Connection, frm: str, to: str,
     bots.get(conn, frm)
     path = items.folder(cfg, item_id) / f"handoff-{frm}.md"
     now = now or utcnow()
+    _check_sender(conn, frm, "ask")
     with tx(conn):
         mid = _insert(conn, frm, to, f"Question on {item_id}", question,
                       item_id, "question", "normal", "normal", None, None,
@@ -189,6 +188,7 @@ def reply(conn: sqlite3.Connection, frm: str, message_id: int, body: str,
     """Answer a message. Clears the item's waiting_on and wakes the asker; the
     reply carries the path of the asker's handoff note (absolute when `home`
     is given: the asker's run starts in its own bot folder)."""
+    _check_sender(conn, frm, "reply")
     with tx(conn):
         m = conn.execute("SELECT * FROM messages WHERE id=?",
                          (message_id,)).fetchone()
@@ -232,17 +232,21 @@ def pending_for(conn: sqlite3.Connection, bot: str) -> list:
 
 def mark_done(conn: sqlite3.Connection, ids, actor: str) -> None:
     """Close messages manually (inbox hygiene)."""
+    rows = []
+    for i in ids:
+        r = conn.execute("SELECT * FROM messages WHERE id=?", (i,)).fetchone()
+        if r is None:
+            raise KeyError(f"message {i}")
+        if r["status"] not in ("queued", "claimed", "failed"):
+            raise ValueError(
+                f"message {i} is {r['status']!r}, not queued, claimed or failed")
+        if actor not in ("admin", "cli") and actor != r["to_bot"]:
+            activity.record(conn, actor, "auth.refused", "message done")
+            raise PermissionError(
+                f"only {r['to_bot']}, admin or cli may close message {i}")
+        rows.append(i)
     with tx(conn):
-        for i in ids:
-            r = conn.execute("SELECT * FROM messages WHERE id=?", (i,)).fetchone()
-            if r is None:
-                raise KeyError(f"message {i}")
-            if r["status"] not in ("queued", "claimed", "failed"):
-                raise ValueError(
-                    f"message {i} is {r['status']!r}, not queued, claimed or failed")
-            if actor not in ("admin", "cli") and actor != r["to_bot"]:
-                raise PermissionError(
-                    f"only {r['to_bot']}, admin or cli may close message {i}")
+        for i in rows:
             conn.execute(
                 "UPDATE messages SET status='done', done_at=?, lease_until=NULL"
                 " WHERE id=?", (utcnow(), i))
@@ -251,6 +255,7 @@ def mark_done(conn: sqlite3.Connection, ids, actor: str) -> None:
 
 def retry_failed(conn: sqlite3.Connection, message_id: int, actor: str) -> None:
     if actor not in ("admin", "cli"):
+        activity.record(conn, actor, "auth.refused", "message retry")
         raise PermissionError("only admin or cli may retry a failed message")
     with tx(conn):
         r = conn.execute("SELECT * FROM messages WHERE id=?",
@@ -280,8 +285,8 @@ def complete(conn: sqlite3.Connection, ids) -> None:
 
 # ---- CLI ----
 
-def _actor() -> str:
-    return resolve_from(None)
+def _who(conn):
+    return activity.caller(conn)
 
 
 def _run(fn):
@@ -298,7 +303,7 @@ def _run(fn):
 
 def _cmd_send(args):
     def go(cfg, conn):
-        frm = resolve_from(args.frm)
+        frm = resolve_from(conn, args.frm, command="send")
         mid = send(conn, frm, args.to, args.subject, args.body,
                    item_id=args.item, kind=args.kind, priority=args.priority,
                    level=args.level, effort=args.effort,
@@ -318,7 +323,7 @@ def _cmd_ask(args):
     def go(cfg, conn):
         with open(args.handoff_file) as f:
             handoff = f.read()
-        frm = resolve_from(args.frm)
+        frm = resolve_from(conn, args.frm, command="ask")
         mid = ask(cfg, conn, frm, args.to, args.item, args.question, handoff)
         if not mid:
             print("error: hop limit reached; not delivered, Admin was told",
@@ -331,7 +336,7 @@ def _cmd_ask(args):
 
 def _cmd_reply(args):
     def go(cfg, conn):
-        frm = resolve_from(args.frm)
+        frm = resolve_from(conn, args.frm, command="reply")
         print(reply(conn, frm, args.message_id, args.body, file=args.file,
                     hop_limit=cfg.hop_limit, chain_window_s=cfg.chain_window_s,
                     home=cfg.home))
@@ -341,7 +346,11 @@ def _cmd_reply(args):
 
 def _cmd_inbox(args):
     def go(cfg, conn):
-        bot = args.bot or resolve_from(args.frm)
+        who = _who(conn)
+        bot = args.bot or args.frm or (who.actor if who.actor != "cli" else "cli")
+        if who.actor not in ("admin", "cli") and bot != who.actor:
+            activity.refuse(conn, who, "inbox",
+                            "cannot read another bot's inbox")
         for r in pending_for(conn, bot):
             print(f"{r['id']}\t{r['status']}\t{r['from_bot']}\t{r['item_id'] or '-'}"
                   f"\t{ct_display(r['created_at'])}\t{r['subject']}")
@@ -353,26 +362,25 @@ def _cmd_inbox(args):
 
 def _cmd_done(args):
     def go(cfg, conn):
-        mark_done(conn, args.ids, _actor())
+        mark_done(conn, args.ids, _who(conn).actor)
         return 0
     return _run(go)
 
 
 def _cmd_retry(args):
     def go(cfg, conn):
-        retry_failed(conn, args.message_id, _actor())
+        retry_failed(conn, args.message_id, _who(conn).actor)
         return 0
     return _run(go)
 
 
 def register(subparsers) -> None:
-    me = _actor()
     s = subparsers.add_parser("send", help="send a message to a bot")
     s.add_argument("to")
     s.add_argument("subject")
     s.add_argument("body")
-    s.add_argument("--from", dest="frm", default=me,
-                   help="ignored when CB_BOT is set (forced to that bot)")
+    s.add_argument("--from", dest="frm",
+                   help="sender when run from the shell; a bot session sends as itself")
     s.add_argument("--item")
     s.add_argument("--kind", default="note", choices=_SEND_KINDS)
     s.add_argument("--priority", default="normal", choices=("normal", "urgent"))
@@ -387,20 +395,20 @@ def register(subparsers) -> None:
     a.add_argument("question")
     a.add_argument("--handoff-file", required=True,
                    help="file holding what you were doing and what to do on the answer")
-    a.add_argument("--from", dest="frm", default=me,
-                   help="ignored when CB_BOT is set (forced to that bot)")
+    a.add_argument("--from", dest="frm",
+                   help="sender when run from the shell; a bot session sends as itself")
     a.set_defaults(func=_cmd_ask)
     r = subparsers.add_parser("reply", help="answer a message")
     r.add_argument("message_id", type=int)
     r.add_argument("body")
     r.add_argument("--file", help="path of a longer answer")
-    r.add_argument("--from", dest="frm", default=me,
-                   help="ignored when CB_BOT is set (forced to that bot)")
+    r.add_argument("--from", dest="frm",
+                   help="sender when run from the shell; a bot session sends as itself")
     r.set_defaults(func=_cmd_reply)
     i = subparsers.add_parser("inbox", help="unfinished messages for a bot")
     i.add_argument("--bot")
-    i.add_argument("--from", dest="frm", default=me,
-                   help="ignored when CB_BOT is set (forced to that bot)")
+    i.add_argument("--from", dest="frm",
+                   help="bot whose inbox to show when run from the shell")
     i.add_argument("--full", action="store_true")
     i.set_defaults(func=_cmd_inbox)
     mp = subparsers.add_parser("message", help="finish or retry messages")

@@ -2,7 +2,6 @@
 (they come from AUTOINCREMENT row numbers, so archiving or deleting a row
 cannot free a number)."""
 import argparse
-import os
 import re
 import sqlite3
 import sys
@@ -180,23 +179,9 @@ def open_items(conn: sqlite3.Connection,
         f"{extra} {_OPEN_ORDER}").fetchall()
 
 
-# Decisions bind to an Owner chat/live session (or a captured owner request).
-# Bot-only runs must not mint or spend decision IDs.
+# Decisions are recorded only from an Owner session (see the CLI). Spending one
+# still requires that provenance on the row.
 OWNER_DECISION_ACTORS = frozenset({"admin", "cli", "owner"})
-OWNER_SESSION_LANES = frozenset({"chat", "live"})
-
-
-def owner_session_ok(conn: sqlite3.Connection, session: str) -> bool:
-    """True when `session` is an Owner chat/live run or a captured request."""
-    if not isinstance(session, str) or not session.strip():
-        return False
-    if conn.execute(
-            "SELECT 1 FROM runs WHERE session_id=? AND lane IN ('chat','live')"
-            " LIMIT 1", (session,)).fetchone():
-        return True
-    return bool(conn.execute(
-        "SELECT 1 FROM owner_requests WHERE session_id=? LIMIT 1",
-        (session,)).fetchone())
 
 
 def require_owner_decision(conn: sqlite3.Connection, decision_id: str):
@@ -228,15 +213,6 @@ def decide(conn: sqlite3.Connection, title: str, quote: str, said_at: str,
             "only Admin or the Owner may record decisions")
     if not isinstance(session, str) or not session.strip():
         raise ValueError("a decision needs the Owner session id")
-    if not owner_session_ok(conn, session):
-        raise PermissionError(
-            "decision session must be an Owner chat/live session "
-            "or a captured owner request")
-    caller_session = os.environ.get("CB_SESSION_ID") or ""
-    if actor != "cli" or caller_session:
-        if caller_session != session:
-            raise PermissionError(
-                "decision session must match this session (CB_SESSION_ID)")
     with tx(conn):
         cur = conn.execute(
             "INSERT INTO decisions(title, quote, said_at, session, recorded_by,"
@@ -358,9 +334,13 @@ def _cmd_waiting_on_owner(args):
 
 def _cmd_decision_record(args):
     def go(cfg, conn):
-        session = args.session or os.environ.get("CB_SESSION_ID", "")
+        who = activity.caller(conn)
+        if not activity.allows_owner(who):
+            activity.refuse(conn, who, "decision record",
+                            "only an Owner session may record a decision")
+        session = who.session if who.actor != "cli" else f"cli:{utcnow()}"
         print(decide(conn, args.title, args.quote, args.said_at or utcnow(),
-                     session, _actor()))
+                     session, who.actor))
         return 0
     return _run(go)
 
@@ -443,8 +423,6 @@ def register(subparsers) -> None:
     rec.add_argument("title")
     rec.add_argument("--quote", required=True, help="the Owner's exact words")
     rec.add_argument("--said-at", help="ISO 8601; default now")
-    rec.add_argument("--session",
-                     help="default: $CB_SESSION_ID, set in every session")
     rec.set_defaults(func=_cmd_decision_record)
     shw = dsub.add_parser("show")
     shw.add_argument("id")

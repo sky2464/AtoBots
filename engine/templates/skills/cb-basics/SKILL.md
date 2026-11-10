@@ -54,7 +54,7 @@ command. Everything you do through `cb` is recorded under your name.
   need to find.
 - Memory is the file `MEMORY.md` in your working folder. Keep it short and
   current. Never put a secret in it.
-- `$CB_SESSION_ID` is your session's ID, for `cb decision record --session`.
+- A decision is bound to this session. Record it with `cb decision record`.
 
 ## Secrets
 

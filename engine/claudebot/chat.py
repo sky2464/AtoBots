@@ -322,9 +322,23 @@ def _write_private(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
+def _rollover_allowed(conn):
+    """The open Owner chat, or a person at the shell."""
+    who = activity.caller(conn)
+    if who.actor == "cli":
+        return who
+    if who.session and conn.execute(
+            "SELECT 1 FROM runs WHERE session_id=? AND ended_at IS NULL"
+            " AND lane IN ('chat','live')", (who.session,)).fetchone():
+        return who
+    activity.refuse(conn, who, "chat-rollover",
+                    "only the open Owner chat may roll over")
+
+
 def rollover(cfg: Config, conn, summary: str, kill=os.kill) -> None:
     """Store the summary, mark the rollover and stop claude so chat_loop can
     restart it. Raises ValueError when nothing can be rolled over."""
+    who = _rollover_allowed(conn)
     if not isinstance(summary, str) or not summary.strip():
         raise ValueError("the summary is empty")
     if not os.environ.get(STATE_ENV) and not owner_connected(cfg):
@@ -337,7 +351,7 @@ def rollover(cfg: Config, conn, summary: str, kill=os.kill) -> None:
     chat_dir(cfg).mkdir(mode=0o700, exist_ok=True)
     _write_private(rollover_path(cfg), summary)
     _write_private(marker_path(cfg), uuid.uuid4().hex + "\n")
-    activity.record(conn, os.environ.get("CB_BOT", "cli"), "chat.rollover",
+    activity.record(conn, who.actor, "chat.rollover",
                     "chat rollover requested")
     try:
         kill(pid, signal.SIGTERM)
@@ -607,7 +621,7 @@ def _cmd_rollover(args) -> int:
             rollover(cfg, conn, summary)
         finally:
             conn.close()
-    except (ValueError, OSError) as e:
+    except (ValueError, OSError, PermissionError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
     print("Rolling over: the chat restarts in a moment with your summary.")

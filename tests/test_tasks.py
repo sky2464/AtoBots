@@ -1,8 +1,12 @@
+import io
 import json
+import os
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "engine"))
 
@@ -242,6 +246,33 @@ class CliTests(TasksBase):
                           "--check", "c"])
         self.assertEqual((b.to, b.item, b.inputs, b.outputs), (
             "scout", "T-0001", ["a"], ["b"]))
+
+    def test_finish_follows_the_caller(self):
+        mid = self.task()
+        self.conn.execute(
+            "INSERT INTO runs(bot, session_id, lane, started_at) VALUES"
+            " ('backend','norm-b','normal','2026-11-10T00:00:00+00:00'),"
+            " ('scout','norm-s','normal','2026-11-10T00:00:00+00:00')")
+
+        def run(session):
+            err, out = io.StringIO(), io.StringIO()
+            env = {"CLAUDEBOT_HOME": str(self.cfg.home), "CB_BOT": "admin",
+                   "CB_SESSION_ID": session}
+            with mock.patch.dict(os.environ, env), redirect_stdout(out), \
+                    redirect_stderr(err):
+                rc = cli.main(["task", "finish", str(mid), "--status", "failed"])
+            return rc, out.getvalue(), err.getvalue()
+
+        rc, _, err = run("norm-b")
+        self.assertEqual(rc, 1)
+        self.assertIn("error:", err)
+        self.assertFalse(tasks.finished(self.conn, mid))
+        self.assertEqual(self.conn.execute(
+            "SELECT detail FROM activity WHERE kind='auth.refused'"
+            ).fetchone()["detail"], "task finish")
+        rc, _, err = run("norm-s")
+        self.assertEqual((rc, err), (0, ""))
+        self.assertTrue(tasks.finished(self.conn, mid))
 
     def test_render_names_the_finish_command(self):
         text = tasks.render(self.task_body(), 12)

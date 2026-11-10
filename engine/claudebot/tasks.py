@@ -248,7 +248,7 @@ def _run(fn):
     conn = connect(cfg)
     try:
         return fn(cfg, conn)
-    except (ValueError, KeyError, OSError) as e:
+    except (ValueError, KeyError, OSError, PermissionError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
     finally:
@@ -271,12 +271,14 @@ def _cmd_send(args):
 
 def _cmd_finish(args):
     def go(cfg, conn):
+        who = activity.caller(conn)
         m = conn.execute("SELECT to_bot FROM messages WHERE id=?",
                          (args.message_id,)).fetchone()
-        actor = _actor()
-        if m is not None and actor not in ("cli", m["to_bot"]):
-            raise ValueError(f"task {args.message_id} was sent to {m['to_bot']}, "
-                             f"not {actor}")
+        if m is not None and who.actor not in ("cli", m["to_bot"]):
+            activity.refuse(
+                conn, who, "task finish",
+                f"task {args.message_id} was sent to {m['to_bot']}, "
+                f"not {who.actor}")
         sent = finish_task(cfg, conn, args.message_id, args.status,
                            args.note or "")
         print(sent)

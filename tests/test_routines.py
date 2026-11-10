@@ -268,7 +268,7 @@ class RoutineTests(RoutinesBase):
             self.add_routine("nobody", "0 7 * * *", "p")
 
     def test_cli_add_list_off_on_rm(self):
-        env = {"CLAUDEBOT_HOME": str(self.cfg.home), "CB_BOT": "ceo"}
+        env = {"CLAUDEBOT_HOME": str(self.cfg.home), "CB_BOT": "admin"}
         rel = self.check_script("cli.sh", "exit 0\n")
 
         def run(*argv):
@@ -290,6 +290,35 @@ class RoutineTests(RoutinesBase):
         self.assertEqual(run("routine", "on", "1")[0], 0)
         self.assertEqual(run("routine", "rm", "1")[0], 0)
         self.assertEqual(run("routine", "list")[1].strip(), "")
+
+    def test_normal_lane_bot_may_only_change_its_own_routine(self):
+        bots.create(self.cfg, self.conn, "backend", role="b", soul="s",
+                    persona="p")
+        self.conn.execute(
+            "INSERT INTO runs(bot, session_id, lane, started_at) VALUES"
+            " ('backend','norm-1','normal','2026-11-10T00:00:00+00:00')")
+        env = {"CLAUDEBOT_HOME": str(self.cfg.home), "CB_BOT": "admin",
+               "CB_SESSION_ID": "norm-1"}
+
+        def run(*argv):
+            err = io.StringIO()
+            out = io.StringIO()
+            with mock.patch.dict("os.environ", env), redirect_stdout(out), \
+                    mock.patch("sys.stderr", err):
+                rc = cli.main(list(argv))
+            return rc, out.getvalue(), err.getvalue()
+
+        rc, _, err = run("routine", "add", "admin", "0 7 * * *", "morning")
+        self.assertEqual(rc, 1)
+        self.assertIn("error:", err)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM routines").fetchone()[0], 0)
+        self.assertEqual(self.conn.execute(
+            "SELECT detail FROM activity WHERE kind='auth.refused'"
+            ).fetchone()["detail"], "routine add")
+        rc, out, err = run("routine", "add", "backend", "0 8 * * *", "own")
+        self.assertEqual((rc, err), (0, ""))
+        self.assertIn("routine", out)
 
 
 if __name__ == "__main__":

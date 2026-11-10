@@ -337,6 +337,54 @@ class CliTests(BotsBase):
         rc, out = self.run_cli("bot", "check")
         self.assertEqual(rc, 0)
 
+    def test_normal_lane_bot_cannot_manage_bots(self):
+        self.ensure_admin()
+        self.new("backend")
+        self.conn.execute(
+            "INSERT INTO runs(bot, session_id, lane, started_at) VALUES"
+            " ('backend','norm-1','normal','2026-11-10T00:00:00+00:00'),"
+            " ('admin','live-1','live','2026-11-10T00:00:00+00:00')")
+        home = Path(self._tmp.name)
+        (home / "soul.md").write_text("soul text")
+        (home / "persona.md").write_text("persona text")
+        worker = {"CLAUDEBOT_HOME": str(self.cfg.home), "CB_BOT": "admin",
+                  "CB_SESSION_ID": "norm-1"}
+        owner = {"CLAUDEBOT_HOME": str(self.cfg.home), "CB_SESSION_ID": "live-1"}
+
+        def run(env, *argv):
+            err, out = io.StringIO(), io.StringIO()
+            with mock.patch.dict(os.environ, env), redirect_stdout(out), \
+                    mock.patch("sys.stderr", err):
+                rc = cli.main(list(argv))
+            return rc, out.getvalue(), err.getvalue()
+
+        rc, _, err = run(worker, "bot", "new", "extra", "--role", "r",
+                         "--soul-file", str(home / "soul.md"),
+                         "--persona-file", str(home / "persona.md"))
+        self.assertEqual(rc, 1)
+        self.assertIn("error:", err)
+        with self.assertRaises(KeyError):
+            bots.get(self.conn, "extra")
+        rc, _, err = run(worker, "bot", "set", "backend", "--model", "opus")
+        self.assertEqual(rc, 1)
+        self.assertEqual(bots.get(self.conn, "backend").model, self.cfg.default_model)
+        rc, _, err = run(worker, "bot", "set", "admin", "--role", "changed")
+        self.assertEqual(rc, 1)
+        self.assertNotEqual(bots.get(self.conn, "admin").role, "changed")
+        rc, _, err = run(worker, "bot", "retire", "backend")
+        self.assertEqual(rc, 1)
+        self.assertEqual(bots.get(self.conn, "backend").status, "active")
+        kinds = [r["detail"] for r in self.conn.execute(
+            "SELECT detail FROM activity WHERE kind='auth.refused' ORDER BY id")]
+        self.assertEqual(kinds, ["bot new", "bot set", "bot set", "bot retire"])
+
+        rc, _, err = run(owner, "bot", "set", "backend", "--model", "opus")
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(bots.get(self.conn, "backend").model, "opus")
+        rc, _, err = run(owner, "bot", "retire", "backend")
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(bots.get(self.conn, "backend").status, "retired")
+
 
 
 class StablePrefixTests(BotsBase):

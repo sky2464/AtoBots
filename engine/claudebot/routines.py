@@ -361,25 +361,31 @@ def wait_idle() -> None:
 
 # ---- CLI ------------------------------------------------------------------
 
-_actor = activity.actor
-
-
 def _run(fn):
     conn = connect(Config.load())
     try:
         return fn(conn)
-    except (ValueError, KeyError) as e:
+    except (ValueError, KeyError, PermissionError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
     finally:
         conn.close()
 
 
+def _guard(conn, bot: str, command: str):
+    who = activity.caller(conn)
+    if activity.allows_admin(who) or who.actor == bot:
+        return who
+    activity.refuse(conn, who, command,
+                    "only Admin, the Owner, or that bot may change this routine")
+
+
 def _cmd_add(args) -> int:
     def go(conn):
+        who = _guard(conn, args.bot, "routine add")
         cfg = Config.load()
         rid = add(conn, args.bot, args.cron, args.prompt, args.check,
-                  args.level, _actor(), home=cfg.home)
+                  args.level, who.actor, home=cfg.home)
         print(f"routine {rid} added; first run "
               f"{ct_display(_get(conn, rid)['next_due'])}")
         return 0
@@ -397,15 +403,31 @@ def _cmd_list(args) -> int:
     return _run(go)
 
 
+def _bot_of(conn, rid: int) -> str:
+    row = conn.execute("SELECT bot FROM routines WHERE id=?", (rid,)).fetchone()
+    if row is None:
+        raise KeyError(rid)
+    return row["bot"]
+
+
 def _toggle(enabled: bool):
+    command = "routine on" if enabled else "routine off"
+
     def cmd(args) -> int:
-        return _run(lambda conn: set_enabled(conn, args.id, enabled, _actor())
-                    or 0)
+        def go(conn):
+            who = _guard(conn, _bot_of(conn, args.id), command)
+            set_enabled(conn, args.id, enabled, who.actor)
+            return 0
+        return _run(go)
     return cmd
 
 
 def _cmd_rm(args) -> int:
-    return _run(lambda conn: remove(conn, args.id, _actor()) or 0)
+    def go(conn):
+        who = _guard(conn, _bot_of(conn, args.id), "routine rm")
+        remove(conn, args.id, who.actor)
+        return 0
+    return _run(go)
 
 
 def register(subparsers) -> None:

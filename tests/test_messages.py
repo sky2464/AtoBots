@@ -316,14 +316,63 @@ class MessagesCliTests(MessagesBase):
         self.assertEqual(rc, 1)
         self.assertIn("file", err)
 
-    def test_cb_bot_forces_from_ignores_spoof(self):
-        rc, out, _ = self.run_cli(
-            "send", "admin", "hi", "body", "--from", "admin",
-            env={"CB_BOT": "backend"})
+    def _open(self, bot, session, lane="normal"):
+        self.conn.execute(
+            "INSERT INTO runs(bot, session_id, lane, started_at) VALUES (?,?,?,?)",
+            (bot, session, lane, "2026-11-10T00:00:00+00:00"))
+
+    def test_normal_lane_cannot_spoof_from_and_own_send_works(self):
+        self._open("backend", "norm-1")
+        env = {"CB_BOT": "admin", "CB_SESSION_ID": "norm-1"}
+        rc, _, err = self.run_cli(
+            "send", "admin", "hi", "body", "--from", "admin", env=env)
+        self.assertEqual(rc, 1)
+        self.assertIn("error:", err)
+        self.assertEqual(self.count(), 0)
+        self.assertEqual(self.conn.execute(
+            "SELECT detail FROM activity WHERE kind='auth.refused'"
+            ).fetchone()["detail"], "send")
+        rc, out, err = self.run_cli("send", "admin", "hi", "body", env=env)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.msg(int(out.strip()))["from_bot"], "backend")
+
+    def test_cli_may_choose_from(self):
+        rc, out, err = self.run_cli(
+            "send", "backend", "hi", "body", "--from", "admin")
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.msg(int(out.strip()))["from_bot"], "admin")
+
+    def test_inbox_done_and_retry_follow_the_caller(self):
+        to_backend = messages.send(self.conn, "admin", "backend", "hello", "body")
+        to_admin = messages.send(self.conn, "backend", "admin", "ping", "body")
+        self._open("admin", "norm-a")
+        self._open("backend", "norm-b")
+        worker = {"CB_BOT": "admin", "CB_SESSION_ID": "norm-b"}
+        rc, _, err = self.run_cli("inbox", "--bot", "admin", env=worker)
+        self.assertEqual(rc, 1)
+        self.assertIn("error:", err)
+        self.assertEqual(self.conn.execute(
+            "SELECT detail FROM activity WHERE kind='auth.refused'"
+            " ORDER BY id DESC").fetchone()["detail"], "inbox")
+        rc, out, _ = self.run_cli("inbox", "--bot", "backend", env=worker)
         self.assertEqual(rc, 0)
-        m = self.msg(int(out.strip()))
-        self.assertEqual(m["from_bot"], "backend")
-        self.assertEqual(m["to_bot"], "admin")
+        self.assertIn("hello", out)
+        rc, _, _ = self.run_cli("message", "done", str(to_admin), env=worker)
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.msg(to_admin)["status"], "queued")
+        rc, _, err = self.run_cli("message", "done", str(to_backend), env=worker)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.msg(to_backend)["status"], "done")
+        self.conn.execute(
+            "UPDATE messages SET status='failed' WHERE id=?", (to_backend,))
+        rc, _, _ = self.run_cli("message", "retry", str(to_backend), env=worker)
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.msg(to_backend)["status"], "failed")
+        rc, _, err = self.run_cli(
+            "message", "retry", str(to_backend),
+            env={"CB_SESSION_ID": "norm-a"})
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.msg(to_backend)["status"], "queued")
 
     def test_library_rejects_reserved_spoof_when_bound(self):
         with mock.patch.dict(os.environ, {"CB_BOT": "backend"}):

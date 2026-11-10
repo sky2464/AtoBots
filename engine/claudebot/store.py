@@ -300,20 +300,34 @@ def use_env(cfg: Config, conn, actor: str, env_map: dict,
 
 # ---- CLI wiring -----------------------------------------------------------
 
-_actor = activity.actor
+def _order_flag(existing, requested):
+    """Keep the stored flag unless the command names one."""
+    if existing is not None and requested is None:
+        return bool(existing["owner_order_only"])
+    return bool(requested)
 
 
 def _cmd_add(args) -> int:
     cfg = Config.load()
-    value = getpass(f"Value for {args.name}: ")
+    conn = connect(cfg)
     try:
-        add(cfg, args.name, args.kind, value, args.owner_order_only)
+        who = activity.caller(conn)
+        existing = _read_index(cfg).get(args.name)
+        if existing is not None and not activity.allows_owner(who):
+            activity.refuse(conn, who, "secret add",
+                            "only an Owner session may replace a secret")
+        flag = _order_flag(existing, args.owner_order_only)
+        value = getpass(f"Value for {args.name}: ")
+        add(cfg, args.name, args.kind, value, flag)
+        activity.record(conn, who.actor, "secret.add", args.name)
+    except PermissionError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
     except (ValueError, RuntimeError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
-    conn = connect(cfg)
-    activity.record(conn, _actor(), "secret.add", args.name)
-    conn.close()
+    finally:
+        conn.close()
     print(f"stored {args.name} ({args.kind})")
     return 0
 
@@ -327,14 +341,22 @@ def _cmd_list(args) -> int:
 
 def _cmd_rm(args) -> int:
     cfg = Config.load()
+    conn = connect(cfg)
     try:
+        who = activity.caller(conn)
+        if not activity.allows_owner(who):
+            activity.refuse(conn, who, "secret rm",
+                            "only an Owner session may remove a secret")
         remove(cfg, args.name)
+        activity.record(conn, who.actor, "secret.rm", args.name)
+    except PermissionError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
     except KeyError:
         print(f"error: no secret named {args.name}", file=sys.stderr)
         return 1
-    conn = connect(cfg)
-    activity.record(conn, _actor(), "secret.rm", args.name)
-    conn.close()
+    finally:
+        conn.close()
     return 0
 
 
@@ -355,7 +377,8 @@ def _cmd_run(args) -> int:
     cfg = Config.load()
     conn = connect(cfg)
     try:
-        return run_with(cfg, conn, _actor(), env_map, cmd, args.decision)
+        return run_with(cfg, conn, activity.caller(conn).actor, env_map, cmd,
+                        args.decision)
     except (KeyError, PermissionError, RuntimeError, ValueError,
             UnicodeDecodeError) as e:
         print(f"error: {e}", file=sys.stderr)
@@ -370,7 +393,10 @@ def register(subparsers) -> None:
     a = sub.add_parser("add")
     a.add_argument("name")
     a.add_argument("--kind", required=True, choices=KINDS)
-    a.add_argument("--owner-order-only", action="store_true")
+    a.add_argument("--owner-order-only", action=argparse.BooleanOptionalAction,
+                   default=None,
+                   help="set or clear Owner's-order-only; replacing a secret "
+                        "keeps the current flag when this is omitted")
     a.set_defaults(func=_cmd_add)
     ls = sub.add_parser("list")
     ls.add_argument("--kind", choices=KINDS)
