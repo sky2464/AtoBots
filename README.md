@@ -133,7 +133,6 @@ in [docs/branch-cleanup.md](docs/branch-cleanup.md).
 
 - [Design specification](docs/superpowers/specs/2026-11-08-claudebot-engine-design.md): intent, roles, bot lifecycle, and safety rules
 - [Implementation plan](docs/superpowers/plans/2026-11-08-claudebot-engine.md): the build plan and task breakdown
-- [Acceptance notes](docs/superpowers/plans/acceptance-notes.md): what was tested on a live server and the results
 - [Deploy from a tag](docs/deploy.md)
 - [Branch cleanup](docs/branch-cleanup.md)
 - [Hygiene leftovers](docs/hygiene-leftovers.md): deferred dead-code notes (no security/cost work)
@@ -142,10 +141,8 @@ in [docs/branch-cleanup.md](docs/branch-cleanup.md).
 
 The engine itself is company-agnostic. The first live install on the Owner's VPS is:
 
-- **Company:** Atoosa Dev (`~/AtoosaDev`)
-- **Product:** DecisionTreeByNavid (YouTube channel)
-
-Older docs that say the company *is* DecisionTreeByNavid mean that product line; the install name is Atoosa Dev.
+- **Company:** `<COMPANY>` (`$CLAUDEBOT_HOME`)
+- **Product:** `<PRODUCT>`
 
 ## Safety principles
 

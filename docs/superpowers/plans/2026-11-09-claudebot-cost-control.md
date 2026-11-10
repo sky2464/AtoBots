@@ -171,7 +171,7 @@
 
 - [ ] **Step 1: Tests** — `test_is_bare_ack_true_cases` and `test_is_bare_ack_false_cases` ("yes please publish it" is False); `test_hook_blocks_ack_without_open_question`; `test_hook_keeps_ack_when_question_open` (and closes it); `test_live_prompt_and_persona_contain_ask_rules`.
 - [ ] **Step 2: Run**; expect FAIL.
-- [ ] **Step 3: Implement.** Before relying on the filter, the builder checks on the VPS (`ssh atoosa-vps`, read-only) that a Telegram channel event does pass through the `UserPromptSubmit` hook; if it does not, keep the code and the prompt rules, and say so in the commit message.
+- [ ] **Step 3: Implement.** Before relying on the filter, the builder checks on the VPS (`ssh <VPS_ALIAS>`, read-only) that a Telegram channel event does pass through the `UserPromptSubmit` hook; if it does not, keep the code and the prompt rules, and say so in the commit message.
 - [ ] **Step 4: Run** full suite; PASS.
 - [ ] **Step 5: Commit** `feat: ask the Owner less; drop bare acknowledgements`.
 

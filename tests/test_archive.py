@@ -42,7 +42,7 @@ class Base(unittest.TestCase):
             bots.create(self.cfg, self.conn, n, role=n, soul="s", persona="p")
 
     def make_run(self, bot="backend", sid="11111111-2222-3333-4444-555555555555",
-                 lines=None, project="-home-claude-Atoosa-bots-backend"):
+                 lines=None, project="-home-claude-company-bots-backend"):
         started = iso(0)
         cur = self.conn.execute(
             "INSERT INTO runs(bot, session_id, lane, started_at, ended_at,"
