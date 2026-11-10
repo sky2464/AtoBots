@@ -26,14 +26,39 @@ def banned_terms_from_env(environ=None):
 
 
 def company_text_hits(root, banned):
+    """Case-insensitive scan of files under `root` (used by the planted-word test)."""
+    needles = tuple(word.casefold() for word in banned if word)
     hits = []
     for p in Path(root).rglob("*"):
         if not p.is_file() or "__pycache__" in p.parts:
             continue
-        text = p.read_text(errors="ignore")
-        for word in banned:
-            if word in text:
-                hits.append(f"{word} in {p}")
+        folded = p.read_text(errors="ignore").casefold()
+        for original, word in zip(banned, needles):
+            if word in folded:
+                hits.append(f"{original} in {p}")
+    return hits
+
+
+def tracked_files():
+    listed = subprocess.check_output(
+        ["git", "ls-files", "-z"], cwd=ROOT)
+    for rel in listed.decode().split("\0"):
+        if not rel:
+            continue
+        path = ROOT / rel
+        if path.is_file():
+            yield rel, path
+
+
+def tracked_text_hits(banned):
+    """Case-insensitive scan of every tracked file."""
+    needles = tuple(word.casefold() for word in banned if word)
+    hits = []
+    for rel, path in tracked_files():
+        folded = path.read_text(errors="ignore").casefold()
+        for word in needles:
+            if word in folded:
+                hits.append(f"{word} in {rel}")
     return hits
 
 
@@ -250,9 +275,26 @@ class EnvFileTest(unittest.TestCase):
 class TemplatesTest(unittest.TestCase):
     def test_engine_has_no_company_text(self):
         banned = banned_terms_from_env()
+        ref = os.environ.get("GITHUB_REF_NAME", "")
         if not banned:
+            if ref == "main":
+                self.fail("CB_BANNED_TERMS is empty on main")
             self.skipTest("CB_BANNED_TERMS is unset")
-        self.assertEqual(company_text_hits(ROOT / "engine", banned), [])
+        self.assertEqual(tracked_text_hits(banned), [])
+
+    def test_tracked_files_have_no_addresses_or_public_keys(self):
+        ipv4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+        key = re.compile(r"ssh-(?:ed25519|rsa) AAAA")
+        allowed = {"127.0.0.1", "0.0.0.0"}
+        bad = []
+        for rel, path in tracked_files():
+            text = path.read_text(errors="ignore")
+            for match in ipv4.finditer(text):
+                if match.group(0) not in allowed:
+                    bad.append(f"{rel}: {match.group(0)}")
+            if key.search(text):
+                bad.append(f"{rel}: ssh public key")
+        self.assertEqual(bad, [])
 
     def test_banned_term_scan_flags_a_planted_word(self):
         self.assertEqual(banned_terms_from_env({}), ())

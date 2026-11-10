@@ -9,8 +9,46 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
       - name: Run unit tests
+        env:
+          CB_BANNED_TERMS: ${{ secrets.CB_BANNED_TERMS }}
         run: python3 -m unittest discover -s tests -v
+      - name: Scan commit messages
+        env:
+          CB_BANNED_TERMS: ${{ secrets.CB_BANNED_TERMS }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          python3 - <<'PY'
+          import os, subprocess, sys
+          raw = os.environ.get("CB_BANNED_TERMS", "")
+          words = [part.strip() for part in raw.split(",") if part.strip()]
+          ref = os.environ.get("GITHUB_REF_NAME", "")
+          event = os.environ.get("GITHUB_EVENT_NAME", "")
+          if not words:
+              if ref == "main" and event == "push":
+                  sys.exit("CB_BANNED_TERMS is empty on main")
+              print("skip: CB_BANNED_TERMS is unset")
+              sys.exit(0)
+          if event == "pull_request" and os.environ.get("BASE_SHA") and os.environ.get("HEAD_SHA"):
+              revision = f"{os.environ['BASE_SHA']}..{os.environ['HEAD_SHA']}"
+          else:
+              before = os.environ.get("BEFORE_SHA", "")
+              if before and set(before) != {"0"}:
+                  revision = f"{before}..HEAD"
+              else:
+                  revision = "-1"
+          log = subprocess.check_output(
+              ["git", "log", "--format=%s%n%b", revision], text=True, errors="replace")
+          folded = log.casefold()
+          if any(word.casefold() in folded for word in words):
+              sys.exit("a commit message contains a banned term")
+          PY
