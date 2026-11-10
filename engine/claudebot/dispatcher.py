@@ -302,7 +302,7 @@ class Dispatcher:
             if done:
                 messages.complete(conn, done)
             if pending:
-                self._release(conn, pending, now, usage_limit=True)
+                self._release(conn, pending, now)
                 for i in pending:
                     _log(conn, "message.no_progress",
                          f"message {i} not done: ok run with no reply/progress",
@@ -321,16 +321,23 @@ class Dispatcher:
 
     def _progress_ok(self, conn, m, run_id) -> bool:
         """True when this claimed message may be marked done after an ok run.
-        Replies are not stored as a foreign key; an answer/result later in the
-        same chain, a finished task, or item activity during the run counts."""
+        Progress must tie to this message: a task finish, a result for this
+        task, a direct answer (next hop on the chain), or item activity during
+        the run. Another message's answer on the same chain does not count."""
         if m["kind"] not in _ACTION_KINDS:
             return True
-        if m["chain_id"] and conn.execute(
-                "SELECT 1 FROM messages WHERE chain_id=? AND id>? AND"
-                " kind IN ('answer','result') LIMIT 1",
-                (m["chain_id"], m["id"])).fetchone():
-            return True
         if m["kind"] == "task" and tasks.finished(conn, m["id"]):
+            return True
+        if conn.execute(
+                "SELECT 1 FROM messages WHERE id>? AND kind='result'"
+                " AND dedupe_key=? LIMIT 1",
+                (m["id"], f"result:{m['id']}")).fetchone():
+            return True
+        if m["chain_id"] and conn.execute(
+                "SELECT 1 FROM messages WHERE chain_id=? AND id>? AND kind='answer'"
+                " AND hop=? AND to_bot=? AND from_bot=? LIMIT 1",
+                (m["chain_id"], m["id"], (m["hop"] or 0) + 1,
+                 m["from_bot"], m["to_bot"])).fetchone():
             return True
         if m["item_id"]:
             since = None
@@ -489,12 +496,14 @@ class Dispatcher:
         dv = conn.execute("PRAGMA data_version").fetchone()[0]
         if dv == self._dv and not self._dirty:
             return
-        self._dirty = False
         try:
             self.reindex_fn(self.cfg, conn)
         except Exception as e:  # noqa: BLE001
             _log(conn, "search.reindex_failed", f"{type(e).__name__}: {e}")
-        self._dv = conn.execute("PRAGMA data_version").fetchone()[0]
+            self._dirty = True
+        else:
+            self._dirty = False
+            self._dv = conn.execute("PRAGMA data_version").fetchone()[0]
 
     def _paused(self, conn, now) -> bool:
         r = conn.execute("SELECT value FROM meta WHERE key=?",
@@ -550,7 +559,7 @@ class Dispatcher:
                     f"Item {r['id']} ({r['title']}) was stuck in doing past "
                     f"the {self.cfg.lease_seconds}s lease with no live run. "
                     f"It was reverted to todo; owner {r['owner']} is not "
-                    "active.", f"stall:{r['id']}:{r['owner']}",
+                    "active.", f"stall:{r['id']}:{r['owner']}:{now[:10]}",
                     item_id=r["id"], now=now)
 
     def _wake_assigned(self, conn, now) -> None:
