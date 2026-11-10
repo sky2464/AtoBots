@@ -15,7 +15,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import activity, bots, items, messages
+from . import activity, bots, items, messages, usage
 from .config import Config
 from .db import tx, utcnow
 
@@ -298,4 +298,20 @@ def run(cfg: Config, conn: sqlite3.Connection, bot, msgs, lane: str,
             (sid, utcnow(), exit_code, reason, tin, tout, run_id))
         activity.record(conn, bot.name, "run.end",
                         f"{bot.name} run {run_id}: {reason}", str(run_id))
+    _record_usage(conn, bot, lane, msgs, run_id, data)
     return RunResult(run_id, sid, exit_code, reason, tin, tout)
+
+
+def _record_usage(conn, bot, lane, msgs, run_id, data) -> None:
+    """Write the run's token row. A ledger failure is logged as activity and
+    never fails the run."""
+    try:
+        trigger = msgs[0]["kind"] if msgs else "run"
+        usage.record(conn, bot=bot.name, lane=lane, trigger=trigger,
+                     ref=str(run_id), **usage.from_result(data))
+    except Exception as e:
+        try:
+            activity.record(conn, bot.name, "usage.record_failed",
+                            f"{type(e).__name__}: {e}", str(run_id))
+        except Exception:
+            pass
