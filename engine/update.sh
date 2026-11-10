@@ -285,3 +285,14 @@ if [ "$DOCTOR_STATUS" -ne 0 ]; then
     echo "cb doctor reported problems (listed above). The update itself finished and"
     echo "nothing was rolled back. See UPDATING.md, \"If cb doctor reports problems\"."
 fi
+
+# Keep the five newest pre-update database copies and delete the older ones.
+kept=0
+while IFS= read -r old_copy; do
+    [ -n "$old_copy" ] || continue
+    kept=$((kept + 1))
+    if [ "$kept" -gt 5 ]; then
+        rm -f -- "$old_copy"
+        echo "Deleted $(basename "$old_copy")"
+    fi
+done < <(ls -1t "$BACKUP_DIR"/pre-update-*.db 2>/dev/null || true)
