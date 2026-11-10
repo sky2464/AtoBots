@@ -3,13 +3,17 @@ check). The worker finishes it with `cb task finish`; the outcome goes back to
 the sender as a `result`. Tasks are ordinary messages, so the hop limit and the
 queue apply to them as to any other message.
 
-A worker can fail the same item twice. Then Admin is told once and the
-dispatcher stops waking the worker for that item (see dispatcher._wake_assigned).
+Finishing is recorded in the same transaction as the item's failure count, so
+a task counts as finished even when the result cannot be delivered. Failures
+on an item count consecutively: a successful `done` resets them. At
+ESCALATE_AT failures Admin is told once, and the dispatcher stops waking the
+worker for that item (see dispatcher._wake_assigned).
 """
 import json
 import os
 import sqlite3
 import sys
+from pathlib import Path
 
 from . import activity, bots, items, messages
 from .config import Config
@@ -20,16 +24,30 @@ SYSTEM = "system"
 ESCALATE_AT = 2
 STATUSES = ("done", "failed")
 _FAIL_PREFIX = "task.fail."
+_FINISHED_PREFIX = "task.finished."
 
 
 def _fail_key(item_id: str) -> str:
     return _FAIL_PREFIX + item_id
 
 
+def _finished_key(message_id: int) -> str:
+    return f"{_FINISHED_PREFIX}{message_id}"
+
+
+def _result_key(message_id: int) -> str:
+    return f"result:{message_id}"
+
+
 def failures(conn: sqlite3.Connection, item_id: str) -> int:
     r = conn.execute("SELECT value FROM meta WHERE key=?",
                      (_fail_key(item_id),)).fetchone()
     return int(r["value"]) if r else 0
+
+
+def finished(conn: sqlite3.Connection, message_id: int) -> bool:
+    return conn.execute("SELECT 1 FROM meta WHERE key=?",
+                        (_finished_key(message_id),)).fetchone() is not None
 
 
 def _parse(body: str) -> dict:
@@ -40,20 +58,43 @@ def _parse(body: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _paths(value, label: str) -> list:
+    """Paths relative to the company home, inside it: a list of non-empty text
+    entries, no absolute path, no `..`, and not the home itself."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"{label} must be a list of paths")
+    for p in value:
+        if not isinstance(p, str) or not p.strip():
+            raise ValueError(f"{label} entries must be non-empty text paths")
+        path = Path(p)
+        if path.is_absolute() or ".." in path.parts or not path.parts:
+            raise ValueError(f"{label} path must be relative to the company "
+                             f"home and inside it: {p!r}")
+    return list(value)
+
+
 def send_task(conn: sqlite3.Connection, frm: str, to: str, item_id: str,
-              goal: str, inputs, outputs, check: str) -> int:
+              goal: str, inputs, outputs, check: str, *,
+              cfg: Config | None = None) -> int:
     """Send a task to a worker-tier bot. Returns the message id (0 if the hop
-    limit stopped it)."""
+    limit stopped it). `cfg` gives the hop limit and chain window (defaults
+    when not given)."""
     if not isinstance(goal, str) or not goal.strip():
         raise ValueError("goal is required")
+    inputs = _paths(inputs, "inputs")
+    outputs = _paths(outputs, "outputs")
     if bots.get(conn, to).tier != "worker":
         raise ValueError(f"{to} is not a worker: tasks go to worker-tier bots")
     items.get(conn, item_id)
-    body = json.dumps({"goal": goal, "inputs": list(inputs or []),
-                       "outputs": list(outputs or []), "check": check or ""},
-                      ensure_ascii=False)
-    return messages.send(conn, frm, to, f"Task {item_id}: {goal[:80]}", body,
-                         item_id=item_id, kind="task")
+    body = json.dumps({"goal": goal, "inputs": inputs, "outputs": outputs,
+                       "check": check or ""}, ensure_ascii=False)
+    return messages.send(
+        conn, frm, to, f"Task {item_id}: {goal[:80]}", body, item_id=item_id,
+        kind="task",
+        hop_limit=cfg.hop_limit if cfg else Config.hop_limit,
+        chain_window_s=cfg.chain_window_s if cfg else Config.chain_window_s)
 
 
 def render(body: str, message_id: int) -> str:
@@ -75,22 +116,45 @@ def render(body: str, message_id: int) -> str:
 
 def wake_body(conn: sqlite3.Connection, item_id: str, to: str,
               fallback: str) -> str:
-    """Body of the wake sent to a worker for an item: the item's latest task
-    to that worker, rendered, when there is one; otherwise `fallback`."""
-    t = conn.execute(
-        "SELECT id, body FROM messages WHERE kind='task' AND item_id=? AND"
-        " to_bot=? ORDER BY id DESC LIMIT 1", (item_id, to)).fetchone()
-    if t is None:
+    """Body of the wake sent to a worker for an item. When an open task for
+    that worker is waiting (not yet finished), the wake only points at it: the
+    task itself is already queued to the worker and is shown in its packet.
+    Otherwise `fallback`."""
+    rows = conn.execute(
+        "SELECT id FROM messages WHERE kind='task' AND item_id=? AND to_bot=?"
+        " AND status IN ('queued','claimed') ORDER BY id DESC",
+        (item_id, to)).fetchall()
+    open_ids = [r["id"] for r in rows if not finished(conn, r["id"])]
+    if not open_ids:
         return fallback
-    text = render(t["body"], t["id"])
-    if len(text.encode()) > messages.MAX_BODY_BYTES:
-        return (f"{fallback}\n\nThe task is message {t['id']}: read it with "
-                "`cb inbox --full`.")
-    return text
+    mid = open_ids[0]
+    return (f"A task is waiting for you on {item_id}: message {mid}. Work it, "
+            f"then run cb task finish {mid} --status done|failed --note "
+            "\"what you did\".")
 
 
-def _result_key(message_id: int) -> str:
-    return f"result:{message_id}"
+def _missing(cfg: Config, body: str) -> list:
+    """Outputs that do not exist inside the company home. An entry that is not
+    text, is absolute, escapes the home (also through a symlink) or is not
+    there counts as missing."""
+    outs = _parse(body).get("outputs") or []
+    if not isinstance(outs, list):
+        return ["outputs"]
+    home = cfg.home.resolve()
+    missing = []
+    for p in outs:
+        if not isinstance(p, str) or not p.strip():
+            missing.append(str(p))
+            continue
+        try:
+            target = (home / p).resolve()
+            ok = (target != home and target.is_relative_to(home)
+                  and target.exists())
+        except (OSError, ValueError, RuntimeError):
+            ok = False
+        if not ok:
+            missing.append(p)
+    return missing
 
 
 def _bump(conn: sqlite3.Connection, item_id: str) -> int:
@@ -102,9 +166,11 @@ def _bump(conn: sqlite3.Connection, item_id: str) -> int:
 
 def finish_task(cfg: Config, conn: sqlite3.Connection, message_id: int,
                 status: str, note: str) -> int:
-    """Settle a task. `done` is checked: every output path must exist under
-    cfg.home, or the task is failed. Sends the sender a `result` and returns its
-    id (0 if the hop limit stopped it)."""
+    """Settle a task once. `done` is checked: every output must exist inside
+    cfg.home, or the task is failed. The finish, its failure count (or reset)
+    and the activity row are one transaction, so the task counts as finished
+    even if the result cannot be delivered. Returns the result's message id,
+    or 0 when it was not delivered (then `task.result_unsent` is recorded)."""
     if status not in STATUSES:
         raise ValueError(f"status must be one of: {', '.join(STATUSES)}")
     m = conn.execute("SELECT * FROM messages WHERE id=?", (message_id,)).fetchone()
@@ -112,16 +178,10 @@ def finish_task(cfg: Config, conn: sqlite3.Connection, message_id: int,
         raise KeyError(f"message {message_id}")
     if m["kind"] != "task":
         raise ValueError(f"message {message_id} is not a task")
-    if conn.execute("SELECT 1 FROM messages WHERE dedupe_key=?",
-                    (_result_key(message_id),)).fetchone():
-        raise ValueError(f"task {message_id} is already finished")
     item = m["item_id"]
-    missing = []
-    if status == "done":
-        missing = [p for p in _parse(m["body"]).get("outputs") or []
-                   if not (cfg.home / p).exists()]
-        if missing:
-            status = "failed"
+    missing = _missing(cfg, m["body"]) if status == "done" else []
+    if missing:
+        status = "failed"
     text = f"Task {message_id} on {item or '-'} finished: {status}."
     if missing:
         text += " Missing outputs: " + ", ".join(missing) + "."
@@ -129,27 +189,53 @@ def finish_task(cfg: Config, conn: sqlite3.Connection, message_id: int,
         text += f"\n\nWorker note: {note}"
     messages._check_body(text)
     with tx(conn):
-        n = _bump(conn, item) if status == "failed" and item else 0
+        if finished(conn, message_id):
+            raise ValueError(f"task {message_id} is already finished")
+        conn.execute("INSERT INTO meta(key, value) VALUES (?,?)",
+                     (_finished_key(message_id), status))
+        if item and status == "failed":
+            _bump(conn, item)
+        elif item:
+            conn.execute("DELETE FROM meta WHERE key=?", (_fail_key(item),))
         activity.record(conn, m["to_bot"], "task.finish",
                         f"{message_id}: {status}", str(message_id))
-    mid = messages.send(conn, m["to_bot"], m["from_bot"],
-                        f"Result: {item or message_id} {status}", text,
-                        kind="result", in_reply_to=message_id,
-                        dedupe_key=_result_key(message_id))
-    if n == ESCALATE_AT:
+    sent, reason = 0, None
+    try:
+        sent = messages.send(
+            conn, m["to_bot"], m["from_bot"],
+            f"Result: {item or message_id} {status}", text, kind="result",
+            in_reply_to=message_id, dedupe_key=_result_key(message_id),
+            hop_limit=cfg.hop_limit, chain_window_s=cfg.chain_window_s)
+        if not sent:
+            reason = "hop limit reached"
+    except (ValueError, KeyError) as e:
+        reason = str(e)
+    if reason:
+        activity.record(conn, SYSTEM, "task.result_unsent",
+                        f"task {message_id}: {reason}", str(message_id))
+    if item and status == "failed" and failures(conn, item) >= ESCALATE_AT:
         _escalate(conn, m, item)
-    return mid
+    return sent
 
 
 def _escalate(conn, m, item) -> None:
+    """Tell Admin once per item. A sender that is Admin gets the activity
+    record instead of a message."""
     detail = (f"{item} failed {ESCALATE_AT} times (task {m['id']}, worker "
               f"{m['to_bot']}). Look at the activity record for the task.finish "
               "entries, then fix the cause, reassign the item or tell the Owner.")
     if m["from_bot"] == ADMIN:
-        activity.record(conn, SYSTEM, "task.escalate", detail, item)
+        if not conn.execute("SELECT 1 FROM activity WHERE kind='task.escalate'"
+                            " AND ref=?", (item,)).fetchone():
+            activity.record(conn, SYSTEM, "task.escalate", detail, item)
         return
-    messages.send(conn, SYSTEM, ADMIN, f"Task failed twice on {item}", detail,
-                  kind="escalation", dedupe_key=f"task.escalate:{item}")
+    try:
+        messages.send(conn, SYSTEM, ADMIN, f"Task failed twice on {item}",
+                      detail, kind="escalation",
+                      dedupe_key=f"task.escalate:{item}")
+    except (ValueError, KeyError) as e:
+        activity.record(conn, SYSTEM, "task.escalate_unsent", f"{item}: {e}",
+                        item)
 
 
 # ---- CLI ----
@@ -173,7 +259,8 @@ def _run(fn):
 def _cmd_send(args):
     def go(cfg, conn):
         mid = send_task(conn, args.frm, args.to, args.item, args.goal,
-                        args.inputs or [], args.outputs or [], args.check)
+                        args.inputs or [], args.outputs or [], args.check,
+                        cfg=cfg)
         if not mid:
             print("error: hop limit reached; not delivered, Admin was told",
                   file=sys.stderr)
@@ -191,8 +278,9 @@ def _cmd_finish(args):
         if m is not None and actor not in ("cli", m["to_bot"]):
             raise ValueError(f"task {args.message_id} was sent to {m['to_bot']}, "
                              f"not {actor}")
-        mid = finish_task(cfg, conn, args.message_id, args.status, args.note or "")
-        print(mid)
+        sent = finish_task(cfg, conn, args.message_id, args.status,
+                           args.note or "")
+        print(sent)
         return 0
     return _run(go)
 
@@ -206,9 +294,9 @@ def register(subparsers) -> None:
     s.add_argument("--item", required=True)
     s.add_argument("--goal", required=True)
     s.add_argument("--input", dest="inputs", action="append",
-                   help="a file the worker reads (repeat)")
+                   help="a file the worker reads, relative to the company home (repeat)")
     s.add_argument("--output", dest="outputs", action="append",
-                   help="a file that must exist when done (repeat)")
+                   help="a file that must exist when done, relative to the company home (repeat)")
     s.add_argument("--check", required=True, help="how to tell it is right")
     s.add_argument("--from", dest="frm", default=me)
     s.set_defaults(func=_cmd_send)

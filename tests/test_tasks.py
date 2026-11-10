@@ -112,6 +112,125 @@ class FinishTaskTests(TasksBase):
             "SELECT * FROM activity WHERE kind='task.escalate'").fetchall()), 1)
 
 
+class ReviewRoundOneTests(TasksBase):
+    """Fix round 1: path escape, marker-based finish, reset, open-task wake."""
+
+    def write(self, rel, text="x"):
+        p = self.cfg.home / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+
+    def raw_task(self, outputs, item=None):
+        """A task message whose body was not checked by send_task."""
+        body = json.dumps({"goal": "g", "inputs": [], "outputs": outputs,
+                           "check": "c"})
+        return messages.send(self.conn, "backend", "scout", "t", body,
+                             item_id=item or self.item, kind="task")
+
+    def test_send_task_rejects_bad_output_paths(self):
+        bad = [["/etc/passwd"], ["../x"], ["work/../../x"], [""], ["."],
+               [5], "work/out.md", [None]]
+        for outputs in bad:
+            with self.subTest(outputs=outputs), self.assertRaises(ValueError):
+                tasks.send_task(self.conn, "backend", "scout", self.item,
+                                "g", [], outputs, "c")
+
+    def test_send_task_rejects_bad_input_paths(self):
+        for inputs in (["/etc/passwd"], ["../x"], "work/in.md", [""], [3]):
+            with self.subTest(inputs=inputs), self.assertRaises(ValueError):
+                tasks.send_task(self.conn, "backend", "scout", self.item,
+                                "g", inputs, [], "c")
+        self.assertEqual(self.to("scout", "task"), [])
+
+    def test_finish_treats_escaping_or_bad_outputs_as_missing(self):
+        outside = Path(self._tmp.name) / "outside.txt"
+        outside.write_text("x")
+        cases = [["/etc/hostname"], ["../outside.txt"], [5], "work/x.md",
+                 [None]]
+        for outputs in cases:
+            with self.subTest(outputs=outputs):
+                item = items.new(self.cfg, self.conn, "per case", "backend",
+                                 status="todo")
+                mid = self.raw_task(outputs, item=item)
+                sent = tasks.finish_task(self.cfg, self.conn, mid, "done", "")
+                self.assertIn("finished: failed", self.msg(sent)["body"])
+
+    def test_finish_done_with_symlink_out_of_home_is_missing(self):
+        outside = Path(self._tmp.name) / "secret.txt"
+        outside.write_text("x")
+        (self.cfg.home / "work").mkdir(parents=True, exist_ok=True)
+        (self.cfg.home / "work" / "link.txt").symlink_to(outside)
+        mid = self.raw_task(["work/link.txt"])
+        sent = tasks.finish_task(self.cfg, self.conn, mid, "done", "")
+        self.assertIn("finished: failed", self.msg(sent)["body"])
+
+    def test_failed_result_send_still_counts_and_refuses_refinish(self):
+        bots.set_status(self.conn, "backend", "retired", "admin")
+        mid = self.task()
+        sent = tasks.finish_task(self.cfg, self.conn, mid, "failed", "no")
+        self.assertEqual(sent, 0)  # result cannot reach the retired sender
+        self.assertEqual(tasks.failures(self.conn, self.item), 1)
+        self.assertEqual(len(self.conn.execute(
+            "SELECT * FROM activity WHERE kind='task.result_unsent'").fetchall()), 1)
+        with self.assertRaises(ValueError):
+            tasks.finish_task(self.cfg, self.conn, mid, "failed", "again")
+        self.assertEqual(tasks.failures(self.conn, self.item), 1)
+
+    def test_escalates_at_two_even_when_results_cannot_be_sent(self):
+        bots.set_status(self.conn, "backend", "retired", "admin")
+        for _ in range(2):
+            mid = self.task()
+            tasks.finish_task(self.cfg, self.conn, mid, "failed", "no")
+        esc = [m for m in self.to("admin") if m["kind"] == "escalation"]
+        self.assertEqual(len(esc), 1)
+        self.assertEqual(tasks.failures(self.conn, self.item), 2)
+
+    def test_hop_limit_zero_result_counts_once_and_refuses_refinish(self):
+        mid = self.task()
+        self.cfg.hop_limit = 0
+        sent = tasks.finish_task(self.cfg, self.conn, mid, "failed", "no")
+        self.assertEqual(sent, 0)
+        self.assertEqual(tasks.failures(self.conn, self.item), 1)
+        with self.assertRaises(ValueError):
+            tasks.finish_task(self.cfg, self.conn, mid, "failed", "again")
+        self.assertEqual(tasks.failures(self.conn, self.item), 1)
+        self.assertEqual(len(self.conn.execute(
+            "SELECT * FROM activity WHERE kind='task.result_unsent'").fetchall()), 1)
+
+    def test_send_task_uses_cfg_hop_limit(self):
+        self.cfg.hop_limit = 0
+        self.assertEqual(tasks.send_task(self.conn, "backend", "scout", self.item,
+                                         "g", [], [], "c", cfg=self.cfg), 0)
+
+    def test_success_resets_failures(self):
+        self.write("work/T-0001/out.md")
+        mid = self.task()
+        tasks.finish_task(self.cfg, self.conn, mid, "failed", "no")
+        self.assertEqual(tasks.failures(self.conn, self.item), 1)
+        mid2 = self.task()
+        tasks.finish_task(self.cfg, self.conn, mid2, "done", "")
+        self.assertEqual(tasks.failures(self.conn, self.item), 0)
+        mid3 = self.task()
+        tasks.finish_task(self.cfg, self.conn, mid3, "failed", "no")
+        self.assertEqual(tasks.failures(self.conn, self.item), 1)
+        self.assertEqual(self.to("admin"), [])  # counted from zero: no escalation
+
+    def test_wake_body_points_at_open_task_without_embedding(self):
+        mid = self.task()
+        body = tasks.wake_body(self.conn, self.item, "scout", "fallback")
+        self.assertIn(f"message {mid}", body)
+        self.assertIn(f"cb task finish {mid} --status done|failed", body)
+        self.assertNotIn("Goal:", body)
+        self.assertNotIn("list the files", body)
+
+    def test_wake_body_ignores_finished_task(self):
+        self.write("work/T-0001/out.md")
+        mid = self.task()
+        tasks.finish_task(self.cfg, self.conn, mid, "done", "")
+        self.assertEqual(tasks.wake_body(self.conn, self.item, "scout", "fallback"),
+                         "fallback")
+
+
 class CliTests(TasksBase):
     def test_cli_registers_task_commands(self):
         p = cli.build_parser()
