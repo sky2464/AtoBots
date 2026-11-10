@@ -317,6 +317,14 @@ class TemplatesTest(unittest.TestCase):
         self.assertIn("The conversation will restart.", update)
         self.assertIn("config get run_memory_max", install)
         self.assertIn("config get run_memory_max", update)
+        self.assertIn("pre-update-*.db", update)
+        self.assertIn("Deleted", update)
+        self.assertIn("-gt 5", update)
+        self.assertIn("claudebot.releaseKey", update)
+        self.assertIn('note: release tags are not verified (see UPDATING.md, "Verifying releases")', update)
+        self.assertIn("git tag -s", (ROOT / "UPDATING.md").read_text())
+        self.assertIn("cb: do not run as root", install)
+        self.assertNotIn('ln -sfn "$ENGINE_DIR/bin/cb" /usr/local/bin/cb', install)
 
 
 if __name__ == "__main__":

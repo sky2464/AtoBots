@@ -81,9 +81,16 @@ ln -sfn "$ENGINE_DIR/bin/cb" "$BIN_DIR/cb"
 echo "Linked $BIN_DIR/cb"
 # Also on the default PATH and in an env file, for `ssh host 'cb ...'`, which
 # never reads ~/.bashrc.
-sudo ln -sfn "$ENGINE_DIR/bin/cb" /usr/local/bin/cb
+# A root-owned wrapper, not a symlink into this clone: if root ever runs cb
+# it must refuse, and it must not execute a file the bots can edit.
+sudo tee /usr/local/bin/cb > /dev/null <<EOF
+#!/bin/sh
+[ "\$(id -u)" -ne 0 ] || { echo "cb: do not run as root" >&2; exit 1; }
+exec $ENGINE_DIR/bin/cb "\$@"
+EOF
+sudo chmod 755 /usr/local/bin/cb
 echo "CLAUDEBOT_HOME=$HOME_DIR" | sudo tee /etc/claudebot.env > /dev/null
-echo "Linked /usr/local/bin/cb and wrote /etc/claudebot.env"
+echo "Installed /usr/local/bin/cb and wrote /etc/claudebot.env"
 
 # 3. Shell settings, added only if absent.
 touch "$BASHRC"
