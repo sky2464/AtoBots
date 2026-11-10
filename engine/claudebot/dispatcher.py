@@ -137,6 +137,12 @@ class Dispatcher:
                 activity.record(conn, "system", "run.crashed",
                                 f"{r['bot']} run {r['id']} was open at startup",
                                 str(r["id"]))
+        # Models that disagree with the tier rule. Recorded, never changed:
+        # the Owner sets the model.
+        with tx(conn):
+            for bot, model, problem in bots.model_mismatches(conn):
+                activity.record(conn, "system", "model.mismatch",
+                                f"{bot} is on {model}: {problem}", bot)
 
     # ---- claim / release / finish ----
 

@@ -21,7 +21,10 @@ from .db import tx, utcnow
 
 CLAUDE_HOME = "/home/claude"
 LEVEL_ORDER = ("housekeeping", "normal", "deep", "heavy")
-LEVEL_MODEL = {"housekeeping": "haiku", "deep": "opus", "heavy": "opus"}
+# A level may lower a thinker's model, and only housekeeping does. No level
+# raises a model: deep and heavy keep the bot's own (they change lane and
+# effort, not model). Workers are already on haiku.
+LEVEL_MODEL = {"housekeeping": "haiku"}
 EFFORT_ORDER = ("low", "medium", "high", "xhigh", "max")
 
 # Text that marks a plan usage limit. Only the "hit your ... limit" family is
@@ -58,7 +61,9 @@ def settings_for(bot: bots.Bot, msgs) -> tuple:
     highest effort among its messages; unset effort falls back to the bot's."""
     levels = [m["level"] for m in msgs if m["level"] in LEVEL_ORDER]
     level = max(levels, key=LEVEL_ORDER.index, default="normal")
-    model = LEVEL_MODEL.get(level, bot.model)
+    model = bot.model
+    if bot.tier == "thinker":
+        model = LEVEL_MODEL.get(level, bot.model)
     efforts = [m["effort"] for m in msgs if m["effort"] in EFFORT_ORDER]
     effort = max(efforts, key=EFFORT_ORDER.index, default=bot.effort)
     return model, effort

@@ -630,6 +630,44 @@ class WakeTests(Base):
         self.assertEqual(self.system_notes(), [])
 
 
+class ModelMismatchStartTests(Base):
+    def test_startup_logs_model_mismatch(self):
+        # a thinker forced onto haiku by hand: the start records it once
+        self.conn.execute("UPDATE bots SET model='haiku' WHERE name='backend'")
+        self.conn.commit()
+        d = self.make()
+        d.startup()
+        rows = self.kinds("model.mismatch")
+        self.assertEqual(len(rows), 1)
+        self.assertIn("backend", rows[0]["detail"])
+        self.assertEqual(rows[0]["ref"], "backend")
+
+    def test_startup_skips_retired_bots(self):
+        self.conn.execute("UPDATE bots SET model='haiku', status='retired'"
+                          " WHERE name='backend'")
+        self.conn.commit()
+        self.make().startup()
+        self.assertEqual(self.kinds("model.mismatch"), [])
+
+
+class DoctorModelsTests(Base):
+    def test_doctor_lists_mismatch_and_is_quiet_when_ok(self):
+        from claudebot import doctor
+        self.assertNotIn("models", [f.key for f in doctor.checks(
+            self.cfg, self.conn, active_fn=lambda: True,
+            mem_fn=lambda: 4000, live_enabled_fn=lambda: False,
+            disk_usage_fn=lambda p: (100, 10, 90), track=False)])
+        self.conn.execute("UPDATE bots SET model='haiku' WHERE name='backend'")
+        self.conn.commit()
+        found = [f for f in doctor.checks(
+            self.cfg, self.conn, active_fn=lambda: True,
+            mem_fn=lambda: 4000, live_enabled_fn=lambda: False,
+            disk_usage_fn=lambda p: (100, 10, 90), track=False)
+            if f.key == "models"]
+        self.assertEqual(len(found), 1)
+        self.assertIn("backend", found[0].text)
+
+
 class StatusAndRoutineTests(Base):
     def test_routines_fn_called_each_tick_and_errors_do_not_stop_tick(self):
         seen = []

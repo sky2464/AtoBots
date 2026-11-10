@@ -33,7 +33,8 @@ WAKES_PER_DAY = 3       # most messages the doctor sends backend in 24 hours
 WAITING_HOURS = 48      # an item waiting on a bot this long is a finding
 # Findings that are the Owner's to act on: shown by `cb doctor` and in the chat
 # brief, never sent to a bot (a bot cannot add a remote).
-NO_WAKE = ("backup-remote", "archive-remote", "admin-live-token")
+# "models": the Owner decides a bot's model; nobody is woken to change it.
+NO_WAKE = ("backup-remote", "archive-remote", "admin-live-token", "models")
 # Every finding key the doctor can raise. `cb item new --finding` accepts only
 # these, so an item can only be tied to a finding that really exists.
 FINDING_KEYS = ("dispatcher", "admin-live", "admin-live-token", "disk",
@@ -267,6 +268,13 @@ def _db_checks(cfg: Config, conn: sqlite3.Connection, now: str,
     out.extend(_waiting_checks(conn, now))
     for msg in bots.check(cfg, conn):
         out.append(Finding(_bots_key(msg), f"Bot files: {msg}"))
+    mismatches = bots.model_mismatches(conn)
+    if mismatches:
+        out.append(Finding("models", "Models do not match the bot tiers: "
+                           + "; ".join(f"{b} on {m} ({p})"
+                                       for b, m, p in mismatches)
+                           + ". The Owner sets the model with cb bot set "
+                           "NAME --model MODEL."))
     return out
 
 
