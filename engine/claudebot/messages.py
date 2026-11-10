@@ -1,6 +1,6 @@
 """Messages between bots. A bot that asks another bot leaves a handoff note
 and may exit while it waits; the answer wakes it. Claiming is the
-dispatcher's job (Task 9); this module creates, answers and completes."""
+dispatcher's job; this module creates, answers and completes."""
 import argparse
 import os
 import sqlite3
@@ -15,9 +15,8 @@ from .db import connect, ct_display, tx, utcnow
 LEVELS = ("housekeeping", "normal", "deep", "heavy")
 MAX_BODY_BYTES = 4 * 1024
 SYSTEM = "system"
-# Reserved senders: a bot process (CB_BOT set) may not impersonate these.
-RESERVED_SENDERS = frozenset({SYSTEM, "admin"})
 _PENDING = ("queued", "claimed")
+_SEND_KINDS = ("note", "question", "answer", "task", "result")
 
 
 def _check_body(body) -> None:
@@ -83,15 +82,12 @@ def _insert(conn, frm, to, subject, body, item_id, kind, priority, level,
             raise KeyError(f"message {in_reply_to}")
         if item_id is None:
             item_id = prev["item_id"]
-    elif item_id is not None:
+    elif item_id is not None and frm != SYSTEM:
         items.get(conn, item_id)
-        chain_kinds = ("task",) if kind == "task" else None
-        sql = ("SELECT * FROM messages WHERE item_id=? AND chain_id IS NOT NULL")
-        if chain_kinds:
-            sql += f" AND kind IN ({','.join('?' * len(chain_kinds))})"
-        sql += " ORDER BY id DESC LIMIT 1"
-        prev = conn.execute(sql, (item_id, *chain_kinds) if chain_kinds
-                            else (item_id,)).fetchone()
+        prev = conn.execute(
+            "SELECT * FROM messages WHERE item_id=? AND chain_id IS NOT NULL"
+            " AND from_bot != 'system' ORDER BY id DESC LIMIT 1",
+            (item_id,)).fetchone()
     elif frm != SYSTEM and to != SYSTEM:
         # Bot↔bot traffic with no item and no reply link still chains when the
         # other side of the same pair spoke inside the window (ping-pong).
@@ -219,15 +215,12 @@ def reply(conn: sqlite3.Connection, frm: str, message_id: int, body: str,
                       m["item_id"], "answer", m["priority"], m["level"],
                       m["effort"], message_id, None, hop_limit,
                       now or utcnow(), chain_window_s)
-        ts = now or utcnow()
         if m["item_id"] and mid:
             conn.execute("UPDATE items SET waiting_on=NULL, updated_at=?"
                          " WHERE id=? AND waiting_on=?",
-                         (ts, m["item_id"], frm))
-            conn.execute(
-                "INSERT INTO activity(at, actor, kind, detail, ref) VALUES (?,?,?,?,?)",
-                (ts, frm, "item.unwaiting", f"{m['item_id']}: answered",
-                 m["item_id"]))
+                         (utcnow(), m["item_id"], frm))
+            activity.record(conn, frm, "item.unwaiting",
+                            f"{m['item_id']}: answered", m["item_id"])
     return mid
 
 
@@ -235,6 +228,42 @@ def pending_for(conn: sqlite3.Connection, bot: str) -> list:
     return conn.execute(
         "SELECT * FROM messages WHERE to_bot=? AND status IN ('queued','claimed')"
         " ORDER BY id", (bot,)).fetchall()
+
+
+def mark_done(conn: sqlite3.Connection, ids, actor: str) -> None:
+    """Close messages manually (inbox hygiene)."""
+    with tx(conn):
+        for i in ids:
+            r = conn.execute("SELECT * FROM messages WHERE id=?", (i,)).fetchone()
+            if r is None:
+                raise KeyError(f"message {i}")
+            if r["status"] not in ("queued", "claimed", "failed"):
+                raise ValueError(
+                    f"message {i} is {r['status']!r}, not queued, claimed or failed")
+            if actor not in ("admin", "cli") and actor != r["to_bot"]:
+                raise PermissionError(
+                    f"only {r['to_bot']}, admin or cli may close message {i}")
+            conn.execute(
+                "UPDATE messages SET status='done', done_at=?, lease_until=NULL"
+                " WHERE id=?", (utcnow(), i))
+            activity.record(conn, actor, "message.done", str(i), str(i))
+
+
+def retry_failed(conn: sqlite3.Connection, message_id: int, actor: str) -> None:
+    if actor not in ("admin", "cli"):
+        raise PermissionError("only admin or cli may retry a failed message")
+    with tx(conn):
+        r = conn.execute("SELECT * FROM messages WHERE id=?",
+                         (message_id,)).fetchone()
+        if r is None:
+            raise KeyError(f"message {message_id}")
+        if r["status"] != "failed":
+            raise ValueError(f"message {message_id} is not failed")
+        conn.execute(
+            "UPDATE messages SET status='queued', attempts=0, lease_until=NULL,"
+            " done_at=NULL WHERE id=?", (message_id,))
+        activity.record(conn, actor, "message.retry", str(message_id),
+                        str(message_id))
 
 
 def complete(conn: sqlite3.Connection, ids) -> None:
@@ -322,6 +351,20 @@ def _cmd_inbox(args):
     return _run(go)
 
 
+def _cmd_done(args):
+    def go(cfg, conn):
+        mark_done(conn, args.ids, _actor())
+        return 0
+    return _run(go)
+
+
+def _cmd_retry(args):
+    def go(cfg, conn):
+        retry_failed(conn, args.message_id, _actor())
+        return 0
+    return _run(go)
+
+
 def register(subparsers) -> None:
     me = _actor()
     s = subparsers.add_parser("send", help="send a message to a bot")
@@ -331,8 +374,8 @@ def register(subparsers) -> None:
     s.add_argument("--from", dest="frm", default=me,
                    help="ignored when CB_BOT is set (forced to that bot)")
     s.add_argument("--item")
-    s.add_argument("--kind", default="note")
-    s.add_argument("--priority", default="normal")
+    s.add_argument("--kind", default="note", choices=_SEND_KINDS)
+    s.add_argument("--priority", default="normal", choices=("normal", "urgent"))
     s.add_argument("--level", default="normal", choices=LEVELS)
     s.add_argument("--effort")
     s.add_argument("--in-reply-to", type=int)
@@ -360,3 +403,11 @@ def register(subparsers) -> None:
                    help="ignored when CB_BOT is set (forced to that bot)")
     i.add_argument("--full", action="store_true")
     i.set_defaults(func=_cmd_inbox)
+    mp = subparsers.add_parser("message", help="finish or retry messages")
+    ms = mp.add_subparsers(dest="message_cmd", required=True)
+    done = ms.add_parser("done", help="mark messages done")
+    done.add_argument("ids", nargs="+", type=int)
+    done.set_defaults(func=_cmd_done)
+    retry = ms.add_parser("retry", help="re-queue a failed message")
+    retry.add_argument("message_id", type=int)
+    retry.set_defaults(func=_cmd_retry)

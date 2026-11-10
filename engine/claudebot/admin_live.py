@@ -44,8 +44,6 @@ RESTART_DELAY = 10          # seconds before claude is started again
 MAX_DELAY = 300             # longest back-off
 QUICK_SECONDS = 60          # a session shorter than this counts as a failure
 STOP_WAIT = 30              # how long `cb admin run` waits for the session
-CACHE_TTL_VAR = "CLAUDE_CODE_PROMPT_CACHE_TTL"  # claude: "5m" or "1h"
-CACHE_TTL = "1h"
 
 LIVE_PROMPT = """# This session: always-on Admin with Telegram
 
@@ -77,7 +75,12 @@ him to speak.
 - Never read, print or send the Telegram bot token file
   (~/.claude/channels/telegram/.env) or any token.
 - Work from the tracked items as usual (`cb open`, `cb request unhandled`).
-- Act without asking on reversible, low-risk work. Ask the Owner only for publishing, spending, signing up, commitments to other people, and real choices. Put every open question in one message and register it with `cb question open`. Never reply to a bare yes, ok or thumbs up that answers nothing; never ask 'should I proceed?' for work already requested.
+- Act without asking on reversible, low-risk work. Ask him only for
+  publishing, spending, signing up, commitments to other people, and real
+  choices. Put every open question in one message and register it with
+  `cb question open "<the question>"`. Never reply to a bare yes, ok or
+  thumbs up that answers nothing; never ask "should I proceed?" for work he
+  already requested.
 """
 
 
@@ -118,11 +121,7 @@ class Live:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         chat._write_private(path, f"{TOKEN_VAR}={value}\n")
         self.token_path = path
-        env = dict(self.env)
-        # Keep the prompt cache for an hour: a live session that goes quiet
-        # is cheaper to resume (rotation.py counts on this TTL).
-        env[CACHE_TTL_VAR] = CACHE_TTL
-        return env
+        return dict(self.env)
 
     def cleanup(self) -> None:
         """Remove the token file this process wrote (and scrub leftovers)."""
@@ -144,7 +143,8 @@ class Live:
         if summary is not None:
             parts.append(
                 "# Continuing an earlier session\n\nThe earlier session grew "
-                "long and was restarted. Your own summary of it follows. Carry "
+                "long and was restarted. Summary built by the engine from the "
+                "record (it has no conversation text). Carry "
                 "on from it; do not greet the Owner as if this were new.\n\n"
                 + summary[:chat.SUMMARY_PROMPT_CAP])
         return "\n\n".join(parts)
@@ -208,21 +208,6 @@ def state_dir(cfg: Config) -> Path:
     return cfg.home / STATE_DIRNAME
 
 
-def alerts_dir(cfg: Config) -> Path:
-    """Local out-of-band notices for live Admin / Owner (not the message queue)."""
-    return state_dir(cfg) / "alerts"
-
-
-def write_alert(cfg: Config, key: str, text: str, now: str | None = None) -> Path:
-    """Write a local alert file. Survives dispatcher-down (doctor / surface)."""
-    d = alerts_dir(cfg)
-    d.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path = d / f"{key}.txt"
-    stamp = now or utcnow()
-    chat._write_private(path, f"{stamp}\n{text.rstrip()}\n")
-    return path
-
-
 def access_allow_from() -> list:
     """Owner Telegram ids from the channel access file, or []."""
     base = os.environ.get("TELEGRAM_STATE_DIR")
@@ -283,15 +268,23 @@ def _telegram_post(token: str, chat_id, text: str) -> None:
 
 
 def surface(cfg: Config, text: str, *, key: str = "admin-queue",
-            conn=None, now: str | None = None, post=None) -> Path:
-    """Surface a notice to live Admin / Owner: local alert file, then Telegram
-    when a token is available. Used when the dispatcher skips a second Admin."""
-    path = write_alert(cfg, key, text, now=now)
+            conn=None, now: str | None = None, post=None) -> None:
+    """Type a one-line `[system]` notice into always-on Admin's tmux session.
+    Fall back to Telegram only when tmux is unavailable."""
+    line = "[system] " + " ".join(text.replace("\r", "\n").split())
+    try:
+        subprocess.run(["tmux", "send-keys", "-t", SESSION, "-l", line],
+                       check=True, capture_output=True, text=True)
+        subprocess.run(["tmux", "send-keys", "-t", SESSION, "Enter"],
+                       check=True, capture_output=True, text=True)
+        return None
+    except (OSError, subprocess.CalledProcessError):
+        pass
     try:
         notify_telegram(cfg, f"ClaudeBot: {text}", conn=conn, post=post)
     except Exception:  # noqa: BLE001  # never block the dispatcher
         pass
-    return path
+    return None
 
 
 def _env_for_claude(cfg: Config) -> dict:
@@ -318,7 +311,17 @@ def serve_loop(cfg: Config, live: Live, conn, sleep=None,
     """Run Admin until `live.stop` is set; restart it whenever it ends."""
     sleep = sleep or (lambda s: live.stop.wait(s))
     summary, token = chat._pending(cfg)  # left by an earlier session
-    fails, first = 0, True
+    fails, first, noted = 0, True, None
+
+    def no_token(why: str, delay) -> None:
+        # Once per reason, not on every retry: the record is append-only.
+        nonlocal noted
+        if why != noted:
+            noted = why
+            activity.record(conn, chat.BOT, "admin-live.no-token",
+                            f"{why}; not starting Admin, retrying every "
+                            f"{delay} to {MAX_DELAY} s until it is fixed")
+
     while not live.stop.is_set():
         t0 = clock()
         if not has_token(cfg):
@@ -326,9 +329,7 @@ def serve_loop(cfg: Config, live: Live, conn, sleep=None,
             # Telegram and look healthy. Record it, back off, look again.
             scrub_token(cfg)
             delay, fails = next_delay(0, fails)
-            activity.record(conn, chat.BOT, "admin-live.no-token",
-                            f"secret {TOKEN_SECRET} is not in the store; "
-                            f"not starting Admin, retrying in {delay} s")
+            no_token(f"secret {TOKEN_SECRET} is not in the store", delay)
             sleep(delay)
             continue
         try:
@@ -340,8 +341,7 @@ def serve_loop(cfg: Config, live: Live, conn, sleep=None,
             scrub_token(cfg)
             reason = "no-token"
             delay, fails = next_delay(0, fails)
-            activity.record(conn, chat.BOT, "admin-live.no-token",
-                            f"{e}; not starting Admin, retrying in {delay} s")
+            no_token(str(e), delay)
             if live.stop.is_set():
                 return
             sleep(delay)
@@ -352,7 +352,7 @@ def serve_loop(cfg: Config, live: Live, conn, sleep=None,
                             f"{type(e).__name__}: {e}")
             live.cleanup()
             scrub_token(cfg)
-        first = False
+        first, noted = False, None
         if live.stop.is_set():
             live.cleanup()
             scrub_token(cfg)
