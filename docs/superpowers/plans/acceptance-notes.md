@@ -1,7 +1,5 @@
 # Acceptance notes (Task 15, steps 1, 3 and checks)
 
-Supported deploy/update today: [docs/deploy.md](../../deploy.md) and `engine/update.sh` (full Git clone on the VPS).
-
 Date: 2026-11-09. Server: racknerd-5fc4050 (2 vCPU, 1973 MB RAM, 4 GB swap), Debian 13, Claude Code 2.1.319, Pro plan.
 Steps 2 and 4 to 12 of the brief need the Owner and were not run.
 

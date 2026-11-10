@@ -70,31 +70,6 @@ cb doctor
 cb version
 ```
 
-## Talking to Admin
-
-| Mode | Command | What it is |
-|---|---|---|
-| Terminal chat | `cb chat` | Interactive Admin in your SSH session; ends when you exit. |
-| Always-on + phone | `claudebot-admin` + Telegram | Long-lived Admin (`engine/install.sh --start` after `cb secret add telegram-bot`). Attach with `tmux attach -t admin-live` on the server when needed. |
-
-Admin ships with model **`sonnet`** (`ADMIN_MODEL` in `engine/claudebot/cli.py`); change with `cb bot set admin --model …` if you want more judgment or lower cost.
-
-Admin registers open questions with **`cb question open "…"`** and **`cb question close`** when answered. Bare “ok” / “yes” replies are ignored unless a question is open (cost-control hook).
-
-## Cost control commands
-
-| Command | Purpose |
-|---|---|
-| `cb usage` | Token totals, cache hit rate, and model-mismatch lines (`--since 24h` or `7d`; `--by bot`, `model`, or `trigger`). |
-| `cb task send …` / `cb task finish …` | Worker bots run delegated work; thinkers get `result` messages when tasks complete. |
-| `cb question open` / `close` | Tracks Owner questions so acknowledgements are not treated as approvals. |
-
-See [CHANGELOG.md](CHANGELOG.md) and the cost-control design doc under `docs/superpowers/specs/`.
-
-## Updating
-
-To move an install to a newer release, run `engine/update.sh` from the clone on the server. It backs up the database first and can be rolled back. See [UPDATING.md](UPDATING.md) for the steps, and [CHANGELOG.md](CHANGELOG.md) for what each release changes.
-
 ## Command overview
 
 Run `cb --help` or `cb <command> --help` for the full reference. Top-level commands:
@@ -109,7 +84,16 @@ Run `cb --help` or `cb <command> --help` for the full reference. Top-level comma
 | Search and notes | `search`, `note` |
 | Secrets | `secret` (`add` / `list` / `rm` / `run`; values at a hidden prompt) |
 | Operations | `dispatcher`, `status`, `backup` (`now` / `restore`), `archive` (`run` / `status` / `reindex` / `fetch`), `doctor` |
-| Owner sessions | `chat`, `chat-rollover`, `admin` (`serve` / `run` / `scrub-token`) |
+| Owner sessions | `question` (`open` / `close` / `list`), `chat`, `chat-rollover`, `admin` (`serve` / `run` / `scrub-token`) |
+
+## Configuration
+
+Limits and a few text settings can be overridden in `config.json` in the
+company home. Text settings: `run_user`, `run_home`, `claude_bin`,
+`run_memory_max`, `default_model` and `timezone` (schedules and displayed
+times; `America/Chicago` by default). Unknown keys are ignored, and a bad value
+stops `cb` with a clear message. See [CHANGELOG.md](CHANGELOG.md) for what
+each release changed.
 
 ## Repository layout
 
@@ -141,10 +125,9 @@ push and pull request.
 
 ## Deploy
 
-Keep a **full Git clone** on the server and ship with **`engine/update.sh`**
-after pushing a `v*` tag. Do not rsync `--delete` into the checkout (that can
-wipe `.git`). See [docs/deploy.md](docs/deploy.md). GitHub currently has only
-`main`; see [docs/branch-cleanup.md](docs/branch-cleanup.md).
+Ship a tagged checkout and rsync with `--delete` so the server matches the tag.
+See [docs/deploy.md](docs/deploy.md). Branch cleanup notes for stale remotes are
+in [docs/branch-cleanup.md](docs/branch-cleanup.md).
 
 ## Documentation
 
@@ -155,13 +138,14 @@ wipe `.git`). See [docs/deploy.md](docs/deploy.md). GitHub currently has only
 - [Branch cleanup](docs/branch-cleanup.md)
 - [Hygiene leftovers](docs/hygiene-leftovers.md): deferred dead-code notes (no security/cost work)
 
-## Owner inventory (not in Git)
+## First company install (ops)
 
-The engine is company-agnostic. Hostnames, SSH aliases, backup/archive repo
-names, and channel handles belong in a private copy of
-[docs/templates/server-inventory.md](docs/templates/server-inventory.md).
-Acceptance evidence for a live install is in
-[acceptance-notes.md](docs/superpowers/plans/acceptance-notes.md).
+The engine itself is company-agnostic. The first live install on the Owner's VPS is:
+
+- **Company:** Atoosa Dev (`~/AtoosaDev`)
+- **Product:** DecisionTreeByNavid (YouTube channel)
+
+Older docs that say the company *is* DecisionTreeByNavid mean that product line; the install name is Atoosa Dev.
 
 ## Safety principles
 
