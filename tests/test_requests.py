@@ -253,6 +253,33 @@ class RequestCliTests(RequestsBase):
             cli.main(["request", "unhandled"])
         self.assertEqual(buf.getvalue(), "")
 
+    def test_unhandled_shows_search_hint_for_matching_item(self):
+        rid = requests.capture(self.conn, "transcribe voice messages", "s")
+        t = items.new(self.cfg, self.conn, "voice message transcription", "admin")
+        from claudebot import search
+        search.reindex_records(self.cfg, self.conn)
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.cfg.home)}), \
+                mock.patch("sys.stdout", buf):
+            self.assertEqual(cli.main(["request", "unhandled"]), 0)
+        out = buf.getvalue()
+        self.assertIn(f"R-{rid}", out)
+        self.assertIn(f"maybe: cb request link R-{rid} {t}  (voice message transcription)", out)
+
+    def test_request_close_removes_from_unhandled_and_records_activity(self):
+        rid = requests.capture(self.conn, "what time is it?", "s")
+        self.assertEqual([r["id"] for r in requests.unhandled(self.conn)], [rid])
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.cfg.home)}), \
+                mock.patch("sys.stdout", buf):
+            rc = cli.main(["request", "close", f"R-{rid}", "--reason", "answered in chat"])
+            self.assertEqual(rc, 0)
+        self.assertEqual(requests.unhandled(self.conn), [])
+        act = self.conn.execute(
+            "SELECT * FROM activity WHERE kind='request.closed' ORDER BY id DESC").fetchone()
+        self.assertIsNotNone(act)
+        self.assertIn(f"R-{rid}: answered in chat", act["detail"])
+
 
 if __name__ == "__main__":
     unittest.main()

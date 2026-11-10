@@ -24,6 +24,13 @@ cb item new "Short title of the task" --owner admin
 cb request link 12 T-0007 T-0008
 ```
 
+Run inside a session, `cb item new` automatically links the new item to every
+unhandled request captured in the same session (use `--request R-N` to pick one,
+or `--no-request` to link none).
+
+A request that needs no item (such as a question answered directly in chat) can
+be closed with `cb request close R-N --reason "TEXT"`.
+
 One message with ten tasks becomes ten items. A request that is only a
 question, or already finished, still gets linked, to an item you close as done.
 

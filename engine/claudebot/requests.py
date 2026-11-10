@@ -45,6 +45,22 @@ def link(conn: sqlite3.Connection, request_id: int, item_ids: list) -> None:
         [(request_id, i) for i in item_ids])
 
 
+def close_request(conn: sqlite3.Connection, request_id: int, reason: str,
+                  actor: str = "cli") -> None:
+    request_id = _request_number(request_id)
+    r = conn.execute("SELECT * FROM owner_requests WHERE id=?",
+                     (request_id,)).fetchone()
+    if r is None:
+        raise KeyError(request_id)
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError("reason is required")
+    conn.execute(
+        "INSERT OR IGNORE INTO request_items(request_id, item_id) VALUES (?,?)",
+        (request_id, "R-CLOSED"))
+    activity.record(conn, actor, "request.closed",
+                    f"R-{request_id}: {reason.strip()}", f"R-{request_id}")
+
+
 def unhandled(conn: sqlite3.Connection) -> list:
     return conn.execute(
         "SELECT * FROM owner_requests r WHERE NOT EXISTS (SELECT 1 FROM"
@@ -332,9 +348,37 @@ def _cmd_link(args):
 
 def _cmd_unhandled(args):
     def go(cfg, conn):
+        from . import items, search
+        try:
+            search.reindex_records(cfg, conn)
+        except Exception:
+            pass
+        open_items = {row["id"]: row["title"] for row in items.open_items(conn)}
         for r in unhandled(conn):
             via = f"(via {r['source']}) " if r["source"] else ""
             print(f"R-{r['id']}\t{ct_display(r['received_at'])}\t{via}{r['text']}")
+            hits = []
+            try:
+                hits = [h for h in search.search(cfg, r["text"], kind="item", limit=10)
+                        if h.ref in open_items][:3]
+                if not hits:
+                    terms = search.re.findall(r"\w+", r["text"])
+                    if terms:
+                        expr = " OR ".join('"' + t + '"' for t in terms)
+                        sc = search._open(cfg)
+                        try:
+                            rows = sc.execute(
+                                "SELECT ref, title FROM docs WHERE docs MATCH ? AND kind='item'"
+                                " ORDER BY rank LIMIT 10", (expr,)).fetchall()
+                            hits = [r_row for r_row in rows if r_row["ref"] in open_items][:3]
+                        finally:
+                            sc.close()
+            except Exception:
+                hits = []
+            for h in hits:
+                ref = h.ref if hasattr(h, "ref") else h["ref"]
+                title = open_items.get(ref) or (h.title if hasattr(h, "title") else h["title"])
+                print(f"  maybe: cb request link R-{r['id']} {ref}  ({title})")
         return 0
     return _run(go)
 
@@ -369,6 +413,13 @@ def _cmd_question_list(args):
     return _run(go)
 
 
+def _cmd_close(args):
+    def go(cfg, conn):
+        close_request(conn, args.request_id, args.reason)
+        return 0
+    return _run(go)
+
+
 def register(subparsers) -> None:
     sp = subparsers.add_parser("request", help="Owner requests")
     sub = sp.add_subparsers(dest="request_cmd", required=True)
@@ -376,6 +427,10 @@ def register(subparsers) -> None:
     ln.add_argument("request_id", help="2 or R-2")
     ln.add_argument("items", nargs="+")
     ln.set_defaults(func=_cmd_link)
+    cl = sub.add_parser("close", help="close a request that needs no item")
+    cl.add_argument("request_id", help="2 or R-2")
+    cl.add_argument("--reason", required=True, help="why this needs no item")
+    cl.set_defaults(func=_cmd_close)
     un = sub.add_parser("unhandled")
     un.set_defaults(func=_cmd_unhandled)
     br = sub.add_parser("brief")
