@@ -16,7 +16,7 @@ git push origin v0.0.1
 
 ## Deploy to the VPS
 
-On the Mac (or any machine with `atoosa-vps` SSH access):
+On the Mac (or any machine with `<VPS_ALIAS>` SSH access):
 
 ```bash
 # 1. Check out the tag you intend to ship
@@ -30,18 +30,18 @@ rsync -a --delete \
   --exclude '__pycache__/' \
   --exclude '*.pyc' \
   ./engine/ ./tests/ \
-  atoosa-vps:~/ClaudeBot/
+  <VPS_ALIAS>:~/ClaudeBot/
 ```
 
 On the server:
 
 ```bash
-ssh atoosa-vps
+ssh <VPS_ALIAS>
 cd ~/ClaudeBot
 python3 -m unittest discover -s tests
 # Re-link / restart if install layout or units changed (they did in 0.0.1:
 # the units now name the account that runs install.sh):
-#   engine/install.sh --start "Atoosa Dev" /home/claude/AtoosaDev
+#   engine/install.sh --start "<COMPANY>" /home/claude/<COMPANY>
 sudo systemctl restart claudebot-dispatcher
 # If always-on Admin is enabled:
 #   sudo systemctl restart claudebot-admin
@@ -51,7 +51,7 @@ cb version   # expect 0.0.1 (or the tagged package version)
 
 Notes:
 
-- Company data lives under `CLAUDEBOT_HOME` (today `/home/claude/AtoosaDev`), not
+- Company data lives under `CLAUDEBOT_HOME` (for example `/home/claude/<COMPANY>`), not
   under `~/ClaudeBot`. rsync of the engine must not touch the company home.
 - Older deploys sometimes used `rsync` without `--delete`, which left removed
   Python modules on the server. Always use `--delete` for engine/tests.
@@ -60,6 +60,6 @@ Notes:
 
 ## Company naming
 
-- **Company (install):** Atoosa Dev (`~/AtoosaDev`)
-- **Product / line of business:** DecisionTreeByNavid (YouTube channel)
-- Engine docs and templates stay company-agnostic; only ops notes name Atoosa Dev.
+- **Company (install):** `<COMPANY>` (`$CLAUDEBOT_HOME`)
+- **Product / line of business:** `<PRODUCT>`
+- Engine docs and templates stay company-agnostic; only Owner-only ops notes name `<COMPANY>`.
