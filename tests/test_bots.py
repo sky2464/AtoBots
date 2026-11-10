@@ -261,3 +261,48 @@ class CliTests(BotsBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TierTests(BotsBase):
+    def test_create_defaults_tier_from_model(self):
+        self.assertEqual(self.new("runner", model="haiku").tier, "worker")
+        self.assertEqual(self.new("planner", model="opus").tier, "thinker")
+        self.assertEqual(self.new("explicit", model="haiku", tier="thinker").tier, "thinker")
+
+    def test_create_rejects_unknown_tier(self):
+        with self.assertRaises(ValueError):
+            self.new("odd", tier="boss")
+
+    def test_model_mismatches_flags_thinker_on_haiku_and_worker_on_sonnet(self):
+        self.new("planner", model="opus")
+        self.new("gofer", model="haiku")
+        self.new("badthinker", model="haiku", tier="thinker")
+        self.new("badworker", model="sonnet", tier="worker")
+        self.assertEqual(sorted(bots.model_mismatches(self.conn)), [
+            ("badthinker", "haiku", "thinker on haiku"),
+            ("badworker", "sonnet", "worker not on haiku"),
+        ])
+
+    def test_set_worker_must_be_existing_worker_bot(self):
+        self.new("planner", model="opus")
+        self.new("gofer", model="haiku")
+        self.new("boss", model="opus")
+        bots.update(self.cfg, self.conn, "planner", "admin", worker="gofer")
+        self.assertEqual(bots.get(self.conn, "planner").worker, "gofer")
+        for bad in ("planner", "boss", "nobody"):
+            with self.assertRaises(ValueError, msg=bad):
+                bots.update(self.cfg, self.conn, "planner", "admin", worker=bad)
+        bots.update(self.cfg, self.conn, "planner", "admin", worker="")
+        self.assertIsNone(bots.get(self.conn, "planner").worker)
+
+    def test_create_takes_worker(self):
+        self.new("gofer", model="haiku")
+        b = self.new("planner", model="opus", worker="gofer")
+        self.assertEqual(b.worker, "gofer")
+        with self.assertRaises(ValueError):
+            self.new("planner2", model="opus", worker="planner")
+        self.assertFalse((self.cfg.bots_dir / "planner2").exists())
+
+    def test_usage_table_exists(self):
+        self.assertTrue(self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage'").fetchone())

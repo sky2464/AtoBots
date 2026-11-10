@@ -6,12 +6,23 @@ from zoneinfo import ZoneInfo
 
 from .config import Config
 
+# Token use per run, one row per model call (cost control).
+USAGE_TABLE = """
+CREATE TABLE IF NOT EXISTS usage(
+  id INTEGER PRIMARY KEY, at TEXT, bot TEXT, model TEXT, lane TEXT,
+  trigger TEXT, ref TEXT, input_tokens INT, cache_write INT, cache_read INT,
+  output_tokens INT
+);
+"""
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS bots(
   name TEXT PRIMARY KEY, role TEXT, org TEXT, reports_to TEXT,
   model TEXT, effort TEXT, skills TEXT, mcp TEXT, plugins TEXT,
   status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','paused','retired')),
-  soul_sha TEXT, created_at TEXT, connectors INT DEFAULT 0
+  soul_sha TEXT, created_at TEXT, connectors INT DEFAULT 0,
+  tier TEXT NOT NULL DEFAULT 'thinker' CHECK(tier IN ('thinker','worker')),
+  worker TEXT
 );
 CREATE TABLE IF NOT EXISTS items(
   n INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE, status TEXT, owner TEXT,
@@ -56,7 +67,7 @@ BEGIN SELECT RAISE(ABORT, 'append-only'); END;
 CREATE TRIGGER IF NOT EXISTS activity_no_delete BEFORE DELETE ON activity
 BEGIN SELECT RAISE(ABORT, 'append-only'); END;
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
-"""
+""" + USAGE_TABLE
 
 _CT = ZoneInfo("America/Chicago")
 
@@ -80,6 +91,21 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE owner_requests ADD COLUMN source TEXT")
         except sqlite3.OperationalError:  # another process added it first
             pass
+    bcols = [r[1] for r in conn.execute("PRAGMA table_info(bots)")]
+    if bcols and "tier" not in bcols:
+        try:
+            conn.execute("ALTER TABLE bots ADD COLUMN tier TEXT NOT NULL "
+                         "DEFAULT 'thinker' CHECK(tier IN ('thinker','worker'))")
+        except sqlite3.OperationalError:  # another process added it first
+            pass
+        else:
+            conn.execute("UPDATE bots SET tier='worker' WHERE model='haiku'")
+    if bcols and "worker" not in bcols:
+        try:
+            conn.execute("ALTER TABLE bots ADD COLUMN worker TEXT")
+        except sqlite3.OperationalError:
+            pass
+    conn.execute(USAGE_TABLE)
 
 
 def init_db(cfg: Config) -> None:
