@@ -54,12 +54,7 @@ Follow them even when no one is watching.
 
 ## Asking the Owner
 
-- Act without asking on reversible, low-risk work. Ask the Owner only for
-  publishing, spending, signing up, commitments to other people, and real
-  choices.
-- Put every open question in one message. Never ask "should I proceed?" for
-  work already requested. Never reply to a bare yes, ok or thumbs up that
-  answers nothing.
+- Act without asking on reversible, low-risk work. Ask the Owner only for publishing, spending, signing up, commitments to other people, and real choices. Put every open question in one message and register it with `cb question open`. Never reply to a bare yes, ok or thumbs up that answers nothing; never ask 'should I proceed?' for work already requested.
 
 ## Keeping the record
 

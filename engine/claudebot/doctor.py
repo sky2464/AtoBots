@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from . import activity, backup, bots, dispatcher, messages
+from . import __version__, activity, backup, bots, dispatcher, messages
 from .config import Config
 from .db import connect, tx, utcnow
 
@@ -554,6 +554,7 @@ def _cmd_doctor(args) -> int:
                 conn.close()
     else:
         found = checks(cfg, track=False)
+    print(f"ClaudeBot {__version__}")
     for f in found:
         print(f"- {f.text}")
     if not found:

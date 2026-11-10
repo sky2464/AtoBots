@@ -44,6 +44,8 @@ RESTART_DELAY = 10          # seconds before claude is started again
 MAX_DELAY = 300             # longest back-off
 QUICK_SECONDS = 60          # a session shorter than this counts as a failure
 STOP_WAIT = 30              # how long `cb admin run` waits for the session
+CACHE_TTL_VAR = "CLAUDE_CODE_PROMPT_CACHE_TTL"  # claude: "5m" or "1h"
+CACHE_TTL = "1h"
 
 LIVE_PROMPT = """# This session: always-on Admin with Telegram
 
@@ -75,6 +77,7 @@ him to speak.
 - Never read, print or send the Telegram bot token file
   (~/.claude/channels/telegram/.env) or any token.
 - Work from the tracked items as usual (`cb open`, `cb request unhandled`).
+- Act without asking on reversible, low-risk work. Ask the Owner only for publishing, spending, signing up, commitments to other people, and real choices. Put every open question in one message and register it with `cb question open`. Never reply to a bare yes, ok or thumbs up that answers nothing; never ask 'should I proceed?' for work already requested.
 """
 
 
@@ -115,7 +118,11 @@ class Live:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         chat._write_private(path, f"{TOKEN_VAR}={value}\n")
         self.token_path = path
-        return dict(self.env)
+        env = dict(self.env)
+        # Keep the prompt cache for an hour: a live session that goes quiet
+        # is cheaper to resume (rotation.py counts on this TTL).
+        env[CACHE_TTL_VAR] = CACHE_TTL
+        return env
 
     def cleanup(self) -> None:
         """Remove the token file this process wrote (and scrub leftovers)."""

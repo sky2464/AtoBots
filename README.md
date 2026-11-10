@@ -70,6 +70,10 @@ cb doctor
 cb version
 ```
 
+## Updating
+
+To move an install to a newer release, run `engine/update.sh` from the clone on the server. It backs up the database first and can be rolled back. See [UPDATING.md](UPDATING.md) for the steps, and [CHANGELOG.md](CHANGELOG.md) for what each release changes.
+
 ## Command overview
 
 Run `cb --help` or `cb <command> --help` for the full reference. Top-level commands:

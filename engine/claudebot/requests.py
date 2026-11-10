@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sqlite3
+import string
 import sys
 from pathlib import Path
 
@@ -162,8 +163,65 @@ def _skip_command(conn, text: str) -> bool:
     return True
 
 
+# Bare acknowledgements: words and emoji that answer nothing on their own.
+_ACK_WORDS = ("yes", "y", "ok", "okay", "k", "thanks", "thx",
+              "\U0001F44D", "\U0001F44C", "\U0001F64F")  # thumbs up, ok hand, pray
+_ACK_SEP = "[\\s" + re.escape(string.punctuation + "\u2026\u201c\u201d\u2018\u2019\u2013\u2014") + "]*"
+_ACK = re.compile(
+    "^" + _ACK_SEP + "(?:" + "|".join(
+        re.escape(w) for w in sorted(_ACK_WORDS, key=len, reverse=True))
+    + ")" + _ACK_SEP + "(?:(?:" + "|".join(
+        re.escape(w) for w in sorted(_ACK_WORDS, key=len, reverse=True))
+    + ")" + _ACK_SEP + ")*$", re.IGNORECASE)
+
+
+def is_bare_ack(text: str) -> bool:
+    """True for a message made only of acknowledgements (yes, ok, thanks,
+    thumbs up, with or without punctuation), e.g. `Yes!` or `ok 👍`. False
+    for anything with other words, e.g. `yes please publish it`."""
+    if not isinstance(text, str):
+        return False
+    cleaned = text.replace("\ufe0f", "").strip()
+    return bool(cleaned) and _ACK.fullmatch(cleaned) is not None
+
+
+def _ack_ignored(conn, text: str, wrapped) -> bool:
+    """True when the whole message is a bare acknowledgement and no Owner
+    question is open, so it answers nothing and is refused. Any error gives
+    False: a broken check must never block a real message."""
+    try:
+        texts = [t for _, t in wrapped] if wrapped is not None else [text]
+        if not all(is_bare_ack(t) for t in texts):
+            return False
+        return conn.execute(
+            "SELECT 1 FROM owner_questions WHERE answered_at IS NULL"
+            " LIMIT 1").fetchone() is None
+    except Exception:
+        return False
+
+
+def _record_ack(conn, text: str, wrapped) -> None:
+    """Log one row for a refused acknowledgement. Any failure is swallowed:
+    the block must happen even when the activity row cannot be written."""
+    try:
+        ack = " ".join(t for _, t in wrapped) if wrapped is not None else text
+        activity.record(conn, "hook", "request.ack_ignored", ack[:40])
+    except Exception:
+        pass
+
+
+def _close_questions(conn) -> None:
+    """A saved message is the Owner's answer: close every open question."""
+    try:
+        conn.execute("UPDATE owner_questions SET answered_at=? WHERE"
+                     " answered_at IS NULL", (utcnow(),))
+    except Exception:
+        pass
+
+
 def _cmd_hook_prompt(args) -> int:
-    """UserPromptSubmit hook. No output, no AI cost, always exits 0."""
+    """UserPromptSubmit hook. No AI cost. Prints a block decision only for a
+    bare acknowledgement with no open question; otherwise always exits 0."""
     raw = b""
     try:
         raw = sys.stdin.buffer.read()
@@ -177,12 +235,18 @@ def _cmd_hook_prompt(args) -> int:
             wrapped = channel_messages(text)
             if wrapped is None and _skip_command(conn, text):
                 return 0
+            if _ack_ignored(conn, text, wrapped):
+                _record_ack(conn, text, wrapped)
+                print(json.dumps({"decision": "block", "reason":
+                                  "Acknowledgement ignored (nothing was asked)."}))
+                return 0
             if wrapped is None:
                 capture(conn, text, str(session))
             for source, inner in wrapped or ():
                 rid = capture(conn, inner, str(session), source)
                 activity.record(conn, "hook", "request.channel",
                                 f"request arrived through {source}", str(rid))
+            _close_questions(conn)
         finally:
             conn.close()
     except BaseException as e:
@@ -213,6 +277,27 @@ def _cmd_unhandled(args):
     return _run(go)
 
 
+def _cmd_question_open(args):
+    def go(cfg, conn):
+        text = args.text.strip()
+        if not text:
+            raise ValueError("the question is empty")
+        cur = conn.execute("INSERT INTO owner_questions(asked_at, text)"
+                           " VALUES (?,?)", (utcnow(), text))
+        print(f"Q-{cur.lastrowid} open")
+        return 0
+    return _run(go)
+
+
+def _cmd_question_close(args):
+    def go(cfg, conn):
+        cur = conn.execute("UPDATE owner_questions SET answered_at=? WHERE"
+                           " answered_at IS NULL", (utcnow(),))
+        print(f"closed {cur.rowcount} open question(s)")
+        return 0
+    return _run(go)
+
+
 def _cmd_brief(args):
     def go(cfg, conn):
         print(startup_brief(conn, args.limit))
@@ -232,6 +317,13 @@ def register(subparsers) -> None:
     br = sub.add_parser("brief")
     br.add_argument("--limit", type=int, default=20)
     br.set_defaults(func=_cmd_brief)
+    qn = subparsers.add_parser("question", help="Questions open to the Owner")
+    qsub = qn.add_subparsers(dest="question_cmd", required=True)
+    qo = qsub.add_parser("open", help="Register a question you asked the Owner")
+    qo.add_argument("text")
+    qo.set_defaults(func=_cmd_question_open)
+    qc = qsub.add_parser("close", help="Mark every open question answered")
+    qc.set_defaults(func=_cmd_question_close)
     h = subparsers.add_parser("hook", help="Claude Code hooks")
     hs = h.add_subparsers(dest="hook_cmd", required=True)
     hp = hs.add_parser("prompt")

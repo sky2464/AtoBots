@@ -6,12 +6,13 @@ systemd-run: it needs the Owner's terminal). It holds an exclusive flock on
 `.chat.lock` for as long as the chat is open; the dispatcher reads that lock
 (`owner_connected`) and stays quiet while the Owner is talking.
 
-Rollover: when the chat gets long the Stop hook asks Admin for a summary and
-tells him to run `cb chat-rollover --summary-file F`. That command stores the
-summary, drops a marker and sends SIGTERM to the claude process named in the
-pid file (Admin's Bash tool is a child of claude, but not always its direct
-child, so the parent pid is not used). chat_loop sees the marker, archives the
-old transcript and starts claude again with the summary in its prompt.
+Rollover: `cb chat-rollover --summary-file F` stores a summary, drops a
+marker and sends SIGTERM to the claude process named in the pid file (Admin's
+Bash tool is a child of claude, but not always its direct child, so the parent
+pid is not used). chat_loop sees the marker, archives the old transcript and
+starts claude again with the summary in its prompt. The live Admin's rollover
+is started by the engine itself (rotation.py) for both the live Admin and
+`cb chat`; the Stop hook no longer blocks.
 """
 import fcntl
 import json
@@ -38,8 +39,6 @@ LAST_CHECK_KEY = "chat.last_check"
 SUMMARY_PROMPT_CAP = 20000
 TRANSCRIPT_SCAN_CAP = 16 * 1024 * 1024
 KILL_GRACE_SECONDS = 20
-DEFAULT_THRESHOLD = 100000
-NAG_STEP = 20000
 TOKEN_ENV = "CB_ROLLOVER_TOKEN"
 STATE_ENV = "CB_STATE_DIR"  # set by `cb admin serve`: its own state directory
 
@@ -48,8 +47,8 @@ STATE_ENV = "CB_STATE_DIR"  # set by `cb admin serve`: its own state directory
 
 def chat_dir(cfg: Config) -> Path:
     """State of the running chat. The always-on Admin session sets
-    CB_STATE_DIR so the Stop hook and `cb chat-rollover` find its files, not
-    those of a `cb chat`."""
+    CB_STATE_DIR so `cb chat-rollover` and the engine's rotation find its
+    files, not those of a `cb chat`."""
     override = os.environ.get(STATE_ENV)
     return Path(override) if override else cfg.home / ".chat"
 
@@ -68,10 +67,6 @@ def rollover_path(cfg: Config) -> Path:
 
 def marker_path(cfg: Config) -> Path:
     return chat_dir(cfg) / "rollover.pending"
-
-
-def last_block_path(cfg: Config) -> Path:
-    return chat_dir(cfg) / "last_block"
 
 
 def _read_token(cfg: Config):
@@ -305,57 +300,14 @@ def settings_for_chat(cfg: Config) -> dict:
     def hook(sub):
         return [{"hooks": [{"type": "command", "command": f"{cb} hook {sub}",
                             "timeout": 30}]}]
-    return {"hooks": {"UserPromptSubmit": hook("prompt"), "Stop": hook("stop")}}
-
-
-def _block_reason(cfg) -> str:
-    draft = (chat_dir(cfg) / "summary.md") if cfg else Path("summary.md")
-    cb = shlex.quote(str(_engine_cb()))
-    return (
-        "This chat has grown long and must continue in a fresh session. "
-        "Write a summary of the open thread: what the Owner asked, what is "
-        "done, what is still open, decisions made and anything he still has "
-        f"to answer. Save it to {draft}, then run: {cb} chat-rollover "
-        f"--summary-file {draft}\n"
-        "Tell the Owner in one short line that you are continuing in a "
-        "fresh session, then run the command.")
+    # No Stop hook: rotation is done by the engine (rotation.py). The
+    # `cb hook stop` subcommand still exists for settings written earlier.
+    return {"hooks": {"UserPromptSubmit": hook("prompt")}}
 
 
 def cmd_hook_stop(args) -> int:
-    """Stop hook. Silent below the threshold; at or over it, blocks once.
-    Any failure passes silently: it must never break the Owner's chat."""
-    try:
-        data = json.loads(sys.stdin.buffer.read().decode("utf-8"))
-        if data.get("stop_hook_active"):
-            return 0
-        cfg, threshold = None, DEFAULT_THRESHOLD
-        try:
-            cfg = Config.load()
-            threshold = cfg.chat_rollover_tokens
-        except Exception:
-            pass
-        if cfg is not None:
-            tok = _read_token(cfg)
-            if tok is not None and tok != os.environ.get(TOKEN_ENV):
-                return 0  # a newer rollover is already on its way
-        tokens = context_tokens(data.get("transcript_path"))
-        if tokens < threshold:
-            return 0
-        if cfg is not None:  # do not nag if the last request went unanswered
-            try:
-                last = int(last_block_path(cfg).read_text().strip())
-            except (OSError, ValueError):
-                last = None
-            if last is not None and tokens < last + NAG_STEP:
-                return 0
-            try:
-                chat_dir(cfg).mkdir(mode=0o700, exist_ok=True)
-                last_block_path(cfg).write_text(str(tokens))
-            except OSError:
-                pass
-        print(json.dumps({"decision": "block", "reason": _block_reason(cfg)}))
-    except BaseException:
-        pass
+    """Stop hook. Retired: rotation is done by the engine (rotation.py), so
+    the hook never blocks the chat. Kept so existing settings still run."""
     return 0
 
 
@@ -525,7 +477,7 @@ def _one_session(cfg, conn, summary, token, first: bool, live=None) -> str:
             " VALUES (?,?,?,?)", (BOT, session_id, lane, utcnow())).lastrowid
         activity.record(conn, BOT, f"{prefix}.start" if live else "chat.start",
                         f"{prefix} session {session_id}", str(run_id))
-    temp, code, reason = [], None, "error"
+    temp, code, reason, watch = [], None, "error", None
     try:
         try:
             since = last_check(conn, live.check_key if live
@@ -567,7 +519,6 @@ def _one_session(cfg, conn, summary, token, first: bool, live=None) -> str:
         env.pop(TOKEN_ENV, None)
         if token:
             env[TOKEN_ENV] = token
-        _unlink(last_block_path(cfg))
         if summary is not None:
             print("Continuing this chat in a fresh session.", flush=True)
         elif live:
@@ -579,6 +530,10 @@ def _one_session(cfg, conn, summary, token, first: bool, live=None) -> str:
         # The marker stays until this session ends well; the summary file is
         # never deleted.
         _write_private(pid_path(cfg), f"{proc.pid}\n")
+        from . import rotation  # the engine rotates long sessions
+        watch = rotation.Watch(cfg, session_id, token,
+                               ttl=None if live else rotation.CHAT_CACHE_TTL)
+        watch.start()
         code = _wait(proc, cfg, token, live.stop if live else None)
         now_token = _read_token(cfg)
         if live and live.stop.is_set():
@@ -590,6 +545,8 @@ def _one_session(cfg, conn, summary, token, first: bool, live=None) -> str:
             if reason == "ok" and token is not None:
                 _unlink(marker_path(cfg))  # the summary did its job
     finally:
+        if watch is not None:
+            watch.stop()  # before the pid file goes: it may be signalled
         if live:
             live.cleanup()
         _unlink(pid_path(cfg))

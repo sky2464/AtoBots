@@ -47,6 +47,10 @@ class Config:
     persona_cap_bytes: int = 4 * 1024
     memory_cap_bytes: int = 8 * 1024
     chat_rollover_tokens: int = 100000
+    # Rotation (rotation.py): a long Admin session is moved to a fresh one
+    # when it is idle past the prompt-cache TTL and this big.
+    idle_rotate_tokens: int = 80000
+    cache_ttl_seconds: int = 3600  # live Admin runs with a 1 h cache
     archive_offserver_pct: int = 70
     batch_max_messages: int = 20
     batch_max_bytes: int = 64 * 1024

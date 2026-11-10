@@ -181,28 +181,12 @@ class StopHookTests(Base):
             rc = chat.cmd_hook_stop(None)
         return rc, out.getvalue()
 
-    def test_stop_hook_below_threshold_passes(self):
-        rc, out = self.run_hook({"stop_hook_active": False}, 99999)
-        self.assertEqual((rc, out), (0, ""))
-
-    def test_stop_hook_at_threshold_blocks_once(self):
-        rc, out = self.run_hook({"stop_hook_active": False}, 100000)
-        self.assertEqual(rc, 0)
-        data = json.loads(out)
-        self.assertEqual(data["decision"], "block")
-        self.assertIn("chat-rollover", data["reason"])
-        self.assertIn("summary", data["reason"])
-        # the continuation it caused must not be blocked again
-        rc, out = self.run_hook({"stop_hook_active": True}, 150000)
-        self.assertEqual((rc, out), (0, ""))
-
-    def test_stop_hook_does_not_nag_until_20k_more_tokens(self):
-        rc, out = self.run_hook({"stop_hook_active": False}, 100000)
-        self.assertEqual(json.loads(out)["decision"], "block")
-        rc, out = self.run_hook({"stop_hook_active": False}, 119999)
-        self.assertEqual((rc, out), (0, ""))
-        rc, out = self.run_hook({"stop_hook_active": False}, 120000)
-        self.assertEqual(json.loads(out)["decision"], "block")
+    def test_stop_hook_never_blocks_any_more(self):
+        # Rotation is engine-driven now (rotation.py): the hook stays silent
+        # however long the transcript is.
+        for tokens in (0, 99999, 100000, 150000, 500000):
+            rc, out = self.run_hook({"stop_hook_active": False}, tokens)
+            self.assertEqual((rc, out), (0, ""), tokens)
 
     def test_stop_hook_never_breaks_the_chat(self):
         out = io.StringIO()
@@ -214,21 +198,14 @@ class StopHookTests(Base):
                                  "transcript_path": "/nonexistent"}, 0)
         self.assertEqual((rc, out), (0, ""))
 
-    def test_no_second_block_while_rollover_is_pending(self):
-        chat.chat_dir(self.cfg).mkdir(parents=True, exist_ok=True)
-        chat.marker_path(self.cfg).write_text("x")
-        rc, out = self.run_hook({"stop_hook_active": False}, 500000)
-        self.assertEqual((rc, out), (0, ""))
-
 
 class SettingsTests(Base):
     def test_settings_has_both_hooks_with_absolute_path(self):
         s = chat.settings_for_chat(self.cfg)
-        cmds = {ev: s["hooks"][ev][0]["hooks"][0]["command"]
-                for ev in ("UserPromptSubmit", "Stop")}
-        self.assertTrue(cmds["UserPromptSubmit"].endswith("/bin/cb hook prompt"))
-        self.assertTrue(cmds["Stop"].endswith("/bin/cb hook stop"))
-        self.assertTrue(cmds["Stop"].startswith("/"))
+        self.assertEqual(set(s["hooks"]), {"UserPromptSubmit"})
+        cmd = s["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+        self.assertTrue(cmd.endswith("/bin/cb hook prompt"))
+        self.assertTrue(cmd.startswith("/"))
 
 
 class MemoryMaxTests(Base):
@@ -347,7 +324,7 @@ class LoopTests(Base):
             self.assertIn(flag, a)
         self.assertEqual(a[a.index("--setting-sources") + 1], "project,local")
         self.assertEqual(a[a.index("--model") + 1], "sonnet")
-        self.assertIn("hook stop", c["settings"])
+        self.assertNotIn("hook stop", c["settings"])
         run = self.conn.execute("SELECT * FROM runs WHERE lane='chat'").fetchone()
         self.assertEqual(run["bot"], "admin")
         self.assertIsNotNone(run["ended_at"])
@@ -397,16 +374,6 @@ class LoopTests(Base):
         self.assertIn("SUMMARY: the Owner wants the invoice report",
                       calls[2]["prompt"])
         self.assertFalse(chat.marker_path(self.cfg).exists())  # ended well
-
-    def test_consumed_summary_does_not_silence_the_stop_hook_forever(self):
-        # marker with the token this session was started with: hook may block
-        chat.chat_dir(self.cfg).mkdir(parents=True, exist_ok=True)
-        chat.marker_path(self.cfg).write_text("tok1\n")
-        h = StopHookTests("test_stop_hook_below_threshold_passes")
-        h.cfg, h.root = self.cfg, self.root
-        with mock.patch.dict(os.environ, {chat.TOKEN_ENV: "tok1"}):
-            rc, out = h.run_hook({"stop_hook_active": False}, 150000)
-        self.assertEqual(json.loads(out)["decision"], "block")
 
     def test_nonzero_exit_without_marker_ends_the_loop(self):
         with mock.patch.dict(os.environ, {"FAKE_EXIT": "3"}):
