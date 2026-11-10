@@ -391,8 +391,26 @@ class ClaimTests(Base):
         self.ready()
         d = self.make()
         self.tick(d)
-        self.assertEqual(self.msg(q)["status"], "queued")  # requeued, not done
+        m = self.msg(q)
+        self.assertEqual((m["status"], m["attempts"]), ("queued", 1))
         self.assertTrue(self.kinds("message.no_progress"))
+
+    def test_ok_without_progress_fails_after_retry_attempts(self):
+        t = items.new(self.cfg, self.conn, "q", "backend")
+        q = messages.ask(self.cfg, self.conn, "admin", "backend", t,
+                         "which?", "handoff", now=self.clock())
+        d = self.make()
+        for _ in range(self.cfg.retry_attempts):
+            self.ready()
+            self.tick(d)
+        m = self.msg(q)
+        self.assertEqual((m["status"], m["attempts"]),
+                         ("failed", self.cfg.retry_attempts))
+        stuck = [n for n in self.system_notes() if n["kind"] == "stuck"]
+        self.assertEqual(len(stuck), 1)
+        self.assertIn(
+            "The bot's runs ended normally but it never replied, "
+            "finished the task or updated the item.", stuck[0]["body"])
 
     def test_crash_requeues(self):
         a = self.send("backend")

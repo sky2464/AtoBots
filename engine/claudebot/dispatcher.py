@@ -230,10 +230,12 @@ class Dispatcher:
             (now,)) if r["id"] not in held]
         return self._release(conn, ids, now)
 
-    def _release(self, conn, ids, now, usage_limit: bool = False) -> int:
+    def _release(self, conn, ids, now, usage_limit: bool = False,
+                 no_progress: bool = False) -> int:
         """Claimed messages go back to the queue. After the last allowed attempt
         they fail instead and Admin is told once. A usage limit is not the
-        message's fault: its attempt is given back."""
+        message's fault: its attempt is given back. `no_progress` means the
+        run ended ok and the bot still did not answer."""
         failed, n = [], 0
         with tx(conn):
             for i in ids:
@@ -261,21 +263,25 @@ class Dispatcher:
                     activity.record(conn, "system", "message.requeue",
                                     f"message {i} back to the queue", str(i))
         for r in failed:
-            self._tell_stuck(conn, r, now)
+            self._tell_stuck(conn, r, now, no_progress=no_progress)
         return n
 
-    def _tell_stuck(self, conn, r, now) -> None:
+    def _tell_stuck(self, conn, r, now, no_progress: bool = False) -> None:
         if r["kind"] == "stuck":
             return  # a failed note about a failure must not breed notes
         item = f" (item {r['item_id']})" if r["item_id"] else ""
+        body = (f"Message {r['id']} to {r['to_bot']}{item}, \"{r['subject']}\", "
+                f"failed {r['attempts']} times and will not be retried. ")
+        if no_progress:
+            body += ("The bot's runs ended normally but it never replied, "
+                     "finished the task or updated the item. ")
+        body += ("Look at the activity record, then fix the cause, resend it, "
+                 "or tell the Owner.")
         try:
             messages.send(
                 conn, "system", "admin",
                 f"Stuck: message {r['id']} to {r['to_bot']}{item}",
-                f"Message {r['id']} to {r['to_bot']}{item}, \"{r['subject']}\", "
-                f"failed {r['attempts']} times and will not be retried. Look "
-                "at the activity record, then fix the cause, resend it, or "
-                "tell the Owner.", kind="stuck", dedupe_key=f"stuck:{r['id']}",
+                body, kind="stuck", dedupe_key=f"stuck:{r['id']}",
                 hop_limit=_NEVER_STOP, now=now)
         except (KeyError, ValueError) as e:
             _log(conn, "message.stuck_unreported", f"message {r['id']}: {e}",
@@ -306,7 +312,7 @@ class Dispatcher:
             if done:
                 messages.complete(conn, done)
             if pending:
-                self._release(conn, pending, now, usage_limit=True)
+                self._release(conn, pending, now, no_progress=True)
                 for i in pending:
                     _log(conn, "message.no_progress",
                          f"message {i} not done: ok run with no reply/progress",
