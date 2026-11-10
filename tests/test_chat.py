@@ -310,9 +310,17 @@ class LoopTests(Base):
         p = mock.patch.dict(os.environ, env)
         p.start()
         self.addCleanup(p.stop)
+        # LoopTests drive a fake claude binary. CI runners have systemd-run,
+        # which memory_wrap would put in front of that fake and never exec it.
+        wrap = mock.patch("claudebot.chat.memory_wrap",
+                          side_effect=lambda cfg, cmd: list(cmd))
+        wrap.start()
+        self.addCleanup(wrap.stop)
 
     def calls(self):
         d = self.fake_dir / "calls"
+        if not d.is_dir():
+            return []
         return [json.loads((d / f).read_text())
                 for f in sorted(os.listdir(d), key=lambda x: int(x[:-5]))]
 
