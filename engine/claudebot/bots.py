@@ -336,14 +336,26 @@ def set_status(conn: sqlite3.Connection, name: str, status: str,
         activity.record(conn, actor, f"bot.{status}", name, name)
 
 
-def _read_capped(path: Path, cap: int) -> str:
-    """Read at most `cap` bytes, keeping the newest suffix (memory/persona
-    append; the oldest head is what condensation drops first)."""
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+
+
+def _read_capped(path: Path, cap: int, *, keep: str = "tail") -> str:
+    """Read at most `cap` bytes. Memory keeps the newest suffix (condensation
+    drops the oldest head); Soul and Persona keep the head."""
     try:
         data = path.read_bytes()
     except FileNotFoundError:
         return ""
-    return data[-cap:].decode("utf-8", errors="ignore")
+    if len(data) <= cap:
+        return data.decode("utf-8", errors="replace")
+    chunk = data[:cap] if keep == "head" else data[-cap:]
+    if keep == "head":
+        while chunk and chunk[-1] & 0xC0 == 0x80:
+            chunk = chunk[:-1]
+    else:
+        while chunk and chunk[0] & 0xC0 == 0x80:
+            chunk = chunk[1:]
+    return chunk.decode("utf-8", errors="replace")
 
 
 def identity_prompt(cfg: Config, conn: sqlite3.Connection, name: str) -> str:
@@ -353,12 +365,13 @@ def identity_prompt(cfg: Config, conn: sqlite3.Connection, name: str) -> str:
     get(conn, name)
     d = _bot_dir(cfg, name)
     parts = [
-        ("Soul", _read_capped(d / "SOUL.md", cfg.soul_cap_bytes)),
-        ("Persona", _read_capped(d / "PERSONA.md", cfg.persona_cap_bytes)),
+        ("Soul", _read_capped(d / "SOUL.md", cfg.soul_cap_bytes, keep="head")),
+        ("Persona", _HTML_COMMENT.sub("", _read_capped(
+            d / "PERSONA.md", cfg.persona_cap_bytes, keep="head"))),
     ]
     rules = cfg.home / "rules.md"
     if rules.is_file():
-        parts.append(("Shared rules", _read_capped(rules, 4 * 1024)))
+        parts.append(("Shared rules", _read_capped(rules, 4 * 1024, keep="head")))
     return "\n\n".join(f"# {title}\n\n{text.strip()}" for title, text in parts)
 
 
@@ -392,6 +405,25 @@ def model_mismatches(conn: sqlite3.Connection, include_retired: bool = False
             out.append((r["name"], r["model"], "thinker on haiku"))
         elif r["tier"] == "worker" and not haiku:
             out.append((r["name"], r["model"], "worker not on haiku"))
+    return out
+
+
+def thinkers_missing_worker(conn: sqlite3.Connection) -> list[tuple[str, str]]:
+    """Active thinker-tier company bots with no usable worker bot."""
+    out = []
+    for b in list_bots(conn):
+        if b.tier != "thinker":
+            continue
+        if not b.worker:
+            out.append((b.name, "no worker set"))
+            continue
+        try:
+            w = get(conn, b.worker)
+        except KeyError:
+            out.append((b.name, f"worker {b.worker!r} not found"))
+            continue
+        if w.status != "active" or w.tier != "worker":
+            out.append((b.name, f"worker {b.worker} is not an active worker"))
     return out
 
 

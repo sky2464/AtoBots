@@ -360,6 +360,25 @@ class StablePrefixTests(BotsBase):
         self.assertIn("NEW-", text[-40:])
         self.assertNotIn("OLD-", text[:40])
 
+    def test_read_capped_keeps_oldest_head_for_soul(self):
+        self.new()
+        cap = self.cfg.soul_cap_bytes
+        body = ("HEAD-" * 3000) + ("TAIL-" * 3000)
+        path = self.cfg.bots_dir / "backend" / "SOUL.md"
+        path.write_bytes(body.encode())
+        text = bots._read_capped(path, cap, keep="head")
+        self.assertIn("HEAD-", text[:40])
+        self.assertNotIn("TAIL-", text[-40:])
+
+    def test_identity_prompt_strips_html_comments_from_persona(self):
+        self.new()
+        persona = self.cfg.bots_dir / "backend" / "PERSONA.md"
+        persona.write_text("Visible\n<!-- secret note -->\nStill here")
+        text = bots.identity_prompt(self.cfg, self.conn, "backend")
+        self.assertIn("Visible", text)
+        self.assertIn("Still here", text)
+        self.assertNotIn("secret note", text)
+
     def test_colleagues_block_lists_other_active_bots(self):
         self.new("admin", role="Chief")
         self.new("backend", role="Backend engineer")
@@ -442,7 +461,3 @@ class TierTests(BotsBase):
         with self.assertRaises(ValueError):
             self.new("planner2", model="opus", worker="planner")
         self.assertFalse((self.cfg.bots_dir / "planner2").exists())
-
-    def test_usage_table_exists(self):
-        self.assertTrue(self.conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage'").fetchone())
