@@ -46,6 +46,7 @@ Each bot has three identity parts:
 - Python 3 (CI uses 3.13; the Mac suite also runs on newer CPython)
 - Claude Code, logged in for the user that runs the services
 - Git, for backups
+- A server account for the bots with passwordless sudo (the engine starts each run with `sudo systemd-run`). Securing the server itself — SSH, firewall, updates — is your job and is outside this project.
 
 ## Quick start
 
@@ -108,7 +109,6 @@ engine/
 tests/                   unit tests (run with unittest discover)
 docs/                    design specs and updating notes
 .github/workflows/       CI (unittest discover on push and pull requests)
-vps-bootstrap.sh         one-time server hardening script
 ```
 
 ## Development
