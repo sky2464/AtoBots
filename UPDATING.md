@@ -137,8 +137,9 @@ section before you update.
 
 ## Things an update does not change
 
-An update replaces the engine code. It does not rewrite your company's own
-files, so your choices stay as they are:
+An update replaces the engine code. Apart from the bot settings files and the
+Git commit described above, it does not rewrite your company's own files, so
+your choices stay as they are:
 
 - `rules.md` in the company home is not rewritten by an update.
 - Each bot's persona is not rewritten by an update. A persona is changed only
