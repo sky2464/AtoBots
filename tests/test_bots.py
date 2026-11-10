@@ -337,6 +337,20 @@ class StablePrefixTests(BotsBase):
         after = bots.identity_prompt(self.cfg, self.conn, "backend").encode()
         self.assertEqual(before, after)
 
+    def test_persona_notes_for_people_are_not_sent(self):
+        try:
+            bots.get(self.conn, "backend")
+        except KeyError:
+            bots.create(self.cfg, self.conn, "backend", "Backend", "soul",
+                        "persona", reports_to=None, actor="system")
+        d = self.cfg.bots_dir / "backend"
+        (d / "PERSONA.md").write_text(
+            "<!-- a note\nfor people -->\n# Persona: Backend\nVOICE-TEXT")
+        text = bots.identity_prompt(self.cfg, self.conn, "backend")
+        self.assertNotIn("a note", text)
+        self.assertNotIn("<!--", text)
+        self.assertIn("VOICE-TEXT", text)
+
     def test_memory_block_reads_capped_memory(self):
         self.new()
         (self.cfg.bots_dir / "backend" / "MEMORY.md").write_text("MEM-TEXT")

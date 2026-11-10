@@ -277,16 +277,44 @@ def _private_file(text: str, suffix: str) -> str:
     return path
 
 
-def _mcp_text(cfg: Config, bot: bots.Bot) -> str | None:
-    """Merge the bot's MCP definitions. They are copied as written, so tokens
-    must appear as ${VARIABLE} references, never as values."""
+_SECRET_REF = re.compile(r"\$\{secret:([A-Za-z0-9][A-Za-z0-9_.-]{0,63})\}")
+
+
+def _fill_secrets(node, lookup):
+    """Replace ${secret:NAME} in every string of a JSON value."""
+    if isinstance(node, str):
+        return _SECRET_REF.sub(lambda m: lookup(m.group(1)), node)
+    if isinstance(node, list):
+        return [_fill_secrets(x, lookup) for x in node]
+    if isinstance(node, dict):
+        return {k: _fill_secrets(v, lookup) for k, v in node.items()}
+    return node
+
+
+def _mcp_text(cfg: Config, bot: bots.Bot, conn=None) -> str | None:
+    """Merge the bot's MCP definitions. A token is written in the definition
+    as ${secret:NAME}; the value comes from the secure store when the run
+    starts, goes only into the run's private (mode 600) config file, and the
+    use is recorded by name under the bot. Never write a value in the file."""
     if not bot.mcp:
         return None
     servers = {}
     for name in bot.mcp:
         data = json.loads(_resolve(cfg, "mcp", name, ".json").read_text())
         servers.update(data.get("mcpServers", {}))
-    return json.dumps({"mcpServers": servers})
+    cache: dict = {}
+
+    def lookup(secret: str) -> str:
+        if secret not in cache:
+            if conn is None:
+                raise ValueError(f"MCP definition needs secret {secret!r} "
+                                 "but no database connection was given")
+            from . import store  # late: only when a definition asks for one
+            cache[secret] = store.use_env(
+                cfg, conn, bot.name, {"V": secret})["V"]
+        return cache[secret]
+
+    return json.dumps({"mcpServers": _fill_secrets(servers, lookup)})
 
 
 def run(cfg: Config, conn: sqlite3.Connection, bot, msgs, lane: str,
@@ -312,7 +340,7 @@ def run(cfg: Config, conn: sqlite3.Connection, bot, msgs, lane: str,
         temp.append(ident)
         task_path = _private_file(task_packet(cfg, conn, bot, msgs), ".task.md")
         temp.append(task_path)
-        mcp_text = _mcp_text(cfg, bot)
+        mcp_text = _mcp_text(cfg, bot, conn)
         mcp = None
         if mcp_text:
             mcp = _private_file(mcp_text, ".json")

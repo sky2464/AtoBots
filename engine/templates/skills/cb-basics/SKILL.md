@@ -39,7 +39,9 @@ command. Everything you do through `cb` is recorded under your name.
 - An MCP server definition is `$CLAUDEBOT_HOME/mcp/NAME.json`; a plugin is the
   folder `$CLAUDEBOT_HOME/plugins/NAME/`. Name them with `cb bot new` or
   `cb bot set` (`--mcp`, `--plugins`).
-- Tokens from `cb secret` are not wired into MCP yet. Never write a token value
+- A token an MCP server needs is written in the definition as
+  `${secret:NAME}` (the name from `cb secret list`). The value is filled in
+  when the run starts and the use is recorded. Never write a token value
   into an MCP file.
 - `--connectors` on a bot exposes every account connector the Owner has linked,
   not just one. Ask the Owner before turning it on.

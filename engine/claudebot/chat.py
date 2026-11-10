@@ -504,7 +504,7 @@ def _one_session(cfg, conn, summary, token, first: bool, live=None) -> str:
         settings = runner._private_file(json.dumps(
             live.settings(cfg) if live else settings_for_chat(cfg)), ".json")
         temp.append(settings)
-        mcp_text = runner._mcp_text(cfg, bot)
+        mcp_text = runner._mcp_text(cfg, bot, conn)
         mcp = None
         if mcp_text:
             mcp = runner._private_file(mcp_text, ".json")

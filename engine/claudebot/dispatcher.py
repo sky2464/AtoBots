@@ -81,8 +81,8 @@ class Dispatcher:
                  daily_fn=archive.daily, live_fn=None,
                  surface_fn=None):
         """`routines_fn(cfg, conn, now)` fires due routines by queueing
-        messages (Task 10). `owner_fn()` says whether the Owner is connected
-        to a chat (Task 12) — that holds *all* new runs. `live_fn()` says
+        messages. `owner_fn()` says whether the Owner is connected
+        to a chat — that holds *all* new runs. `live_fn()` says
         whether always-on Admin is up; that only blocks a second Admin run
         (bots keep working). `surface_fn` delivers Admin-bound results to
         live/Telegram when the second Admin is skipped."""

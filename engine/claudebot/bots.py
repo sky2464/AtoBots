@@ -346,6 +346,10 @@ def _read_capped(path: Path, cap: int) -> str:
     return data[-cap:].decode("utf-8", errors="ignore")
 
 
+# Notes for people at the top of a Persona file; not sent to the model.
+_HTML_COMMENT = re.compile(r"<!--.*?-->\s*", re.DOTALL)
+
+
 def identity_prompt(cfg: Config, conn: sqlite3.Connection, name: str) -> str:
     """Soul, Persona (each capped) and shared rules. Never skills, and never
     Memory: it changes between runs, so it travels in the task packet (see
@@ -354,7 +358,8 @@ def identity_prompt(cfg: Config, conn: sqlite3.Connection, name: str) -> str:
     d = _bot_dir(cfg, name)
     parts = [
         ("Soul", _read_capped(d / "SOUL.md", cfg.soul_cap_bytes)),
-        ("Persona", _read_capped(d / "PERSONA.md", cfg.persona_cap_bytes)),
+        ("Persona", _HTML_COMMENT.sub("", _read_capped(
+            d / "PERSONA.md", cfg.persona_cap_bytes))),
     ]
     rules = cfg.home / "rules.md"
     if rules.is_file():
@@ -423,8 +428,7 @@ def check(cfg: Config, conn: sqlite3.Connection) -> list[str]:
 
 # ---- CLI wiring -----------------------------------------------------------
 
-def _actor() -> str:
-    return os.environ.get("CB_BOT", "cli")
+_actor = activity.actor
 
 
 def _csv(v):

@@ -1,6 +1,6 @@
 """Messages between bots. A bot that asks another bot leaves a handoff note
 and may exit while it waits; the answer wakes it. Claiming is the
-dispatcher's job (Task 9); this module creates, answers and completes."""
+dispatcher's job; this module creates, answers and completes."""
 import argparse
 import os
 import sqlite3

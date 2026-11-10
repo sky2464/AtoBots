@@ -360,8 +360,7 @@ def wait_idle() -> None:
 
 # ---- CLI ------------------------------------------------------------------
 
-def _actor() -> str:
-    return os.environ.get("CB_BOT", "cli")
+_actor = activity.actor
 
 
 def _run(fn):

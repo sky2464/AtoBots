@@ -292,8 +292,7 @@ def use_env(cfg: Config, conn, actor: str, env_map: dict,
 
 # ---- CLI wiring -----------------------------------------------------------
 
-def _actor() -> str:
-    return os.environ.get("CB_BOT", "cli")
+_actor = activity.actor
 
 
 def _cmd_add(args) -> int:

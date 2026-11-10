@@ -317,7 +317,17 @@ def serve_loop(cfg: Config, live: Live, conn, sleep=None,
     """Run Admin until `live.stop` is set; restart it whenever it ends."""
     sleep = sleep or (lambda s: live.stop.wait(s))
     summary, token = chat._pending(cfg)  # left by an earlier session
-    fails, first = 0, True
+    fails, first, noted = 0, True, None
+
+    def no_token(why: str, delay) -> None:
+        # Once per reason, not on every retry: the record is append-only.
+        nonlocal noted
+        if why != noted:
+            noted = why
+            activity.record(conn, chat.BOT, "admin-live.no-token",
+                            f"{why}; not starting Admin, retrying every "
+                            f"{delay} to {MAX_DELAY} s until it is fixed")
+
     while not live.stop.is_set():
         t0 = clock()
         if not has_token(cfg):
@@ -325,9 +335,7 @@ def serve_loop(cfg: Config, live: Live, conn, sleep=None,
             # Telegram and look healthy. Record it, back off, look again.
             scrub_token(cfg)
             delay, fails = next_delay(0, fails)
-            activity.record(conn, chat.BOT, "admin-live.no-token",
-                            f"secret {TOKEN_SECRET} is not in the store; "
-                            f"not starting Admin, retrying in {delay} s")
+            no_token(f"secret {TOKEN_SECRET} is not in the store", delay)
             sleep(delay)
             continue
         try:
@@ -339,8 +347,7 @@ def serve_loop(cfg: Config, live: Live, conn, sleep=None,
             scrub_token(cfg)
             reason = "no-token"
             delay, fails = next_delay(0, fails)
-            activity.record(conn, chat.BOT, "admin-live.no-token",
-                            f"{e}; not starting Admin, retrying in {delay} s")
+            no_token(str(e), delay)
             if live.stop.is_set():
                 return
             sleep(delay)
@@ -351,7 +358,7 @@ def serve_loop(cfg: Config, live: Live, conn, sleep=None,
                             f"{type(e).__name__}: {e}")
             live.cleanup()
             scrub_token(cfg)
-        first = False
+        first, noted = False, None
         if live.stop.is_set():
             live.cleanup()
             scrub_token(cfg)

@@ -293,6 +293,42 @@ class PacketTests(RunnerBase):
             self.assertNotIn(old, p)
 
 
+class McpSecretTests(RunnerBase):
+    def define(self, defn):
+        (self.cfg.home / "mcp").mkdir(exist_ok=True)
+        (self.cfg.home / "mcp" / "notes.json").write_text(json.dumps(defn))
+        bots.update(self.cfg, self.conn, "backend", "admin", mcp=["notes"])
+        return bots.get(self.conn, "backend")
+
+    def test_secret_reference_is_filled_from_the_store_once_per_name(self):
+        from unittest import mock
+        b = self.define({"mcpServers": {"notes": {
+            "url": "http://x", "env": {"A": "${secret:notes-token}",
+                                       "B": "pre-${secret:notes-token}"},
+            "headers": {"X": "${OTHER}"}}}})
+        calls = []
+
+        def use_env(cfg, conn, actor, env_map, decision=None):
+            calls.append((actor, dict(env_map)))
+            return {"V": "S3CR3T"}
+        with mock.patch("claudebot.store.use_env", use_env):
+            out = json.loads(runner._mcp_text(self.cfg, b, self.conn))
+        srv = out["mcpServers"]["notes"]
+        self.assertEqual(srv["env"], {"A": "S3CR3T", "B": "pre-S3CR3T"})
+        self.assertEqual(srv["headers"], {"X": "${OTHER}"})  # left as written
+        self.assertEqual(calls, [("backend", {"V": "notes-token"})])
+
+    def test_refused_or_unknown_secret_stops_the_run_setup(self):
+        from unittest import mock
+        b = self.define({"mcpServers": {"n": {"env": {"A": "${secret:nope}"}}}})
+        with mock.patch("claudebot.store.use_env",
+                        side_effect=PermissionError("owner-order-only")):
+            with self.assertRaises(PermissionError):
+                runner._mcp_text(self.cfg, b, self.conn)
+        with self.assertRaises(ValueError):
+            runner._mcp_text(self.cfg, b)  # no connection to record the use
+
+
 class ClassifyTests(unittest.TestCase):
     OK = json.dumps({"is_error": False, "result": "x"})
 
