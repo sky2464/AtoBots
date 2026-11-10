@@ -174,7 +174,7 @@ class CommandTests(RunnerBase):
         b = self.bot()
         self.assertEqual(runner.settings_for(b, []), ("sonnet", "medium"))
         for level, model in (("housekeeping", "haiku"), ("normal", "sonnet"),
-                             ("deep", "opus"), ("heavy", "opus")):
+                             ("deep", "sonnet"), ("heavy", "sonnet")):
             m = [{"level": level, "effort": None}]
             self.assertEqual(runner.settings_for(b, m), (model, "medium"), level)
         self.assertEqual(runner.settings_for(
@@ -183,13 +183,46 @@ class CommandTests(RunnerBase):
         batch = [{"level": "housekeeping", "effort": "low"},
                  {"level": "deep", "effort": "max"},
                  {"level": "normal", "effort": "high"}]
-        self.assertEqual(runner.settings_for(b, batch), ("opus", "max"))
+        self.assertEqual(runner.settings_for(b, batch), ("sonnet", "max"))
         # a bot pinned to a full model keeps it at the normal level
         bots.update(self.cfg, self.conn, "backend", "admin",
                     model="claude-sonnet-4-6")
         self.assertEqual(runner.settings_for(
             self.bot(), [{"level": "normal", "effort": None}])[0],
             "claude-sonnet-4-6")
+
+
+class ModelByTierTests(RunnerBase):
+    def test_deep_level_keeps_sonnet_bot_on_sonnet(self):
+        b = self.bot()
+        self.assertEqual(runner.settings_for(
+            b, [{"level": "deep", "effort": "high"}]), ("sonnet", "high"))
+
+    def test_heavy_level_never_picks_opus(self):
+        bots.update(self.cfg, self.conn, "backend", "admin", model="sonnet")
+        for level in ("normal", "deep", "heavy"):
+            model = runner.settings_for(
+                self.bot(), [{"level": level, "effort": None}])[0]
+            self.assertNotEqual(model, "opus", level)
+        # an Opus bot keeps Opus at every level: a level never raises it
+        bots.update(self.cfg, self.conn, "backend", "admin", model="opus")
+        for level in ("housekeeping", "normal", "deep", "heavy"):
+            model = runner.settings_for(
+                self.bot(), [{"level": level, "effort": None}])[0]
+            self.assertEqual(model, "haiku" if level == "housekeeping"
+                             else "opus", level)
+
+    def test_housekeeping_runs_on_haiku(self):
+        self.assertEqual(runner.settings_for(
+            self.bot(), [{"level": "housekeeping", "effort": None}])[0],
+            "haiku")
+
+    def test_housekeeping_leaves_worker_on_haiku(self):
+        bots.create(self.cfg, self.conn, "gofer", role="g", soul="s",
+                    persona="p", model="haiku")
+        gofer = bots.get(self.conn, "gofer")
+        self.assertEqual(runner.settings_for(
+            gofer, [{"level": "housekeeping", "effort": None}])[0], "haiku")
 
 
 class PacketTests(RunnerBase):
@@ -352,7 +385,8 @@ class RunTests(RunnerBase):
         self.run_bot({"level": "housekeeping"},
                      {"level": "deep", "effort": "high"})
         argv = self.rec()["argv"]
-        self.assertEqual(argv[argv.index("--model") + 1], "opus")
+        # deep no longer picks opus: the bot's own model (sonnet) stands
+        self.assertEqual(argv[argv.index("--model") + 1], "sonnet")
         self.assertEqual(argv[argv.index("--effort") + 1], "high")
 
     def test_activity_recorded(self):

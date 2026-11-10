@@ -287,11 +287,15 @@ def identity_prompt(cfg: Config, conn: sqlite3.Connection, name: str) -> str:
     return "\n\n".join(f"# {title}\n\n{text.strip()}" for title, text in parts)
 
 
-def model_mismatches(conn: sqlite3.Connection) -> list[tuple[str, str, str]]:
+def model_mismatches(conn: sqlite3.Connection, include_retired: bool = False
+                     ) -> list[tuple[str, str, str]]:
     """Bots whose tier and model disagree: a thinker on haiku, or a worker
-    on any other model. Returns (bot, model, problem)."""
+    on any other model. Returns (bot, model, problem). Retired bots are
+    skipped unless `include_retired` is True."""
     out = []
-    for r in conn.execute("SELECT name, model, tier FROM bots ORDER BY name"):
+    where = "" if include_retired else " WHERE status != 'retired'"
+    for r in conn.execute("SELECT name, model, tier FROM bots" + where +
+                          " ORDER BY name"):
         if r["tier"] == "thinker" and r["model"] == "haiku":
             out.append((r["name"], r["model"], "thinker on haiku"))
         elif r["tier"] == "worker" and r["model"] != "haiku":

@@ -283,6 +283,15 @@ class TierTests(BotsBase):
             ("badworker", "sonnet", "worker not on haiku"),
         ])
 
+    def test_model_mismatches_skips_retired_unless_asked(self):
+        self.new("badthinker", model="haiku", tier="thinker")
+        self.conn.execute("UPDATE bots SET status='retired' WHERE name=?",
+                          ("badthinker",))
+        self.assertEqual(bots.model_mismatches(self.conn), [])
+        self.assertEqual(bots.model_mismatches(self.conn,
+                                               include_retired=True),
+                         [("badthinker", "haiku", "thinker on haiku")])
+
     def test_set_worker_must_be_existing_worker_bot(self):
         self.new("planner", model="opus")
         self.new("gofer", model="haiku")
