@@ -241,6 +241,15 @@ def _skip_command(conn, text: str) -> bool:
     return True
 
 
+def _open_owner_session(conn, session: str) -> bool:
+    """True when `session` is an open chat or live run."""
+    if not session:
+        return False
+    return conn.execute(
+        "SELECT 1 FROM runs WHERE session_id=? AND ended_at IS NULL"
+        " AND lane IN ('chat','live')", (session,)).fetchone() is not None
+
+
 def _cmd_hook_prompt(args) -> int:
     """UserPromptSubmit hook. No AI cost, always exits 0. Silent, except that
     a bare acknowledgement ("ok", a thumbs up) while no question is open is
@@ -252,21 +261,35 @@ def _cmd_hook_prompt(args) -> int:
         text = data["prompt"]
         if not isinstance(text, str):
             raise TypeError("prompt is not text")
-        session = data.get("session_id") or ""
+        session = str(data.get("session_id") or "")
         conn = connect(Config.load())
         try:
+            if not _open_owner_session(conn, session):
+                activity.record(conn, "hook", "request.rejected_session",
+                                "not an open chat or live session")
+                return 0
             wrapped = channel_messages(text)
             if wrapped is None and _skip_command(conn, text):
                 return 0
             if wrapped is None and text.startswith("[system] "):
                 return 0
-            if wrapped and all(not _telegram_sender_allowed(a)
-                               for _, _, a in wrapped):
-                activity.record(conn, "hook", "request.sender_denied",
-                                "telegram sender not on allow list")
-                print(json.dumps({"decision": "block",
-                                  "reason": DENY_SENDER_REASON}))
-                return 0
+            if wrapped:
+                allowed, denied = [], []
+                for message in wrapped:
+                    if _telegram_sender_allowed(message[2]):
+                        allowed.append(message)
+                    else:
+                        denied.append(message)
+                if not allowed:
+                    activity.record(conn, "hook", "request.sender_denied",
+                                    "telegram sender not on allow list")
+                    print(json.dumps({"decision": "block",
+                                      "reason": DENY_SENDER_REASON}))
+                    return 0
+                for _message in denied:
+                    activity.record(conn, "hook", "request.sender_denied",
+                                    "telegram sender not on allow list")
+                wrapped = allowed
             said = [t for _, t, _ in wrapped] if wrapped else [text]
             if all(is_bare_ack(t) for t in said) \
                     and not has_open_question(conn) \
