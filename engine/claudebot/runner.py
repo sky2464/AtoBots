@@ -112,15 +112,36 @@ def task_packet(cfg: Config, conn: sqlite3.Connection, bot, msgs) -> str:
     return "\n".join(lines)
 
 
+def task_prompt_for_file(task_file: str) -> str:
+    """Short -p text that points at the private task file (body stays off argv)."""
+    return (f"Read the task file at {task_file} and follow its instructions. "
+            "Do not ask what is in the file.")
+
+
+def unit_name_for(run_id: int) -> str:
+    """Transient systemd unit name for one run (stopped on Python timeout)."""
+    return f"claudebot-run-{int(run_id)}.scope"
+
+
 def build_command(cfg: Config, bot: bots.Bot, session_id: str, prompt_file,
-                  lane: str, *, task: str = "", model: str | None = None,
+                  lane: str, *, task: str = "", task_file: str | None = None,
+                  unit: str | None = None, model: str | None = None,
                   effort: str | None = None, mcp_config=None,
                   agents: str | None = None) -> list:
     """The full command line. `prompt_file` holds the identity text and goes in
-    with --append-system-prompt-file; `task` is the prompt. `lane` only labels
-    the run (limits are the same in every lane)."""
+    with --append-system-prompt-file. The task body lives in `task_file` (mode
+    600); `-p` only carries a short path pointer so subjects/bodies stay out of
+    `ps` and the journal. `lane` only labels the run (limits are the same in
+    every lane)."""
+    if task_file:
+        prompt = task_prompt_for_file(task_file)
+    else:
+        prompt = task
     cmd = ["sudo", "systemd-run", "--wait", "--collect", "--pipe",
-           "--uid=claude",
+           "--uid=claude"]
+    if unit:
+        cmd += [f"--unit={unit}"]
+    cmd += [
            "-p", f"MemoryMax={cfg.run_memory_max}",
            # No swap: with swap, a run over MemoryMax is slowed, not killed.
            "-p", "MemorySwapMax=0",
@@ -131,7 +152,7 @@ def build_command(cfg: Config, bot: bots.Bot, session_id: str, prompt_file,
            f"--setenv=CB_BOT={bot.name}",
            f"--setenv=CB_SESSION_ID={session_id}",
            f"--setenv=CLAUDEBOT_HOME={cfg.home}",
-           cfg.claude_bin, "-p", task,
+           cfg.claude_bin, "-p", prompt,
            "--output-format", "json",
            "--dangerously-skip-permissions",
            "--setting-sources", "project,local",
@@ -152,6 +173,33 @@ def build_command(cfg: Config, bot: bots.Bot, session_id: str, prompt_file,
     if agents:
         cmd += ["--agents", agents]
     return cmd
+
+
+def _stop_unit(unit: str) -> None:
+    """Best-effort stop of a transient unit left after a Python timeout."""
+    if not unit:
+        return
+    try:
+        subprocess.run(["sudo", "systemctl", "stop", unit],
+                       stdin=subprocess.DEVNULL, capture_output=True,
+                       timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def _timeout_output(exc: subprocess.TimeoutExpired) -> str:
+    """Partial stdout/stderr from a timed-out run, plus a timeout marker."""
+    parts = []
+    for chunk in (exc.stdout, exc.stderr):
+        if chunk is None:
+            continue
+        if isinstance(chunk, bytes):
+            parts.append(chunk.decode("utf-8", errors="replace"))
+        else:
+            parts.append(str(chunk))
+    body = "\n".join(p for p in parts if p)
+    marker = "Finished with result: timeout"
+    return f"{body}\n{marker}" if body else marker
 
 
 def _parse(output: str):
@@ -258,10 +306,13 @@ def run(cfg: Config, conn: sqlite3.Connection, bot, msgs, lane: str,
     if on_start is not None:
         on_start(run_id)
     temp, exit_code, output = [], 1, ""
+    unit = unit_name_for(run_id)
     try:
         model, effort = settings_for(bot, msgs)
         ident = _private_file(bots.identity_prompt(cfg, conn, bot.name), ".md")
         temp.append(ident)
+        task_path = _private_file(task_packet(cfg, conn, bot, msgs), ".task.md")
+        temp.append(task_path)
         mcp_text = _mcp_text(cfg, bot)
         mcp = None
         if mcp_text:
@@ -269,7 +320,7 @@ def run(cfg: Config, conn: sqlite3.Connection, bot, msgs, lane: str,
             temp.append(mcp)
         cmd = build_command(
             cfg, bot, session_id, ident, lane,
-            task=task_packet(cfg, conn, bot, msgs), model=model, effort=effort,
+            task_file=task_path, unit=unit, model=model, effort=effort,
             mcp_config=mcp)
         try:
             p = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True,
@@ -277,8 +328,10 @@ def run(cfg: Config, conn: sqlite3.Connection, bot, msgs, lane: str,
                                timeout=cfg.run_seconds + 120)
             exit_code, output = p.returncode, p.stdout + "\n" + p.stderr
             stdout = p.stdout
-        except subprocess.TimeoutExpired:
-            exit_code, output, stdout = 143, "Finished with result: timeout", ""
+        except subprocess.TimeoutExpired as e:
+            _stop_unit(unit)
+            output = _timeout_output(e)
+            exit_code, stdout = 143, output
         reason = classify(exit_code, stdout if exit_code == 0 else output)
     except Exception as e:  # setup failed: nothing ran
         exit_code, output, stdout, reason = 1, f"{type(e).__name__}: {e}", "", "error"

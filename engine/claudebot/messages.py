@@ -15,6 +15,8 @@ from .db import connect, ct_display, tx, utcnow
 LEVELS = ("housekeeping", "normal", "deep", "heavy")
 MAX_BODY_BYTES = 4 * 1024
 SYSTEM = "system"
+# Reserved senders: a bot process (CB_BOT set) may not impersonate these.
+RESERVED_SENDERS = frozenset({SYSTEM, "admin"})
 _PENDING = ("queued", "claimed")
 
 
@@ -27,10 +29,40 @@ def _check_body(body) -> None:
             "file and send the file's path instead")
 
 
+def bound_actor() -> str | None:
+    """When CB_BOT is set, this process may only act as that bot."""
+    return os.environ.get("CB_BOT") or None
+
+
+def resolve_from(requested: str | None = None) -> str:
+    """CLI/library from-field: force CB_BOT when set; else requested or cli."""
+    me = bound_actor()
+    if me:
+        return me
+    return requested or "cli"
+
+
+def _check_sender(frm: str) -> None:
+    """Reject reserved spoof (admin/system) and any from≠CB_BOT when bound."""
+    me = bound_actor()
+    if not me:
+        return
+    if frm != me:
+        raise PermissionError(
+            f"cannot send as {frm!r}: this process is bound to {me!r}")
+
+
 def _insert(conn, frm, to, subject, body, item_id, kind, priority, level,
-            effort, in_reply_to, dedupe_key, hop_limit, now, window) -> int:
+            effort, in_reply_to, dedupe_key, hop_limit, now, window,
+            *, _engine_system: bool = False) -> int:
     """Caller holds the transaction. Returns the message id, or 0 when the
-    hop limit stopped the chain."""
+    hop limit stopped the chain. `_engine_system` is only for in-process
+    system notes (hop-stop) that may run while CB_BOT is set."""
+    if _engine_system:
+        if frm != SYSTEM:
+            raise ValueError("_engine_system requires from=system")
+    else:
+        _check_sender(frm)
     if frm != SYSTEM:
         bots.get(conn, frm)
     if bots.get(conn, to).status == "retired":
@@ -91,10 +123,10 @@ def _hop_stop(conn, frm, to, subject, item_id, chain, hop, now) -> None:
     if admin is None or admin["status"] == "retired":
         return
     # New chain, no item: a note on the item would make it the item's latest
-    # chain and reset the loop guard.
+    # chain and reset the loop guard. May run inside a bot process (CB_BOT set).
     _insert(conn, SYSTEM, "admin", "Message chain stopped at hop limit",
             detail + ". The message was not delivered.", None, "note", "normal",
-            "normal", None, None, key, 10**9, now, 0)
+            "normal", None, None, key, 10**9, now, 0, _engine_system=True)
 
 
 def send(conn: sqlite3.Connection, frm: str, to: str, subject: str, body: str,
@@ -205,7 +237,7 @@ def complete(conn: sqlite3.Connection, ids) -> None:
 # ---- CLI ----
 
 def _actor() -> str:
-    return os.environ.get("CB_BOT", "cli")
+    return resolve_from(None)
 
 
 def _run(fn):
@@ -213,7 +245,7 @@ def _run(fn):
     conn = connect(cfg)
     try:
         return fn(cfg, conn)
-    except (ValueError, KeyError, OSError) as e:
+    except (ValueError, KeyError, OSError, PermissionError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
     finally:
@@ -222,7 +254,8 @@ def _run(fn):
 
 def _cmd_send(args):
     def go(cfg, conn):
-        mid = send(conn, args.frm, args.to, args.subject, args.body,
+        frm = resolve_from(args.frm)
+        mid = send(conn, frm, args.to, args.subject, args.body,
                    item_id=args.item, kind=args.kind, priority=args.priority,
                    level=args.level, effort=args.effort,
                    in_reply_to=args.in_reply_to, dedupe_key=args.dedupe_key,
@@ -241,7 +274,8 @@ def _cmd_ask(args):
     def go(cfg, conn):
         with open(args.handoff_file) as f:
             handoff = f.read()
-        mid = ask(cfg, conn, args.frm, args.to, args.item, args.question, handoff)
+        frm = resolve_from(args.frm)
+        mid = ask(cfg, conn, frm, args.to, args.item, args.question, handoff)
         if not mid:
             print("error: hop limit reached; not delivered, Admin was told",
                   file=sys.stderr)
@@ -253,7 +287,8 @@ def _cmd_ask(args):
 
 def _cmd_reply(args):
     def go(cfg, conn):
-        print(reply(conn, args.frm, args.message_id, args.body, file=args.file,
+        frm = resolve_from(args.frm)
+        print(reply(conn, frm, args.message_id, args.body, file=args.file,
                     hop_limit=cfg.hop_limit, chain_window_s=cfg.chain_window_s,
                     home=cfg.home))
         return 0
@@ -262,7 +297,8 @@ def _cmd_reply(args):
 
 def _cmd_inbox(args):
     def go(cfg, conn):
-        for r in pending_for(conn, args.bot or args.frm):
+        bot = args.bot or resolve_from(args.frm)
+        for r in pending_for(conn, bot):
             print(f"{r['id']}\t{r['status']}\t{r['from_bot']}\t{r['item_id'] or '-'}"
                   f"\t{ct_display(r['created_at'])}\t{r['subject']}")
             if args.full:
@@ -277,7 +313,8 @@ def register(subparsers) -> None:
     s.add_argument("to")
     s.add_argument("subject")
     s.add_argument("body")
-    s.add_argument("--from", dest="frm", default=me)
+    s.add_argument("--from", dest="frm", default=me,
+                   help="ignored when CB_BOT is set (forced to that bot)")
     s.add_argument("--item")
     s.add_argument("--kind", default="note")
     s.add_argument("--priority", default="normal")
@@ -292,16 +329,19 @@ def register(subparsers) -> None:
     a.add_argument("question")
     a.add_argument("--handoff-file", required=True,
                    help="file holding what you were doing and what to do on the answer")
-    a.add_argument("--from", dest="frm", default=me)
+    a.add_argument("--from", dest="frm", default=me,
+                   help="ignored when CB_BOT is set (forced to that bot)")
     a.set_defaults(func=_cmd_ask)
     r = subparsers.add_parser("reply", help="answer a message")
     r.add_argument("message_id", type=int)
     r.add_argument("body")
     r.add_argument("--file", help="path of a longer answer")
-    r.add_argument("--from", dest="frm", default=me)
+    r.add_argument("--from", dest="frm", default=me,
+                   help="ignored when CB_BOT is set (forced to that bot)")
     r.set_defaults(func=_cmd_reply)
     i = subparsers.add_parser("inbox", help="unfinished messages for a bot")
     i.add_argument("--bot")
-    i.add_argument("--from", dest="frm", default=me)
+    i.add_argument("--from", dest="frm", default=me,
+                   help="ignored when CB_BOT is set (forced to that bot)")
     i.add_argument("--full", action="store_true")
     i.set_defaults(func=_cmd_inbox)
