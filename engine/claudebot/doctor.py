@@ -1,5 +1,5 @@
 """Health checks: plain scripts, no AI. The backend role is woken only when a
-check finds something wrong, and each finding is reported at most once a day.
+check finds something wrong, and each finding is reported at most every 7 days.
 
 The checks never depend on the dispatcher: this runs from its own timer, so it
 still works (and says so) when the dispatcher is down.
@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from . import __version__, activity, backup, bots, dispatcher, messages
+from . import activity, backup, bots, dispatcher, messages
 from .config import Config
 from .db import connect, tx, utcnow
 
@@ -34,7 +34,8 @@ WAITING_HOURS = 48      # an item waiting on a bot this long is a finding
 # Findings that are the Owner's to act on: shown by `cb doctor` and in the chat
 # brief, never sent to a bot (a bot cannot add a remote).
 # "models": the Owner decides a bot's model; nobody is woken to change it.
-NO_WAKE = ("backup-remote", "archive-remote", "admin-live-token", "models")
+NO_WAKE = ("backup-remote", "archive-remote", "admin-live-token", "models",
+           "workers")
 # Every finding key the doctor can raise. `cb item new --finding` accepts only
 # these, so an item can only be tied to a finding that really exists.
 FINDING_KEYS = ("dispatcher", "admin-live", "admin-live-token", "disk",
@@ -272,7 +273,10 @@ def _db_checks(cfg: Config, conn: sqlite3.Connection, now: str,
     out.extend(_waiting_checks(conn, now))
     out.extend(_stall_checks(conn, cfg, now))
     for msg in bots.check(cfg, conn):
-        out.append(Finding(_bots_key(msg), f"Bot files: {msg}"))
+        text = f"Bot files: {msg}"
+        if "is not linked" in msg:
+            text += " Run `cb bot relink`."
+        out.append(Finding(_bots_key(msg), text))
     mismatches = bots.model_mismatches(conn)
     if mismatches:
         out.append(Finding("models", "Models do not match the bot tiers: "
@@ -281,7 +285,8 @@ def _db_checks(cfg: Config, conn: sqlite3.Connection, now: str,
                            + ". The Owner sets the model with cb bot set "
                            "NAME --model MODEL."))
     missing_workers = bots.thinkers_missing_worker(conn)
-    if missing_workers:
+    if missing_workers and not (len(missing_workers) == 1
+                                and missing_workers[0][0] == "admin"):
         out.append(Finding("workers", "Thinker bots with no active worker: "
                            + "; ".join(f"{b} ({p})" for b, p in missing_workers)
                            + ". Set one with cb bot set NAME --worker WORKER."))
@@ -560,7 +565,6 @@ def _cmd_doctor(args) -> int:
                 conn.close()
     else:
         found = checks(cfg, track=False)
-    print(f"ClaudeBot {__version__}")
     for f in found:
         print(f"- {f.text}")
     if not found:

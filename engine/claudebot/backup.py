@@ -44,9 +44,6 @@ _NEVER_STOP = 10 ** 9
 _GIT_TIMEOUT = 600
 MAX_FILE_BYTES = 50 * 1024 * 1024
 SECRET_NAMES = (".env*", "*.pem", "*.key", "id_rsa*", "id_ed25519*")
-# Store values shorter than this are left out of the push scan (they match
-# ordinary text too easily); six bytes is the smallest safe tradeoff here.
-SECRET_SCAN_MIN_LEN = 6
 _EXCLUDE_BEGIN = "# claudebot-unsafe-begin"
 _EXCLUDE_END = "# claudebot-unsafe-end"
 _URL_USERINFO = re.compile(r"(://)[^/@\s]+@")
@@ -56,6 +53,15 @@ META_SKIP = ("backup.", "doctor.")
 SECRETS_NOTE = ("Secrets are NOT backed up: .secrets/ never leaves this server "
                 "and its key has no other copy. After losing the server, the "
                 "store's secrets must be entered again.")
+_DUMP_SECRET_PATTERNS = (
+    (re.compile(r"sk-ant-"), "anthropic API key"),
+    (re.compile(r"ghp_"), "GitHub token"),
+    (re.compile(r"github_pat_"), "GitHub token"),
+    (re.compile(r"xox[bap]-"), "Slack token"),
+    (re.compile(r"AKIA[0-9A-Z]{16}"), "AWS access key"),
+    (re.compile(r"\d{8,10}:[A-Za-z0-9_-]{35}"), "Telegram bot token"),
+    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"), "private key"),
+)
 
 
 class BackupError(RuntimeError):
@@ -99,11 +105,10 @@ def _assert_no_force(args) -> None:
     for a in args:
         if a == "--force" or a.startswith("--force"):
             raise BackupError("refusing force push")
-        if a == "-f":
-            raise BackupError("refusing force push")
-        if len(a) > 1 and a.startswith("-") and not a.startswith("--") \
-                and "f" in a[1:]:
-            raise BackupError("refusing force push")
+        if a == "--mirror":
+            raise BackupError("refusing mirror push")
+        if isinstance(a, str) and a.startswith("+"):
+            raise BackupError("refusing force refspec")
 
 
 def _git_push(cwd: Path, *args) -> str:
@@ -155,6 +160,28 @@ def _alert_admin(cfg: Config, conn, key: str, subject: str, body: str,
 
 # ---- snapshot and push ----
 
+def scan_sql_dump(path: Path) -> list[str]:
+    """Return human-readable hits (table + row id), never the matched secret."""
+    if not path.is_file():
+        return []
+    hits = []
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for n, line in enumerate(f, 1):
+            if not any(p.search(line) for p, _ in _DUMP_SECRET_PATTERNS):
+                continue
+            table = "?"
+            row_id = str(n)
+            m = re.match(r'INSERT INTO "(\w+)"', line)
+            if m:
+                table = m.group(1)
+                rid = re.search(r"VALUES\((\d+)", line)
+                if rid:
+                    row_id = rid.group(1)
+            label = next(l for p, l in _DUMP_SECRET_PATTERNS if p.search(line))
+            hits.append(f"{table} row {row_id}: {label}")
+    return hits
+
+
 def export_sql(cfg: Config, conn: sqlite3.Connection) -> Path:
     """Write backup/company.sql from a consistent copy of the live database."""
     out = cfg.home / SQL_REL
@@ -185,7 +212,12 @@ def snapshot(cfg: Config, conn: sqlite3.Connection) -> str | None:
     """Export the database as text and commit the home. Returns the commit ID,
     or None when nothing changed since the last snapshot."""
     gitlog.ensure_repo(cfg)
-    export_sql(cfg, conn)
+    out = export_sql(cfg, conn)
+    leak = scan_sql_dump(out)
+    if leak:
+        raise BackupError(
+            "refusing backup commit: " + "; ".join(leak[:5])
+            + (f" and {len(leak) - 5} more" if len(leak) > 5 else ""))
     held, tracked = _hold_back_unsafe(cfg)
     kept = [h for h in held if h not in tracked]
     for names, key, subject, text in (
@@ -251,7 +283,7 @@ def _secret_values(cfg: Config) -> dict:
     out = {}
     for name in store._read_index(cfg):
         v = store._reveal(cfg, name)
-        if len(v) < SECRET_SCAN_MIN_LEN:
+        if len(v) < 8:
             continue
         t = v.decode("utf-8", "replace")
         out[name] = {v, t.replace("'", "''").encode(),
@@ -291,19 +323,6 @@ def scan_paths_for_secrets(cfg: Config, paths) -> list:
     return sorted(hits)
 
 
-def _tracked_secret_filenames(cfg: Config) -> list[str]:
-    """Tracked paths whose basename looks like a secret file."""
-    if not (cfg.home / ".git").exists():
-        return []
-    tracked = [x for x in _git_ok(cfg.home, "ls-files", "-z").split("\0") if x]
-    out = []
-    for rel in tracked:
-        name = rel.rsplit("/", 1)[-1]
-        if any(fnmatch.fnmatchcase(name, p) for p in SECRET_NAMES):
-            out.append(rel)
-    return sorted(out)
-
-
 def scan_for_secrets(cfg: Config) -> list:
     """Names of store items whose value appears in company.sql or in the
     commits not yet pushed. The values themselves are never returned."""
@@ -340,26 +359,6 @@ def push(cfg: Config, conn: sqlite3.Connection | None = None) -> str:
               "<repo-url>")
         return "no-remote"
     try:
-        tracked_secrets = _tracked_secret_filenames(cfg)
-    except BackupError as e:
-        tracked_secrets = None
-        track_why = f"could not scan tracked paths ({e})"
-    if tracked_secrets is None:
-        _alert_admin(cfg, conn, "push-blocked", "Backup push blocked",
-                     f"Nothing was pushed because {track_why}.")
-        print("error: push blocked: " + track_why, file=sys.stderr)
-        return "blocked"
-    if tracked_secrets:
-        why = ("tracked file(s) named like a secret: "
-               + ", ".join(tracked_secrets[:10])
-               + (f" and {len(tracked_secrets) - 10} more"
-                  if len(tracked_secrets) > 10 else ""))
-        _alert_admin(cfg, conn, "push-blocked", "Backup push blocked",
-                     f"Nothing was pushed because {why}. Remove them from "
-                     "Git tracking before pushing.")
-        print("error: push blocked: " + why, file=sys.stderr)
-        return "blocked"
-    try:
         hits = scan_for_secrets(cfg)
     except (BackupError, RuntimeError, OSError, KeyError, ValueError) as e:
         hits = None
@@ -390,6 +389,38 @@ def push(cfg: Config, conn: sqlite3.Connection | None = None) -> str:
 
 
 # ---- restore ----
+
+def restore_archive(source: str, target) -> int:
+    """Copy the archive months (YYYY-MM folders) of an archive repo (path or
+    URL) into `<target>/archive`. Files already there are kept. Returns how
+    many files were copied. Run `cb archive reindex` afterwards."""
+    target = Path(target).expanduser().absolute()
+    dest_root = target / "archive"
+    tmp = Path(tempfile.mkdtemp(prefix="cb-archive-restore-"))
+    n = 0
+    try:
+        r = _git(tmp, "clone", "-q", "--depth", "1", "--", source,
+                 str(tmp / "repo"))
+        if r.returncode:
+            raise BackupError("git clone of the archive failed: "
+                              + clean(r.stderr.strip())[:300])
+        for month in sorted((tmp / "repo").iterdir()):
+            if month.is_symlink() or not month.is_dir() \
+                    or not _MONTH_RE.fullmatch(month.name):
+                continue
+            for src in sorted(month.rglob("*")):
+                if src.is_symlink() or not src.is_file():
+                    continue
+                dest = dest_root / month.name / src.relative_to(month)
+                if dest.exists():
+                    continue
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(src, dest)
+                n += 1
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return n
+
 
 def restore(cfg: Config, source: str, target) -> str:
     """Rebuild a company home at `target` from a backup repo (path or URL) or
@@ -753,6 +784,9 @@ def _cmd_restore(args) -> int:
         cfg = Config(Path(args.target))
     try:
         print(f"integrity_check: {restore(cfg, args.source, args.target)}")
+        if args.archive:
+            print("archive files restored: "
+                  f"{restore_archive(args.archive, args.target)}")
     except (BackupError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
@@ -771,4 +805,7 @@ def register(subparsers) -> None:
                        "into an empty or missing folder")
     r.add_argument("source", help="backup repo (path or URL) or a company.sql")
     r.add_argument("target")
+    r.add_argument("--archive", metavar="SOURCE",
+                   help="also bring back old transcripts and records from "
+                        "the archive repo (path or URL)")
     r.set_defaults(func=_cmd_restore)

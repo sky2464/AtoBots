@@ -24,7 +24,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import activity, bots, messages, requests, search
+from . import activity, bots, messages, requests, search, usage
 from .config import Config
 from .db import connect, tx, utcnow
 
@@ -301,14 +301,9 @@ def _archive_session_dir(src_dir: Path, dest: Path) -> None:
         except (OSError, EOFError, tarfile.TarError, ArchiveError) as e:
             raise ArchiveError(f"existing {dest.name} is unreadable: {e}")
         if not set(before) <= have:
-            try:
-                dest.unlink()
-            except OSError as e:
-                raise ArchiveError(
-                    f"existing {dest.name} is stale and could not be removed: {e}"
-                ) from e
-        else:
-            return
+            raise ArchiveError(f"existing {dest.name} lacks files now in "
+                               f"{top}/; left alone")
+        return
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_name(dest.name + ".tmp")
     try:
@@ -378,7 +373,7 @@ class _Plan:
         return len(self.keys.get(table, []))
 
 
-def _plan_items(conn, cutoff, open_req_ids, plan, archived_at: str) -> None:
+def _plan_items(conn, cutoff, open_req_ids, plan) -> None:
     rows = {r["id"]: r for r in conn.execute(
         f"SELECT * FROM items WHERE id IS NOT NULL AND archived_at IS NULL"
         f" AND status IN {_CLOSED} AND updated_at < ?", (cutoff,))}
@@ -398,9 +393,7 @@ def _plan_items(conn, cutoff, open_req_ids, plan, archived_at: str) -> None:
                 del rows[id]
                 changed = True
     for r in rows.values():
-        stamped = dict(r)
-        stamped["archived_at"] = archived_at
-        plan.add("items", r["updated_at"][:7], stamped, (r["n"], r["updated_at"]))
+        plan.add("items", r["updated_at"][:7], r, (r["n"], r["updated_at"]))
 
 
 def _plan_requests(conn, cutoff, open_req_ids, plan) -> None:
@@ -429,27 +422,6 @@ def _plan_simple(conn, plan, table, sql, args, month_col, skip=None) -> None:
     for r in conn.execute(sql, args):
         if r["id"] != protect and not (skip and skip(r)):
             plan.add(table, r[month_col][:7], r, (r["id"],))
-
-
-def _record_key(table: str, row: dict) -> tuple:
-    if table == "items":
-        return table, row["n"], row["updated_at"]
-    if table == "request_items":
-        return table, row["request_id"], row["item_id"]
-    return table, row["id"]
-
-
-def _keys_in_month(path: Path) -> set:
-    if not path.is_file():
-        return set()
-    out = set()
-    with gzip.open(path, "rb") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            d = json.loads(line)
-            out.add(_record_key(d["table"], d["row"]))
-    return out
 
 
 def _append_month(cfg, month, new_lines) -> None:
@@ -482,10 +454,10 @@ def archive_old_records(cfg: Config, conn: sqlite3.Connection, now: str,
     open_ids = {r["id"] for r in requests._open_requests(conn)}
     on_disk = _session_files(cfg)
     plan = _Plan()
-    _plan_items(conn, cutoff, open_ids, plan, now)
+    _plan_items(conn, cutoff, open_ids, plan)
     _plan_requests(conn, cutoff, open_ids, plan)
     _plan_simple(conn, plan, "messages",
-                 "SELECT * FROM messages WHERE status='done'"
+                 "SELECT * FROM messages WHERE status IN ('done','failed')"
                  " AND COALESCE(done_at, created_at) < ?", (cutoff,),
                  "created_at")
     _plan_simple(conn, plan, "runs",
@@ -498,30 +470,16 @@ def archive_old_records(cfg: Config, conn: sqlite3.Connection, now: str,
         return result
     try:
         for month, lines in sorted(plan.lines.items()):
-            dest = cfg.archive_dir / month / "records.jsonl.gz"
-            have = _keys_in_month(dest)
-            fresh = []
-            for ln in lines:
-                d = json.loads(ln)
-                if _record_key(d["table"], d["row"]) not in have:
-                    fresh.append(ln)
-            if fresh:
-                _append_month(cfg, month, fresh)
+            _append_month(cfg, month, lines)
     except OSError as e:
         raise ArchiveError(str(e)) from e
     moved = dict.fromkeys(result, 0)
     with tx(conn):
-        item_keys = plan.keys.get("items", [])
-        if item_keys:
-            conn.executemany(
-                f"UPDATE items SET archived_at=? WHERE n=? AND updated_at=?"
-                f" AND status IN {_CLOSED}",
-                [(now, n, ua) for n, ua in item_keys])
-            moved["items"] = conn.executemany(
-                f"DELETE FROM items WHERE n=? AND updated_at=?"
-                f" AND status IN {_CLOSED}", item_keys).rowcount
         for table, sql in (
-                ("messages", "DELETE FROM messages WHERE id=? AND status='done'"),
+                ("items", "DELETE FROM items WHERE n=? AND updated_at=?"
+                          f" AND status IN {_CLOSED}"),
+                ("messages", "DELETE FROM messages WHERE id=? AND status IN "
+                             "('done','failed')"),
                 ("runs", "DELETE FROM runs WHERE id=? AND ended_at IS NOT NULL")):
             moved[table] = conn.executemany(sql, plan.keys.get(table, [])
                                             ).rowcount
@@ -570,6 +528,69 @@ def check_memory_caps(cfg: Config, conn: sqlite3.Connection) -> list[str]:
     return sent
 
 
+def _transcript_exists(cfg: Config, conn: sqlite3.Connection, name: str) -> bool:
+    for status in bots.STATUSES:
+        for b in bots.list_bots(conn, status, include_reserved=True):
+            if (usage.project_dir(cfg, b.name) / name).is_file():
+                return True
+    return False
+
+
+def _prune_growth(cfg: Config, conn: sqlite3.Connection, now: str) -> dict:
+    """Drop stale usage rows, orphaned meta keys and old pre-update DB copies."""
+    cutoff180 = (datetime.fromisoformat(now) - timedelta(days=180)
+                 ).isoformat(timespec="seconds")
+    cutoff30 = (datetime.fromisoformat(now) - timedelta(days=30)
+                ).isoformat(timespec="seconds")
+    out = {}
+    with tx(conn):
+        out["usage_pruned"] = conn.execute(
+            "DELETE FROM usage WHERE at < ?", (cutoff180,)).rowcount
+        n_meta = 0
+        for (key,) in conn.execute(
+                "SELECT key FROM meta WHERE key LIKE 'task.finished.%'"
+                " OR key LIKE 'usage.offset.%' OR key LIKE 'doctor.seen:%'"):
+            drop = False
+            if key.startswith("task.finished."):
+                mid = key.removeprefix("task.finished.")
+                if not mid.isdigit():
+                    drop = True
+                else:
+                    drop = conn.execute(
+                        "SELECT 1 FROM messages WHERE id=?",
+                        (int(mid),)).fetchone() is None
+            elif key.startswith("usage.offset."):
+                drop = not _transcript_exists(cfg, conn, key.removeprefix(
+                    "usage.offset."))
+            elif key.startswith("doctor.seen:"):
+                from . import doctor  # late: doctor imports this module
+                fkey = key.removeprefix("doctor.seen:")
+                drop = not doctor.valid_finding_key(fkey)
+            if drop:
+                conn.execute("DELETE FROM meta WHERE key=?", (key,))
+                n_meta += 1
+        out["meta_pruned"] = n_meta
+    backups = cfg.home / "backups"
+    removed = 0
+    if backups.is_dir():
+        dbs = sorted(backups.glob("pre-update-*.db"),
+                     key=lambda p: p.stat().st_mtime, reverse=True)
+        keep = {p for p in dbs[:3]}
+        for path in dbs:
+            if path in keep:
+                continue
+            mtime = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+            if mtime.isoformat(timespec="seconds") >= cutoff30:
+                continue
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                pass
+    out["pre_update_dbs_removed"] = removed
+    return out
+
+
 def daily(cfg: Config, conn: sqlite3.Connection, now: str) -> dict:
     """What the dispatcher runs once a day. Every step runs even if an earlier
     one fails; the first failure is raised at the end."""
@@ -577,6 +598,7 @@ def daily(cfg: Config, conn: sqlite3.Connection, now: str) -> dict:
     for name, fn in (
             ("transcripts_retried", lambda: sweep_transcripts(cfg, conn)),
             ("records", lambda: archive_old_records(cfg, conn, now)),
+            ("growth", lambda: _prune_growth(cfg, conn, now)),
             ("memory_notes", lambda: len(check_memory_caps(cfg, conn)))):
         try:
             r = fn()

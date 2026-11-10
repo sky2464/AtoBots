@@ -5,6 +5,7 @@ inside the 0700 `.secrets/` folder. This is a working rule plus file modes, not
 a technical lock: every bot runs as the same server user.
 """
 import argparse
+import base64
 import contextlib
 import fcntl
 import hashlib
@@ -238,9 +239,16 @@ def run_with(cfg: Config, conn, actor: str, env_map: dict, argv: list,
                 "bound to a chat/live session is needed") from None
     env = dict(os.environ)
     values = []
+
+    def mask_forms(raw: bytes) -> list[bytes]:
+        forms = [raw]
+        forms.append(base64.standard_b64encode(raw))
+        forms.append(raw.hex().encode())
+        return forms
+
     for var, name in env_map.items():
         v = _reveal(cfg, name)
-        values.append(v)
+        values.extend(mask_forms(v))
         env[var] = v.decode()
     try:
         proc = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL,
@@ -292,8 +300,7 @@ def use_env(cfg: Config, conn, actor: str, env_map: dict,
 
 # ---- CLI wiring -----------------------------------------------------------
 
-def _actor() -> str:
-    return os.environ.get("CB_BOT", "cli")
+_actor = activity.actor
 
 
 def _cmd_add(args) -> int:

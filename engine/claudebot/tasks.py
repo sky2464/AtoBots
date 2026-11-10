@@ -213,33 +213,26 @@ def finish_task(cfg: Config, conn: sqlite3.Connection, message_id: int,
     if reason:
         activity.record(conn, SYSTEM, "task.result_unsent",
                         f"task {message_id}: {reason}", str(message_id))
-    if item and status == "failed" and failures(conn, item) == ESCALATE_AT:
+    if item and status == "failed" and failures(conn, item) >= ESCALATE_AT:
         _escalate(conn, m, item)
     return sent
 
 
 def _escalate(conn, m, item) -> None:
-    """Tell Admin once per failure cycle on an item. A sender that is Admin gets
-    the activity record instead of a message."""
-    gen_key = f"task.escalate.gen:{item}"
-    row = conn.execute("SELECT value FROM meta WHERE key=?", (gen_key,)).fetchone()
-    gen = int(row["value"]) + 1 if row else 1
-    conn.execute("INSERT INTO meta(key, value) VALUES (?,?)"
-                 " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                 (gen_key, str(gen)))
-    ref = f"{item}:{gen}"
+    """Tell Admin once per item. A sender that is Admin gets the activity
+    record instead of a message."""
     detail = (f"{item} failed {ESCALATE_AT} times (task {m['id']}, worker "
               f"{m['to_bot']}). Look at the activity record for the task.finish "
               "entries, then fix the cause, reassign the item or tell the Owner.")
     if m["from_bot"] == ADMIN:
         if not conn.execute("SELECT 1 FROM activity WHERE kind='task.escalate'"
-                            " AND ref=?", (ref,)).fetchone():
-            activity.record(conn, SYSTEM, "task.escalate", detail, ref)
+                            " AND ref=?", (item,)).fetchone():
+            activity.record(conn, SYSTEM, "task.escalate", detail, item)
         return
     try:
         messages.send(conn, SYSTEM, ADMIN, f"Task failed twice on {item}",
                       detail, kind="escalation",
-                      dedupe_key=f"task.escalate:{ref}")
+                      dedupe_key=f"task.escalate:{item}")
     except (ValueError, KeyError) as e:
         activity.record(conn, SYSTEM, "task.escalate_unsent", f"{item}: {e}",
                         item)
@@ -247,8 +240,7 @@ def _escalate(conn, m, item) -> None:
 
 # ---- CLI ----
 
-def _actor() -> str:
-    return os.environ.get("CB_BOT", "cli")
+_actor = activity.actor
 
 
 def _run(fn):

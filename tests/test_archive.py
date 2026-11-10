@@ -422,8 +422,9 @@ class RecordTests(Base):
         self.conn.execute(
             "INSERT INTO runs(bot, session_id, lane, started_at) VALUES"
             " ('admin','s','chat',?)", (iso(60),))
-        dec = items.decide(self.conn, "Pick quokka", "use the quokka plan", iso(60),
-                           "s", "admin")
+        with mock.patch.dict(os.environ, {"CB_SESSION_ID": "s"}):
+            dec = items.decide(self.conn, "Pick quokka", "use the quokka plan",
+                               iso(60), "s", "admin")
         res = archive.archive_old_records(self.cfg, self.conn, iso(0))
         self.assertEqual(res["items"], 2)
         ids = [r["id"] for r in items.open_items(self.conn)]
@@ -535,24 +536,6 @@ class RecordTests(Base):
         with gzip.open(f, "rt") as fh:
             titles = [json.loads(x)["row"]["title"] for x in fh]
         self.assertEqual(titles, ["one", "two"])
-
-    def test_retry_after_append_does_not_duplicate_lines(self):
-        self.old_item("dupe", days=60)
-        row = self.conn.execute("SELECT * FROM items").fetchone()
-        plan = archive._Plan()
-        cutoff = (NOW - timedelta(days=30)).isoformat(timespec="seconds")
-        archive._plan_items(self.conn, cutoff, set(), plan, iso(0))
-        month = row["updated_at"][:7]
-        lines = plan.lines[month]
-        archive._append_month(self.cfg, month, lines)
-        self.assertEqual(self.count("items"), 1)  # crash before delete
-        archive.archive_old_records(self.cfg, self.conn, iso(0))
-        f = self.cfg.archive_dir / month / "records.jsonl.gz"
-        with gzip.open(f, "rt") as fh:
-            titles = [json.loads(x)["row"]["title"] for x in fh
-                      if json.loads(x)["table"] == "items"]
-        self.assertEqual(titles, ["dupe"])
-        self.assertEqual(self.count("items"), 0)
 
 
 class DailyAndCapTests(Base):

@@ -246,6 +246,8 @@ def update(cfg: Config, conn: sqlite3.Connection, name: str, actor: str,
     unknown = set(fields) - allowed
     if unknown:
         raise ValueError(f"cannot update: {', '.join(sorted(unknown))}")
+    if "org" in fields and fields["org"] == RESERVED_ORG and actor != "system":
+        raise ValueError(f"org {RESERVED_ORG!r} is for infrastructure roles")
     get(conn, name)
     if "model" in fields and "tier" not in fields:
         fields["tier"] = tier_for_model(fields["model"])
@@ -336,26 +338,18 @@ def set_status(conn: sqlite3.Connection, name: str, status: str,
         activity.record(conn, actor, f"bot.{status}", name, name)
 
 
-_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
-
-
-def _read_capped(path: Path, cap: int, *, keep: str = "tail") -> str:
-    """Read at most `cap` bytes. Memory keeps the newest suffix (condensation
-    drops the oldest head); Soul and Persona keep the head."""
+def _read_capped(path: Path, cap: int) -> str:
+    """Read at most `cap` bytes, keeping the newest suffix (memory/persona
+    append; the oldest head is what condensation drops first)."""
     try:
         data = path.read_bytes()
     except FileNotFoundError:
         return ""
-    if len(data) <= cap:
-        return data.decode("utf-8", errors="replace")
-    chunk = data[:cap] if keep == "head" else data[-cap:]
-    if keep == "head":
-        while chunk and chunk[-1] & 0xC0 == 0x80:
-            chunk = chunk[:-1]
-    else:
-        while chunk and chunk[0] & 0xC0 == 0x80:
-            chunk = chunk[1:]
-    return chunk.decode("utf-8", errors="replace")
+    return data[-cap:].decode("utf-8", errors="ignore")
+
+
+# Notes for people at the top of a Persona file; not sent to the model.
+_HTML_COMMENT = re.compile(r"<!--.*?-->\s*", re.DOTALL)
 
 
 def identity_prompt(cfg: Config, conn: sqlite3.Connection, name: str) -> str:
@@ -365,13 +359,18 @@ def identity_prompt(cfg: Config, conn: sqlite3.Connection, name: str) -> str:
     get(conn, name)
     d = _bot_dir(cfg, name)
     parts = [
-        ("Soul", _read_capped(d / "SOUL.md", cfg.soul_cap_bytes, keep="head")),
+        ("Soul", _read_capped(d / "SOUL.md", cfg.soul_cap_bytes)),
         ("Persona", _HTML_COMMENT.sub("", _read_capped(
-            d / "PERSONA.md", cfg.persona_cap_bytes, keep="head"))),
+            d / "PERSONA.md", cfg.persona_cap_bytes))),
     ]
     rules = cfg.home / "rules.md"
     if rules.is_file():
-        parts.append(("Shared rules", _read_capped(rules, 4 * 1024, keep="head")))
+        cap = 4 * 1024
+        size = rules.stat().st_size
+        if size > cap:
+            print(f"warning: rules.md is {size} bytes; only the last {cap} "
+                  f"bytes are sent to the model", file=sys.stderr)
+        parts.append(("Shared rules", _read_capped(rules, cap)))
     return "\n\n".join(f"# {title}\n\n{text.strip()}" for title, text in parts)
 
 
@@ -427,6 +426,17 @@ def thinkers_missing_worker(conn: sqlite3.Connection) -> list[tuple[str, str]]:
     return out
 
 
+def relink_skills(cfg: Config, conn: sqlite3.Connection) -> int:
+    """Recreate every bot's skill symlinks from its DB row. Safe to repeat."""
+    n = 0
+    for status in STATUSES:
+        for b in list_bots(conn, status, include_reserved=True):
+            if b.skills:
+                _link_skills(cfg, b.name, b.skills)
+                n += 1
+    return n
+
+
 def check(cfg: Config, conn: sqlite3.Connection) -> list[str]:
     msgs = []
     caps = {"SOUL.md": cfg.soul_cap_bytes, "PERSONA.md": cfg.persona_cap_bytes,
@@ -455,8 +465,7 @@ def check(cfg: Config, conn: sqlite3.Connection) -> list[str]:
 
 # ---- CLI wiring -----------------------------------------------------------
 
-def _actor() -> str:
-    return os.environ.get("CB_BOT", "cli")
+_actor = activity.actor
 
 
 def _csv(v):
@@ -559,6 +568,14 @@ def _cmd_check(args) -> int:
     return _run(go)
 
 
+def _cmd_relink(args) -> int:
+    def go(cfg, conn):
+        n = relink_skills(cfg, conn)
+        print(f"relinked skills for {n} bot(s)")
+        return 0
+    return _run(go)
+
+
 def register(subparsers) -> None:
     sp = subparsers.add_parser("bot", help="bots")
     sub = sp.add_subparsers(dest="bot_cmd", required=True)
@@ -603,6 +620,8 @@ def register(subparsers) -> None:
             p.add_argument("--decision",
                            help="Owner decision id (required to pause/retire admin)")
         p.set_defaults(func=_status_cmd(status))
-    c = subparsers.add_parser("check", help="check bot files")
+    c = sub.add_parser("check", help="check bot files")
     c.set_defaults(func=_cmd_check)
+    rl = sub.add_parser("relink", help="recreate skill symlinks for every bot")
+    rl.set_defaults(func=_cmd_relink)
 
