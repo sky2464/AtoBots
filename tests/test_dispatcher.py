@@ -215,6 +215,19 @@ class StartTests(Base):
         self.clock.advance(3601)
         self.assertEqual(self.tick(d).__len__(), 2)  # backend + the admin note
 
+    def test_wake_cap_ignores_chat_and_live_lanes(self):
+        for lane in ("chat", "live"):
+            for _ in range(12):
+                self.conn.execute(
+                    "INSERT INTO runs(bot, lane, started_at, ended_at, reason)"
+                    " VALUES ('admin',?,?,?,'ok')",
+                    (lane, self.clock(), self.clock()))
+        self.send("admin", frm="backend")
+        self.ready()
+        d = self.make()
+        self.assertEqual(len(self.tick(d)), 1)
+        self.assertEqual(self.run_fn.bots_run, ["admin"])
+
     def test_owner_connected_defers_new_runs(self):
         self.send("backend")
         self.ready()
@@ -307,6 +320,16 @@ class ClaimTests(Base):
         self.ready()
         self.tick(d)
         self.assertEqual(self.msg(b)["status"], "queued")
+
+    def test_bare_ok_without_progress_does_not_complete_question(self):
+        t = items.new(self.cfg, self.conn, "q", "backend")
+        q = messages.ask(self.cfg, self.conn, "admin", "backend", t,
+                         "which?", "handoff", now=self.clock())
+        self.ready()
+        d = self.make()
+        self.tick(d)
+        self.assertEqual(self.msg(q)["status"], "queued")  # requeued, not done
+        self.assertTrue(self.kinds("message.no_progress"))
 
     def test_crash_requeues(self):
         a = self.send("backend")
@@ -581,6 +604,34 @@ class WakeTests(Base):
         self.assertEqual(len(self.conn.execute(
             "SELECT * FROM messages WHERE to_bot='design' AND item_id=?",
             (i,)).fetchall()), 1)
+
+    def test_split_children_wake_owner(self):
+        p = items.new(self.cfg, self.conn, "big", "admin", status="doing")
+        kids = items.split(self.cfg, self.conn, p, ["a", "b"], "backend")
+        d = self.make()
+        d.tick()
+        woke = [m["item_id"] for m in self.conn.execute(
+            "SELECT item_id FROM messages WHERE from_bot='system'"
+            " AND to_bot='backend' ORDER BY id").fetchall()]
+        self.assertEqual(woke, kids)
+
+    def test_stalled_doing_reverts_to_todo_and_wakes(self):
+        i = items.new(self.cfg, self.conn, "stuck", "backend", status="doing")
+        # Age the item past the lease with no live run.
+        old = (T0 - timedelta(seconds=self.cfg.lease_seconds + 1)
+               ).isoformat(timespec="seconds")
+        self.conn.execute("UPDATE items SET updated_at=? WHERE id=?", (old, i))
+        d = self.make()
+        d.tick()
+        row = self.conn.execute("SELECT status FROM items WHERE id=?",
+                                (i,)).fetchone()
+        self.assertEqual(row["status"], "todo")
+        self.assertTrue(self.kinds("item.stall_revert"))
+        wakes = self.conn.execute(
+            "SELECT * FROM messages WHERE from_bot='system' AND item_id=?",
+            (i,)).fetchall()
+        self.assertEqual(len(wakes), 1)
+        self.assertEqual(wakes[0]["to_bot"], "backend")
 
     def test_idle_admin_returns_to_open_work(self):
         d = self.make()
