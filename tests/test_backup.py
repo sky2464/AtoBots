@@ -47,8 +47,9 @@ class BackupBase(unittest.TestCase):
 
 class ForcePushTests(unittest.TestCase):
     def test_assert_no_force_rejects_flags(self):
-        for bad in (("--force",), ("-q", "--force", "origin"),
-                    ("--force-with-lease",), ("--force-if-includes",)):
+        for bad in (("--force",), ("-f",), ("-q", "--force", "origin"),
+                    ("--force-with-lease",), ("--force-if-includes",),
+                    ("-qf", "origin", "main")):
             with self.assertRaises(backup.BackupError):
                 backup._assert_no_force(bad)
 

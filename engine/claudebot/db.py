@@ -1,7 +1,9 @@
 """SQLite access: connection, schema, transactions, time helpers."""
+import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .config import Config
@@ -80,6 +82,24 @@ CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
 _CT = ZoneInfo("America/Chicago")
 
 
+def _chmod_private(path: Path) -> None:
+    try:
+        if path.exists():
+            os.chmod(path, 0o600)
+        for suffix in ("-wal", "-shm"):
+            side = Path(f"{path}{suffix}")
+            if side.exists():
+                os.chmod(side, 0o600)
+    except OSError:
+        pass
+
+
+def harden_data_files(cfg: Config) -> None:
+    """Mode 600 on company.db and search.db when they exist."""
+    for name in ("company.db", "search.db"):
+        _chmod_private(cfg.home / name)
+
+
 def connect(cfg: Config) -> sqlite3.Connection:
     cfg.home.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(cfg.db_path, timeout=30, isolation_level=None)
@@ -88,6 +108,7 @@ def connect(cfg: Config) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     _migrate(conn)
+    harden_data_files(cfg)
     return conn
 
 

@@ -11,7 +11,22 @@ SSH_PORT="${SSH_PORT:-22}"
 SWAP_TARGET_MB="${SWAP_TARGET_MB:-4096}"
 SSH_PUBKEYS_FILE="${SSH_PUBKEYS_FILE:-}"
 
+validate_bootstrap_env() {
+  if [[ "$NEW_USER" == *$'\n'* || "$SSH_PORT" == *$'\n'* ]]; then
+    echo "NEW_USER and SSH_PORT must not contain newlines"; exit 1
+  fi
+  if ! [[ "$NEW_USER" =~ ^[a-zA-Z][a-zA-Z0-9_-]{0,31}$ ]]; then
+    echo "Invalid NEW_USER: use letters, digits, _ and - (max 32 chars)"
+    exit 1
+  fi
+  if ! [[ "$SSH_PORT" =~ ^[0-9]+$ ]] || (( SSH_PORT < 1 || SSH_PORT > 65535 )); then
+    echo "Invalid SSH_PORT: use a number from 1 to 65535"
+    exit 1
+  fi
+}
+
 [[ $EUID -eq 0 ]] || { echo "Run as root"; exit 1; }
+validate_bootstrap_env
 export DEBIAN_FRONTEND=noninteractive
 step() { echo -e "\n==> $*"; }
 

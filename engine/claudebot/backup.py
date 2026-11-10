@@ -44,6 +44,9 @@ _NEVER_STOP = 10 ** 9
 _GIT_TIMEOUT = 600
 MAX_FILE_BYTES = 50 * 1024 * 1024
 SECRET_NAMES = (".env*", "*.pem", "*.key", "id_rsa*", "id_ed25519*")
+# Store values shorter than this are left out of the push scan (they match
+# ordinary text too easily); six bytes is the smallest safe tradeoff here.
+SECRET_SCAN_MIN_LEN = 6
 _EXCLUDE_BEGIN = "# claudebot-unsafe-begin"
 _EXCLUDE_END = "# claudebot-unsafe-end"
 _URL_USERINFO = re.compile(r"(://)[^/@\s]+@")
@@ -95,6 +98,11 @@ def _assert_no_force(args) -> None:
     """Refuse any force-push flag. Deploy keys must never rewrite history."""
     for a in args:
         if a == "--force" or a.startswith("--force"):
+            raise BackupError("refusing force push")
+        if a == "-f":
+            raise BackupError("refusing force push")
+        if len(a) > 1 and a.startswith("-") and not a.startswith("--") \
+                and "f" in a[1:]:
             raise BackupError("refusing force push")
 
 
@@ -243,7 +251,7 @@ def _secret_values(cfg: Config) -> dict:
     out = {}
     for name in store._read_index(cfg):
         v = store._reveal(cfg, name)
-        if len(v) < 8:
+        if len(v) < SECRET_SCAN_MIN_LEN:
             continue
         t = v.decode("utf-8", "replace")
         out[name] = {v, t.replace("'", "''").encode(),
@@ -283,6 +291,19 @@ def scan_paths_for_secrets(cfg: Config, paths) -> list:
     return sorted(hits)
 
 
+def _tracked_secret_filenames(cfg: Config) -> list[str]:
+    """Tracked paths whose basename looks like a secret file."""
+    if not (cfg.home / ".git").exists():
+        return []
+    tracked = [x for x in _git_ok(cfg.home, "ls-files", "-z").split("\0") if x]
+    out = []
+    for rel in tracked:
+        name = rel.rsplit("/", 1)[-1]
+        if any(fnmatch.fnmatchcase(name, p) for p in SECRET_NAMES):
+            out.append(rel)
+    return sorted(out)
+
+
 def scan_for_secrets(cfg: Config) -> list:
     """Names of store items whose value appears in company.sql or in the
     commits not yet pushed. The values themselves are never returned."""
@@ -318,6 +339,26 @@ def push(cfg: Config, conn: sqlite3.Connection | None = None) -> str:
               f"Add one with: git -C {cfg.home} remote add {BACKUP_REMOTE} "
               "<repo-url>")
         return "no-remote"
+    try:
+        tracked_secrets = _tracked_secret_filenames(cfg)
+    except BackupError as e:
+        tracked_secrets = None
+        track_why = f"could not scan tracked paths ({e})"
+    if tracked_secrets is None:
+        _alert_admin(cfg, conn, "push-blocked", "Backup push blocked",
+                     f"Nothing was pushed because {track_why}.")
+        print("error: push blocked: " + track_why, file=sys.stderr)
+        return "blocked"
+    if tracked_secrets:
+        why = ("tracked file(s) named like a secret: "
+               + ", ".join(tracked_secrets[:10])
+               + (f" and {len(tracked_secrets) - 10} more"
+                  if len(tracked_secrets) > 10 else ""))
+        _alert_admin(cfg, conn, "push-blocked", "Backup push blocked",
+                     f"Nothing was pushed because {why}. Remove them from "
+                     "Git tracking before pushing.")
+        print("error: push blocked: " + why, file=sys.stderr)
+        return "blocked"
     try:
         hits = scan_for_secrets(cfg)
     except (BackupError, RuntimeError, OSError, KeyError, ValueError) as e:
