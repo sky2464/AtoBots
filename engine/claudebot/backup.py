@@ -91,6 +91,19 @@ def _git_ok(cwd: Path, *args, stdin: str | None = None) -> str:
     return r.stdout
 
 
+def _assert_no_force(args) -> None:
+    """Refuse any force-push flag. Deploy keys must never rewrite history."""
+    for a in args:
+        if a == "--force" or a.startswith("--force"):
+            raise BackupError("refusing force push")
+
+
+def _git_push(cwd: Path, *args) -> str:
+    """`git push` that never accepts --force / --force-with-lease."""
+    _assert_no_force(args)
+    return _git_ok(cwd, "push", *args)
+
+
 def remotes(cfg: Config) -> list:
     if not (cfg.home / ".git").exists():
         return []
@@ -256,6 +269,20 @@ def _file_chunks(path: Path):
             yield chunk
 
 
+def scan_paths_for_secrets(cfg: Config, paths) -> list:
+    """Names of store items whose value appears in any of the given files.
+    The values themselves are never returned."""
+    values = _secret_values(cfg)
+    if not values:
+        return []
+    hits = set()
+    for path in paths:
+        p = Path(path)
+        if p.is_file() and not p.is_symlink():
+            hits |= _scan_chunks(_file_chunks(p), values)
+    return sorted(hits)
+
+
 def scan_for_secrets(cfg: Config) -> list:
     """Names of store items whose value appears in company.sql or in the
     commits not yet pushed. The values themselves are never returned."""
@@ -307,7 +334,7 @@ def push(cfg: Config, conn: sqlite3.Connection | None = None) -> str:
         print("error: push blocked: " + why, file=sys.stderr)
         return "blocked"
     try:
-        _git_ok(cfg.home, "push", "-q", BACKUP_REMOTE, "main")
+        _git_push(cfg.home, "-q", BACKUP_REMOTE, "main")
     except BackupError as e:
         _alert_admin(cfg, conn, "push-failed", "Backup push failed",
                      f"The hourly backup could not be pushed to the "
@@ -422,9 +449,16 @@ def _clone_remote(cfg: Config, dest: Path, branch: str | None = None) -> None:
 
 def _push_month(cfg: Config, month: str) -> dict:
     """Push archive/<month> to the archive remote and verify it there.
-    Returns the marker to leave behind. Raises BackupError if not verified."""
+    Returns the marker to leave behind. Raises BackupError if not verified.
+    Scans the month for store secret values before any commit or push; never
+    force-pushes."""
     month_dir = cfg.archive_dir / month
     files = _month_files(month_dir)
+    hits = scan_paths_for_secrets(cfg, [month_dir / rel for rel in files])
+    if hits:
+        raise BackupError(
+            f"{month}: secret scan blocked the archive push; store item(s) "
+            + ", ".join(hits) + " appear in the month's files")
     tmp = Path(_tmpdir(cfg))
     try:
         repo = tmp / "repo"
@@ -444,7 +478,7 @@ def _push_month(cfg: Config, month: str) -> dict:
                     "user.email=claudebot@claudebot.local", "-c",
                     "commit.gpgsign=false", "commit", "-q", "-m",
                     f"Archive {month}")
-        _git_ok(repo, "push", "-q", "origin", f"HEAD:refs/heads/{branch}")
+        _git_push(repo, "-q", "origin", f"HEAD:refs/heads/{branch}")
         # Verify against what the remote really holds now.
         _git_ok(repo, "fetch", "-q", "origin", branch)
         commit = _git_ok(repo, "rev-parse", "FETCH_HEAD").strip()
@@ -532,6 +566,40 @@ def push_archive_months(cfg: Config, conn: sqlite3.Connection,
     return pushed
 
 
+def mirror_current_month(cfg: Config, conn: sqlite3.Connection | None = None,
+                         now: str | None = None) -> str | None:
+    """Push the current (hot) archive month to the `archive` remote without
+    deleting local files. Returns the month mirrored, or None when there is
+    nothing new / no remote / no current-month files."""
+    now = now or utcnow()
+    if ARCHIVE_REMOTE not in remotes(cfg):
+        return None
+    d = datetime.fromisoformat(now)
+    this = f"{d.year}-{d.month:02d}"
+    month_dir = cfg.archive_dir / this
+    if not month_dir.is_dir():
+        return None
+    try:
+        sig = _signature(month_dir)
+        if sig is None:
+            return None
+        key = f"backup.archive_mirrored:{this}"
+        if conn is not None and meta_get(conn, key) == sig:
+            return None
+        _push_month(cfg, this)
+        if conn is not None:
+            meta_set(conn, key, sig)
+    except BackupError as e:
+        _alert_admin(cfg, conn, f"archive-mirror-failed:{this}",
+                     "Mirroring the current archive month failed",
+                     f"Could not mirror archive/{this} to the "
+                     f"'{ARCHIVE_REMOTE}' remote: {e}. Local files are "
+                     "kept; the next hour tries again.", now)
+        print(f"error: {e}", file=sys.stderr)
+        return None
+    return this
+
+
 def offsite_archive(cfg: Config, conn: sqlite3.Connection | None = None,
                     disk_usage_fn=shutil.disk_usage,
                     now: str | None = None) -> list:
@@ -614,6 +682,7 @@ def _cmd_now(args) -> int:
         ("push", lambda: push(cfg, conn)),
         ("archive copy", lambda: ", ".join(push_archive_months(cfg, conn))
          or "nothing new"),
+        ("archive mirror", lambda: mirror_current_month(cfg, conn) or "nothing new"),
         ("off-server", lambda: ", ".join(offsite_archive(cfg, conn))
          or "not needed"),
     )

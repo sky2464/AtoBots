@@ -1,19 +1,45 @@
 #!/usr/bin/env bash
 # VPS bootstrap for Claude Code — Debian 13 (trixie). Run ONCE as root.
-#   bash vps-bootstrap.sh
-# Optional overrides:  NEW_USER=claude SSH_PORT=22 bash vps-bootstrap.sh
+#   bash vps-bootstrap.sh key1.pub [key2.pub ...]
+#   SSH_PUBKEYS_FILE=/path/to/authorized_keys_lines bash vps-bootstrap.sh
+# Optional overrides:  NEW_USER=claude SSH_PORT=22 bash vps-bootstrap.sh ...
+# Public SSH keys come from argv paths and/or SSH_PUBKEYS_FILE — never hard-coded.
 set -euo pipefail
 
 NEW_USER="${NEW_USER:-claude}"
 SSH_PORT="${SSH_PORT:-22}"
-AUTHORIZED_KEYS=(
-  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGI4hHPex6Vxi7hgxzwwuQr5sb1zT6rWVpVVVRer4tJW dev@infodevsec.com"
-  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBp80c39t0jKRrQsYdJKS67s5cekvnAntHtU1wkJTw5G claude-agent@newvps"
-)
+SWAP_TARGET_MB="${SWAP_TARGET_MB:-4096}"
+SSH_PUBKEYS_FILE="${SSH_PUBKEYS_FILE:-}"
 
 [[ $EUID -eq 0 ]] || { echo "Run as root"; exit 1; }
 export DEBIAN_FRONTEND=noninteractive
 step() { echo -e "\n==> $*"; }
+
+collect_keys() {
+  local keys=() line f
+  if [[ -n "$SSH_PUBKEYS_FILE" ]]; then
+    [[ -f "$SSH_PUBKEYS_FILE" ]] || { echo "SSH_PUBKEYS_FILE not found: $SSH_PUBKEYS_FILE"; exit 1; }
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ -z "$line" || "$line" == \#* ]] && continue
+      keys+=("$line")
+    done < "$SSH_PUBKEYS_FILE"
+  fi
+  for f in "$@"; do
+    [[ -f "$f" ]] || { echo "key file not found: $f"; exit 1; }
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ -z "$line" || "$line" == \#* ]] && continue
+      keys+=("$line")
+    done < "$f"
+  done
+  if [[ ${#keys[@]} -eq 0 ]]; then
+    echo "Pass at least one public key file, or set SSH_PUBKEYS_FILE."
+    echo "Usage: bash vps-bootstrap.sh key1.pub [key2.pub ...]"
+    exit 1
+  fi
+  printf '%s\n' "${keys[@]}"
+}
+
+PUBKEYS="$(collect_keys "$@")"
 
 step "Updating system"
 apt-get update
@@ -29,19 +55,46 @@ echo "$NEW_USER ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/90-$NEW_USER"
 chmod 440 "/etc/sudoers.d/90-$NEW_USER"
 visudo -cf "/etc/sudoers.d/90-$NEW_USER"
 
-step "Installing SSH keys"
+step "Merging SSH public keys into authorized_keys"
 HOME_DIR="/home/$NEW_USER"
+AUTH_KEYS="$HOME_DIR/.ssh/authorized_keys"
 install -d -m 700 -o "$NEW_USER" -g "$NEW_USER" "$HOME_DIR/.ssh"
-printf '%s\n' "${AUTHORIZED_KEYS[@]}" > "$HOME_DIR/.ssh/authorized_keys"
-chown "$NEW_USER:$NEW_USER" "$HOME_DIR/.ssh/authorized_keys"
-chmod 600 "$HOME_DIR/.ssh/authorized_keys"
+touch "$AUTH_KEYS"
+chown "$NEW_USER:$NEW_USER" "$AUTH_KEYS"
+chmod 600 "$AUTH_KEYS"
+while IFS= read -r line || [[ -n "$line" ]]; do
+  [[ -z "$line" ]] && continue
+  if ! grep -qxF "$line" "$AUTH_KEYS"; then
+    printf '%s\n' "$line" >> "$AUTH_KEYS"
+  fi
+done <<< "$PUBKEYS"
+chown "$NEW_USER:$NEW_USER" "$AUTH_KEYS"
+chmod 600 "$AUTH_KEYS"
 
-step "Adding swap if RAM < 4 GB (Claude Code wants 4 GB+)"
+step "Ensuring total swap >= ${SWAP_TARGET_MB} MB when RAM < 4 GB"
 MEM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
-if [[ $MEM_MB -lt 3900 ]] && ! swapon --show | grep -q .; then
-  fallocate -l 4G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
-  grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
-  echo "vm.swappiness=10" > /etc/sysctl.d/99-swap.conf && sysctl -p /etc/sysctl.d/99-swap.conf
+SWAP_MB=$(awk '/SwapTotal/ {print int($2/1024)}' /proc/meminfo)
+if [[ $MEM_MB -lt 3900 && $SWAP_MB -lt $SWAP_TARGET_MB ]]; then
+  NEED_MB=$((SWAP_TARGET_MB - SWAP_MB))
+  # Round up to whole MiB; fallocate wants a size suffix.
+  SWAPFILE=/swapfile
+  if [[ -e $SWAPFILE ]]; then
+    SWAPFILE=/swapfile-claudebot
+  fi
+  if [[ ! -e $SWAPFILE ]]; then
+    fallocate -l "${NEED_MB}M" "$SWAPFILE"
+    chmod 600 "$SWAPFILE"
+    mkswap "$SWAPFILE"
+    swapon "$SWAPFILE"
+    grep -q "^$SWAPFILE " /etc/fstab || echo "$SWAPFILE none swap sw 0 0" >> /etc/fstab
+    echo "vm.swappiness=10" > /etc/sysctl.d/99-swap.conf
+    sysctl -p /etc/sysctl.d/99-swap.conf
+    echo "Added ${NEED_MB}M at $SWAPFILE (was ${SWAP_MB}M, target ${SWAP_TARGET_MB}M)."
+  else
+    echo "Swap still under target but $SWAPFILE already exists; leave it alone."
+  fi
+else
+  echo "Swap OK (RAM ${MEM_MB}M, swap ${SWAP_MB}M)."
 fi
 
 step "Firewall (ufw): allow SSH on $SSH_PORT only"
@@ -79,8 +132,9 @@ cat > "$HOME_DIR/CLAUDE.md" <<MD
 - Firewall: ufw (only SSH $SSH_PORT/tcp open). Open ports with \`sudo ufw allow <port>/tcp\` and note them here.
 - fail2ban protects SSH. Unattended security upgrades are on.
 - Projects live in ~/projects.
-- Before risky changes (sshd, ufw, deleting data) explain the change and confirm with Navid.
+- Before risky changes (sshd, ufw, deleting data) explain the change and confirm with the Owner.
 - Never disable key-only SSH or remove ufw's SSH rule.
+- Keep host-specific inventory (IP, hostname, keys, remotes) out of the engine repo; see docs/templates/server-inventory.md.
 MD
 chown "$NEW_USER:$NEW_USER" "$HOME_DIR/CLAUDE.md"
 
@@ -101,5 +155,5 @@ fi
 systemctl restart ssh
 
 echo -e "\n✅ Done. KEEP THIS ROOT SESSION OPEN and test in a new terminal:"
-echo "   ssh -i ~/.ssh/id_ed25519 -p $SSH_PORT $NEW_USER@<server-ip>"
+echo "   ssh -i <your-private-key> -p $SSH_PORT $NEW_USER@<server-ip>"
 echo "Then run 'claude' there once to log in with your Pro/Max account."
