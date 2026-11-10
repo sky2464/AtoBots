@@ -42,7 +42,6 @@ if ! [[ $ENGINE_DIR =~ ^/[A-Za-z0-9._/-]+$ ]]; then
     exit 2
 fi
 UNIT_SRC=$ENGINE_DIR/systemd
-UNIT_DST=/etc/systemd/system
 BIN_DIR=$HOME/.local/bin
 BASHRC=$HOME/.bashrc
 
@@ -98,21 +97,12 @@ if ! grep -q 'claudebot-path' "$BASHRC"; then
     echo "Added ~/.local/bin to PATH in $BASHRC"
 fi
 
-# 4. Systemd units, with @HOME@ and @ENGINE@ filled in.
-render_unit() {
-    local name=$1
-    [ -f "$UNIT_SRC/$name" ] || { echo "error: missing unit $UNIT_SRC/$name" >&2; exit 1; }
-    sed -e "s|@HOME@|$HOME_DIR|g" -e "s|@ENGINE@|$ENGINE_DIR|g" -e "s|@USER@|$RUN_USER|g" "$UNIT_SRC/$name" | sudo tee "$UNIT_DST/$name" > /dev/null
-    echo "Installed $UNIT_DST/$name"
-}
-
-for unit in "${SERVICES[@]}" "$ADMIN_UNIT"; do
-    render_unit "$unit"
-done
-for unit in "${TIMERS[@]}"; do
-    render_unit "$unit"
-    render_unit "${unit%.timer}.service"
-done
+# 4. Systemd units, with the placeholders filled in.
+# shellcheck source=lib/units.sh
+source "$ENGINE_DIR/lib/units.sh"
+export CLAUDEBOT_HOME=$HOME_DIR
+MEMORY_MAX=$("$ENGINE_DIR/bin/cb" config get run_memory_max)
+install_units "$HOME_DIR" "$ENGINE_DIR" "$RUN_USER" "$MEMORY_MAX"
 
 sudo systemctl daemon-reload
 

@@ -300,6 +300,24 @@ class TemplatesTest(unittest.TestCase):
         self.assertIn('"$CB" dispatcher release', text)
         self.assertIn("--force", text)
 
+    def test_units_are_rendered_in_one_place(self):
+        lib = ROOT / "engine" / "lib" / "units.sh"
+        install = (ROOT / "engine" / "install.sh").read_text()
+        update = (ROOT / "engine" / "update.sh").read_text()
+        admin = (ROOT / "engine" / "systemd" / "claudebot-admin.service").read_text()
+        for path in (lib, ROOT / "engine" / "install.sh", ROOT / "engine" / "update.sh"):
+            r = subprocess.run(["bash", "-n", str(path)], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("install_units", lib.read_text())
+        self.assertIn("lib/units.sh", install)
+        self.assertIn("lib/units.sh", update)
+        self.assertNotIn("render_unit()", install)
+        self.assertNotIn("2 GB", admin)
+        self.assertIn("MemoryMax=@MEMORY_MAX@", admin)
+        self.assertIn("The conversation will restart.", update)
+        self.assertIn("config get run_memory_max", install)
+        self.assertIn("config get run_memory_max", update)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1000,7 +1000,7 @@ class ServiceFileTests(unittest.TestCase):
 
     def test_admin_unit_has_memorymax(self):
         text = (ENGINE / "systemd" / "claudebot-admin.service").read_text()
-        self.assertIn("MemoryMax=1200M", text)
+        self.assertIn("MemoryMax=@MEMORY_MAX@", text)
         self.assertIn("MemorySwapMax=0", text)
         self.assertIn("admin scrub-token", text)
 

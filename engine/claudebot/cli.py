@@ -5,6 +5,7 @@ import os
 import shutil
 import sys
 import tempfile
+from dataclasses import fields
 from pathlib import Path
 
 from . import (activity, admin_live, archive, backup, bots, chat, dispatcher,
@@ -203,6 +204,16 @@ def _cmd_version(args) -> int:
     return 0
 
 
+def _cmd_config_get(args) -> int:
+    cfg = Config.load()
+    names = {f.name for f in fields(Config)}
+    if args.key not in names:
+        print(f"error: unknown setting {args.key}", file=sys.stderr)
+        return 1
+    print(getattr(cfg, args.key))
+    return 0
+
+
 def _cmd_templates_refresh(_args) -> int:
     try:
         cfg = Config.load()
@@ -231,6 +242,11 @@ def build_parser() -> argparse.ArgumentParser:
     tsub = tp.add_subparsers(dest="templates_cmd", required=True)
     tr = tsub.add_parser("refresh", help="refresh rules.md and bundled skills")
     tr.set_defaults(func=_cmd_templates_refresh)
+    cp = sub.add_parser("config", help="read one setting")
+    csub = cp.add_subparsers(dest="config_cmd", required=True)
+    cg = csub.add_parser("get", help="print one config value")
+    cg.add_argument("key")
+    cg.set_defaults(func=_cmd_config_get)
     return p
 
 

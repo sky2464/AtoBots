@@ -1,8 +1,10 @@
+import io
 import json
 import os
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -34,6 +36,19 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg.claude_bin, f"{cfg.run_home}/.local/bin/claude")
         self.assertEqual(cfg.timezone, "America/Chicago")
         self.assertEqual(cfg.rules_cap_bytes, 4 * 1024)
+
+    def test_config_get_prints_one_value(self):
+        from claudebot import cli
+        buf = io.StringIO()
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.home)}), \
+                redirect_stdout(buf):
+            self.assertEqual(cli.main(["config", "get", "run_memory_max"]), 0)
+        self.assertEqual(buf.getvalue().strip(), "1200M")
+        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.home)}), \
+                redirect_stderr(err):
+            self.assertEqual(cli.main(["config", "get", "no_such_key"]), 1)
+        self.assertIn("unknown setting", err.getvalue())
 
     def test_text_settings_can_be_overridden(self):
         cfg = self.load({"run_user": "bots", "run_home": "/srv/bots",

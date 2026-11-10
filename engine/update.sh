@@ -243,33 +243,30 @@ echo "Applying the update to company \"$COMPANY\" ..."
 echo "Refreshing engine-owned templates ..."
 "$CB" templates refresh
 
-# 8. Re-render units, then start the services on the new code.
-for unit in claudebot-dispatcher.service claudebot-backup.service \
-        claudebot-doctor.service; do
-    if [ -f "$ENGINE_DIR/systemd/$unit" ]; then
-        sed -e "s|@HOME@|$HOME_DIR|g" -e "s|@ENGINE@|$ENGINE_DIR|g" \
-            -e "s|@USER@|$(id -un)|g" "$ENGINE_DIR/systemd/$unit" \
-            | sudo tee "/etc/systemd/system/$unit" > /dev/null
-    fi
-done
-for unit in claudebot-backup.timer claudebot-doctor.timer; do
-    if [ -f "$ENGINE_DIR/systemd/$unit" ]; then
-        sed -e "s|@HOME@|$HOME_DIR|g" -e "s|@ENGINE@|$ENGINE_DIR|g" \
-            -e "s|@USER@|$(id -un)|g" "$ENGINE_DIR/systemd/$unit" \
-            | sudo tee "/etc/systemd/system/$unit" > /dev/null
-        svc="${unit%.timer}.service"
-        sed -e "s|@HOME@|$HOME_DIR|g" -e "s|@ENGINE@|$ENGINE_DIR|g" \
-            -e "s|@USER@|$(id -un)|g" "$ENGINE_DIR/systemd/$svc" \
-            | sudo tee "/etc/systemd/system/$svc" > /dev/null
-    fi
-done
+# 8. Re-render every unit, then start the services on the new code.
+# shellcheck source=lib/units.sh
+source "$ENGINE_DIR/lib/units.sh"
+MEMORY_MAX=$("$CB" config get run_memory_max)
+ADMIN_UNIT=/etc/systemd/system/claudebot-admin.service
+ADMIN_RENDERED=$(sed -e "s|@HOME@|$HOME_DIR|g" -e "s|@ENGINE@|$ENGINE_DIR|g" \
+    -e "s|@USER@|$(id -un)|g" -e "s|@MEMORY_MAX@|$MEMORY_MAX|g" \
+    "$ENGINE_DIR/systemd/claudebot-admin.service")
+ADMIN_INSTALLED=""
+if [ -f "$ADMIN_UNIT" ]; then
+    ADMIN_INSTALLED=$(cat "$ADMIN_UNIT")
+fi
+install_units "$HOME_DIR" "$ENGINE_DIR" "$(id -un)" "$MEMORY_MAX"
 sudo systemctl daemon-reload
 echo "Starting services ..."
 sudo systemctl start claudebot-dispatcher.service
 "$CB" dispatcher release
 if systemctl is-enabled --quiet claudebot-admin.service 2>/dev/null; then
-    sudo systemctl restart claudebot-admin.service
-    echo "Restarted claudebot-admin (the current Admin conversation ends)."
+    if [ "$ADMIN_RENDERED" != "$ADMIN_INSTALLED" ] || [ "$OLD_VERSION" != "$NEW_VERSION" ]; then
+        sudo systemctl restart claudebot-admin.service
+        echo "Restarted claudebot-admin. The conversation will restart."
+    else
+        echo "claudebot-admin is unchanged, so the conversation was left running."
+    fi
 else
     echo "claudebot-admin is not enabled, so it was not restarted."
 fi
