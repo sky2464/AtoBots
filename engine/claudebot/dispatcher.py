@@ -12,6 +12,7 @@ time comes from the injected `clock` and all memory readings from `mem_fn`.
 import hashlib
 import json
 import signal
+import sqlite3
 import sys
 import threading
 from datetime import datetime, timedelta

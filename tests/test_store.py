@@ -146,7 +146,7 @@ class StoreTests(unittest.TestCase):
             " VALUES ('admin',?,'chat',?)", (session, utcnow()))
         self.conn.execute(
             "INSERT INTO decisions(id,title,quote,said_at,session,recorded_by,"
-            "created_at) VALUES(?,?,?,?,?,?,?)",
+            "created_at,owner_session) VALUES(?,?,?,?,?,?,?,1)",
             (did, "use it", "go", utcnow(), session, "admin", utcnow()))
 
     def test_owner_order_only_needs_decision(self):
@@ -199,7 +199,8 @@ class StoreTests(unittest.TestCase):
                 " VALUES ('admin','owner-sess','chat',?)", (utcnow(),))
             self.conn.execute(
                 "INSERT OR IGNORE INTO decisions(id,title,quote,said_at,session,"
-                "recorded_by,created_at) VALUES('D-0001','t','q',?,?,?,?)",
+                "recorded_by,created_at,owner_session) VALUES('D-0001','t','q',"
+                "?,?,?,?,1)",
                 (utcnow(), "owner-sess", "admin", utcnow()))
             store.run_with(self.cfg, self.conn, "admin", {"X": f"item{i}"},
                            ["python3", "-c",
