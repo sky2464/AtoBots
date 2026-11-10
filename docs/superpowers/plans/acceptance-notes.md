@@ -130,3 +130,9 @@ Throwaway company `/home/claude/cbtest-clean` (`cb init`, no install.sh, no syst
 - After `--start`: dispatcher, claudebot-admin, backup.timer, doctor.timer active and enabled; tmux `admin-live` up; `cb status` shows Always-on Admin up; `cb doctor` all good; `cb bot list` admin only; ufw output identical before and after; fresh SSH login via `atoosa-vps` works. The mode-600 plugin `.env` is present while running.
 - Finding: in the new `bots/admin` folder Claude Code asks "Is this a project you created or one you trust?" at first start, so the always-on session waits at that dialog and the Telegram plugin (bun) does not start until someone answers it in `tmux attach -t admin-live`. Left for the Owner.
 - Backups: remotes `backup` and `archive` added in `~/AtoosaDev`; `git ls-remote archive` works. The `claudebot-backup` deploy key on atoosa-hub/backup is PENDING (Owner adds it in GitHub); push and restore test not yet done.
+
+## Fresh start: backups confirmed (2026-11-09)
+- Owner added the `claudebot-backup` read/write deploy key on atoosa-hub/backup. `git ls-remote backup` works; `cb backup now`: snapshot committed 72dc43d2 (includes the engine's `.admin-live/` .gitignore line), pushed; archive copy nothing new; off-server not needed.
+- GitHub `main` = local HEAD = 72dc43d2f769fd97c2a1a57bfb684416bafec556. No `.secrets` path in the local or the cloned remote tree.
+- Restore test: cloned/restored from GitHub into a /tmp folder with `cb backup restore`; `integrity_check: ok`; every table's row count equals company.db except `meta` (11 live vs 7 restored), which is by design (`backup.*` and `doctor.*` bookkeeping keys are not dumped). Folder removed.
+- `cb doctor`: All good. claudebot-admin left running, not restarted.
