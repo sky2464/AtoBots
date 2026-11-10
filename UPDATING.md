@@ -1,12 +1,31 @@
 # Updating ClaudeBot
 
-This guide is for customers who installed ClaudeBot from GitHub: you cloned the
-repository on your server and ran `engine/install.sh`. The supported deploy path
-is a Git clone plus `engine/update.sh` after release tags (see
-[docs/deploy.md](docs/deploy.md)). Do not rsync with `--delete` into the clone.
+This guide is for a server that already runs ClaudeBot. The supported setup is
+a Git clone of this repository on the server, installed with
+`engine/install.sh` and updated with `engine/update.sh`. Do not copy files into
+the clone with rsync.
 
 Run every command below as the same UNIX account that runs the bots, in the
 ClaudeBot clone (the folder that holds `engine/`).
+
+| Your server now | Go to |
+|---|---|
+| A Git clone on 0.0.1 | [Updating from 0.0.1 to 0.0.2](#updating-from-001-to-002) |
+| Engine files copied by rsync (the folder has no `.git`) | [Moving a copied install to a clone](#moving-a-copied-install-to-a-clone) |
+| A Git clone on 0.0.2 or later | [Update to the newest release](#update-to-the-newest-release) |
+
+To tell which you have: `git -C ~/ClaudeBot rev-parse --is-inside-work-tree`
+prints `true` for a clone (use your own path if the engine is elsewhere).
+
+## Before you update
+
+- Read the release's section in [CHANGELOG.md](CHANGELOG.md), above all
+  "Manual steps after updating" and "Known issues".
+- Pick a quiet moment. The update restarts the dispatcher, and it restarts the
+  always-on Admin if that is enabled, which ends the Owner's current
+  conversation with it. Work in the queue is kept.
+- Close any open `cb chat` first.
+- The server needs read access to the repository (`git fetch` must work).
 
 ## See the current version
 
@@ -32,14 +51,181 @@ engine/update.sh
 To update to one specific release instead:
 
 ```bash
-engine/update.sh --tag v0.0.1
+engine/update.sh --tag v0.0.2
 ```
 
-The script runs these steps in order and prints each one. It waits for
-dispatcher runs to finish (up to 30 minutes), re-installs changed systemd unit
-files, refreshes engine-owned `rules.md` and bundled skills (not bot SOUL or
-PERSONA files), then restarts the dispatcher (and Admin, if it is enabled), so
-running work pauses for a moment.
+From 0.0.2 on, the script runs these steps in order and prints each one:
+
+1. checks that the clone has no local changes and fetches the release tags;
+2. copies the company database to a backup file (see below);
+3. moves the clone to the release tag;
+4. runs `cb init` (adds any new database columns; safe to repeat) and
+   `cb templates refresh` (replaces `rules.md` and the bundled skills in the
+   company home with the release's; bot Soul, Persona and Memory files are not
+   touched);
+5. waits for bot runs to finish, up to 30 minutes;
+6. reinstalls the dispatcher, backup and health-check unit files and restarts
+   the dispatcher, and Admin if it is enabled;
+7. runs `cb doctor`.
+
+It does not reinstall the always-on Admin's unit file. When a release says the
+units changed, run `engine/install.sh` again afterwards (safe to repeat).
+
+## Updating from 0.0.1 to 0.0.2
+
+The updater that runs is the one already on your server (0.0.1's). It backs
+up the database, moves to 0.0.2, runs `cb init` and restarts the services, but
+it does not know the newer steps, so you finish them by hand.
+
+1. See where you are. It should print `0.0.1`:
+
+```bash
+cb version
+```
+
+2. Run the update:
+
+```bash
+engine/update.sh --tag v0.0.2
+```
+
+3. Reinstall the unit files and links. Use the same company name and company
+home as the first install; this does not change company data:
+
+```bash
+engine/install.sh --start "My Company" "$CLAUDEBOT_HOME"
+```
+
+4. If you ever edited `rules.md` in the company home, save your copy before
+the next step replaces it:
+
+```bash
+cp "$CLAUDEBOT_HOME/rules.md" "$CLAUDEBOT_HOME/rules.md.mine"
+```
+
+5. Bring in this release's rules and bundled skills, and point every bot at
+them:
+
+```bash
+cb templates refresh
+```
+
+```bash
+cb bot relink
+```
+
+6. If the always-on Admin is enabled, restart it so it reads the new rules
+(this ends the current conversation with it):
+
+```bash
+sudo systemctl restart claudebot-admin
+```
+
+7. Check the result. `cb version` should print `0.0.2`:
+
+```bash
+cb version
+```
+
+```bash
+cb doctor
+```
+
+8. Admin's starting persona changed in this release. A persona is changed
+only with the Owner's agreement, so the update leaves yours alone. Look at the
+difference:
+
+```bash
+diff "$CLAUDEBOT_HOME/bots/admin/PERSONA.md" engine/templates/admin/PERSONA.md
+```
+
+To take the new one as it is:
+
+```bash
+cb bot set admin --persona-file engine/templates/admin/PERSONA.md
+```
+
+Optional settings new in 0.0.2 go in `$CLAUDEBOT_HOME/config.json`; see
+"Configuration" in the [README](README.md). Nothing needs to be set for an
+existing install.
+
+## Moving a copied install to a clone
+
+Older installs were sometimes made by copying the engine files to the server.
+`engine/update.sh` needs a Git clone, so move to one once. Company data is in
+the company home and is not touched; these steps replace only the engine
+folder. The examples assume the engine is in `~/ClaudeBot`.
+
+1. Stop the services (the second line only if the always-on Admin is enabled):
+
+```bash
+sudo systemctl stop claudebot-dispatcher
+```
+
+```bash
+sudo systemctl stop claudebot-admin
+```
+
+2. Back up the database:
+
+```bash
+mkdir -p "$CLAUDEBOT_HOME/backups" && python3 -c 'import sqlite3,sys; s=sqlite3.connect(sys.argv[1]); d=sqlite3.connect(sys.argv[2]); s.backup(d); d.close(); s.close()' "$CLAUDEBOT_HOME/company.db" "$CLAUDEBOT_HOME/backups/pre-clone-move.db"
+```
+
+3. Keep the old engine folder until the end:
+
+```bash
+mv ~/ClaudeBot ~/ClaudeBot.old
+```
+
+4. Clone the repository and move to the release (use your repository's
+address):
+
+```bash
+git clone <repository-url> ~/ClaudeBot
+```
+
+```bash
+cd ~/ClaudeBot && git checkout v0.0.2
+```
+
+5. Install over the existing company home. This updates the database, the
+`cb` links and the unit files, and starts the services:
+
+```bash
+engine/install.sh --start "My Company" "$CLAUDEBOT_HOME"
+```
+
+6. Refresh the rules and skills, and relink them (the old links point into
+the folder you moved):
+
+```bash
+cb templates refresh
+```
+
+```bash
+cb bot relink
+```
+
+7. If the always-on Admin is enabled:
+
+```bash
+sudo systemctl restart claudebot-admin
+```
+
+8. Check, and remove the old folder once `cb doctor` is clean:
+
+```bash
+cb doctor
+```
+
+```bash
+rm -rf ~/ClaudeBot.old
+```
+
+To go back before step 8: stop the services, move `~/ClaudeBot.old` back into
+place, restore `pre-clone-move.db` as described under "If an update fails",
+and start the services.
 
 ## What the update backs up, and where
 
@@ -78,7 +264,7 @@ sudo systemctl stop claudebot-dispatcher
 Put the old code back. Use the old version tag or commit the script printed:
 
 ```bash
-git checkout v0.0.1
+git checkout v0.0.1   # the version you were on
 ```
 
 Remove the database's temporary files, then restore the database from the backup
@@ -136,15 +322,21 @@ section before you update.
 
 ## Things an update does not change
 
-An update replaces the engine code. Apart from the bot settings files and the
-Git commit described above, it does not rewrite your company's own files, so
-your choices stay as they are:
+An update replaces the engine code and the engine-owned files in the company
+home. It leaves the company's own files alone:
 
-- `rules.md` in the company home is not rewritten by an update.
-- Each bot's persona is not rewritten by an update. A persona is changed only
-  with the Owner's agreement.
-- Memory files and company work are not touched.
+- Each bot's Soul and persona are not rewritten. A persona is changed only
+  with the Owner's agreement; a Soul only by the Owner.
+- Memory files, company work, secrets and `config.json` are not touched.
 
-When a release changes one of these starting files, the CHANGELOG says what to
-copy by hand, and where the new version is in the engine's `engine/templates/`
-folder.
+Engine-owned, and replaced by `cb templates refresh` on every update from
+0.0.2 on:
+
+- `rules.md` in the company home. If you edit it, keep your own copy and
+  compare after each update; the company home is a Git repository, so
+  `git -C "$CLAUDEBOT_HOME" log -p rules.md` shows earlier versions.
+- The bundled skills in `skills/` in the company home (`cb-basics`,
+  `work-tracking`, `create-bot`). Skills you added under other names stay.
+
+When a release changes a bot's starting persona, the CHANGELOG says so, and
+the new version is in the engine's `engine/templates/` folder.

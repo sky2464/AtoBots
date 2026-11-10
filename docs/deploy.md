@@ -1,65 +1,49 @@
-# Deploy ClaudeBot from a tagged checkout
+# Cutting and shipping a release
 
-Ship a known engine revision to the VPS. Prefer a Git tag over an arbitrary
-branch tip so the server matches a reviewable commit.
+For maintainers. Servers are updated with `engine/update.sh`; the steps an
+operator follows are in [UPDATING.md](../UPDATING.md).
 
-## Version
+## Cut a release
 
-- Package / CLI version string: `claudebot.__version__` (printed by `cb version`).
-- First public tag after the review stack merges: **`v0.0.1`** (create the tag on
-  `main` once the hygiene PR lands; do not retag rewritten history).
-
-```bash
-git tag -a v0.0.1 -m "ClaudeBot v0.0.1"
-git push origin v0.0.1
-```
-
-## Deploy to the VPS
-
-On the Mac (or any machine with `<VPS_ALIAS>` SSH access):
+1. On a branch: set `__version__` in `engine/claudebot/__init__.py`, add the
+   release's section to `CHANGELOG.md` (with "Manual steps after updating" when
+   there are any), and update version examples in `README.md` and
+   `UPDATING.md`.
+2. Merge to `main` through a pull request with CI green.
+3. Tag the merge commit and push the tag. The tag must be `v` plus the package
+   version, because `engine/update.sh` picks the newest `v*` tag:
 
 ```bash
-# 1. Check out the tag you intend to ship
-git fetch --tags origin
-git switch --detach v0.0.1
-
-# 2. Sync engine + tests so the server tree matches the tag
-#    --delete removes files that left the repo (required for a true match).
-rsync -a --delete \
-  --exclude '.git/' \
-  --exclude '__pycache__/' \
-  --exclude '*.pyc' \
-  ./engine/ ./tests/ \
-  <VPS_ALIAS>:~/ClaudeBot/
+git switch main && git pull --ff-only
 ```
-
-On the server:
 
 ```bash
-ssh <VPS_ALIAS>
-cd ~/ClaudeBot
-python3 -m unittest discover -s tests
-# Re-link / restart if install layout or units changed (they did in 0.0.1:
-# the units now name the account that runs install.sh):
-#   engine/install.sh --start "<COMPANY>" /home/claude/<COMPANY>
-sudo systemctl restart claudebot-dispatcher
-# If always-on Admin is enabled:
-#   sudo systemctl restart claudebot-admin
-cb doctor
-cb version   # expect 0.0.1 (or the tagged package version)
+git tag -a v0.0.2 -m "ClaudeBot v0.0.2"
 ```
 
-Notes:
+```bash
+git push origin v0.0.2
+```
 
-- Company data lives under `CLAUDEBOT_HOME` (for example `/home/claude/<COMPANY>`), not
-  under `~/ClaudeBot`. rsync of the engine must not touch the company home.
-- Older deploys sometimes used `rsync` without `--delete`, which left removed
-  Python modules on the server. Always use `--delete` for engine/tests.
-- Do not rsync `.git` from a detached tag checkout unless you intentionally want
-  a full clone on the server.
+4. Publish a GitHub Release for the tag with the CHANGELOG section as its
+   notes.
 
-## Company naming
+Never move or re-create a published tag. Fix forward with a new version.
 
-- **Company (install):** `<COMPANY>` (`$CLAUDEBOT_HOME`)
-- **Product / line of business:** `<PRODUCT>`
-- Engine docs and templates stay company-agnostic; only Owner-only ops notes name `<COMPANY>`.
+## Ship it to a server
+
+On the server, in the clone, as the account that runs the bots:
+
+```bash
+engine/update.sh
+```
+
+Then do the release's "Manual steps after updating", if it has any.
+
+The server must hold a full Git clone. Do not rsync engine files into it: that
+leaves removed modules behind or deletes `.git`, and `engine/update.sh` then
+refuses to run. A server that was set up by copying files is moved to a clone
+once; see "Moving a copied install to a clone" in
+[UPDATING.md](../UPDATING.md).
+
+Company data lives under `CLAUDEBOT_HOME`, never inside the clone.
