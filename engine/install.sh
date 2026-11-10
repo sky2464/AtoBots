@@ -145,6 +145,7 @@ else
     echo "  sudo systemctl enable --now $ADMIN_UNIT"
 fi
 
+echo "Note: the first start of the always-on Admin shows Claude Code's folder-trust question; the Owner answers it once with 'tmux attach -t admin-live', then chooses \"Yes, I trust this folder\"."
 echo "Done. Open a new shell (or run: source ~/.bashrc), then try: cb status"
 if [ "$START" -eq 0 ]; then
     echo "Nothing is running yet. When you are ready, start it with:"
