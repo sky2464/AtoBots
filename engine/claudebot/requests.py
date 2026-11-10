@@ -100,14 +100,47 @@ def source_label(attrs: dict) -> str:
     return f"{kind} user={user} chat={chat}"
 
 
+def channel_entries(prompt: str):
+    """[(attrs, source label, text)] for a prompt made only of channel
+    messages, else None."""
+    found = _CHANNEL.findall(prompt)
+    if not found or _CHANNEL.sub("", prompt).strip():
+        return None
+    out = []
+    for a, t in found:
+        attrs = dict(_ATTR.findall(a))
+        out.append((attrs, source_label(attrs), t))
+    return out
+
+
 def channel_messages(prompt: str):
     """[(source label, text)] when the prompt is made only of channel messages
     (what Claude Code hands the hook for a Telegram message), else None. The
     text is the sender's words without the <channel> wrapper."""
-    found = _CHANNEL.findall(prompt)
-    if not found or _CHANNEL.sub("", prompt).strip():
+    entries = channel_entries(prompt)
+    if entries is None:
         return None
-    return [(source_label(dict(_ATTR.findall(a))), t) for a, t in found]
+    return [(source, t) for _, source, t in entries]
+
+
+def _telegram_source(attrs: dict) -> bool:
+    return "telegram" in (attrs.get("source") or "").lower()
+
+
+def _sender_allowed(attrs: dict, allowed: set[str]) -> bool:
+    """Telegram senders must be in access.json allowFrom; other channels pass."""
+    if not _telegram_source(attrs):
+        return True
+    if not allowed:
+        return False
+    uid = str(attrs.get("user_id") or attrs.get("user") or "").strip()
+    if not uid:
+        return False
+    if uid in allowed:
+        return True
+    if uid.isdigit():
+        return str(int(uid)) in allowed
+    return False
 
 
 def _caller() -> str:
@@ -232,21 +265,35 @@ def _cmd_hook_prompt(args) -> int:
         session = data.get("session_id") or ""
         conn = connect(Config.load())
         try:
-            wrapped = channel_messages(text)
-            if wrapped is None and _skip_command(conn, text):
+            entries = channel_entries(text)
+            wrapped = None if entries is None else [(s, t) for _, s, t in entries]
+            if entries is None and _skip_command(conn, text):
                 return 0
             if _ack_ignored(conn, text, wrapped):
                 _record_ack(conn, text, wrapped)
                 print(json.dumps({"decision": "block", "reason":
                                   "Acknowledgement ignored (nothing was asked)."}))
                 return 0
-            if wrapped is None:
+            from . import admin_live
+            allowed = {str(x) for x in admin_live.access_allow_from()}
+            saved = False
+            if entries is None:
                 capture(conn, text, str(session))
-            for source, inner in wrapped or ():
-                rid = capture(conn, inner, str(session), source)
-                activity.record(conn, "hook", "request.channel",
-                                f"request arrived through {source}", str(rid))
-            _close_questions(conn)
+                saved = True
+            else:
+                for attrs, source, inner in entries:
+                    if _skip_command(conn, inner):
+                        continue
+                    if not _sender_allowed(attrs, allowed):
+                        activity.record(conn, "hook", "request.telegram_denied",
+                                        source[:60])
+                        continue
+                    rid = capture(conn, inner, str(session), source)
+                    activity.record(conn, "hook", "request.channel",
+                                    f"request arrived through {source}", str(rid))
+                    saved = True
+            if saved:
+                _close_questions(conn)
         finally:
             conn.close()
     except BaseException as e:
