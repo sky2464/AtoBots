@@ -55,7 +55,8 @@ if mode == "ok":
     print(json.dumps({{"type": "result", "is_error": False, "result": "done",
         "session_id": "sess-from-claude", "terminal_reason": "completed",
         "usage": {{"input_tokens": 10, "cache_creation_input_tokens": 100,
-                  "cache_read_input_tokens": 1000, "output_tokens": 7}}}}))
+                  "cache_read_input_tokens": 1000, "output_tokens": 7}},
+        "modelUsage": {{"claude-sonnet-5-0": {{"inputTokens": 10}}}}}}))
 elif mode == "usage":
     print(json.dumps({{"type": "result", "is_error": True,
         "result": "You've hit your session limit", "terminal_reason": "api_error",
