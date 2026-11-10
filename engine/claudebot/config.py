@@ -7,6 +7,35 @@ from pathlib import Path
 
 ENV_FILE = Path("/etc/claudebot.env")  # written by install.sh: CLAUDEBOT_HOME=...
 
+# Upper bounds for numeric overrides in config.json (abuse / typo guard).
+_NUM_CEILINGS = {
+    "max_concurrent_runs": 32,
+    "heavy_lane": 32,
+    "memory_floor_mb": 1_000_000,
+    "run_seconds": 86_400,
+    "lease_seconds": 86_400,
+    "retry_attempts": 20,
+    "hop_limit": 32,
+    "chain_window_s": 86_400,
+    "wakes_per_bot_per_hour": 120,
+    "wake_cap_opus": 60,
+    "wake_cap_sonnet": 120,
+    "wake_cap_haiku": 240,
+    "batch_delay_seconds": 3_600,
+    "worker_batch_delay_seconds": 3_600,
+    "poll_seconds": 300,
+    "usage_limit_retry_seconds": 86_400,
+    "soul_cap_bytes": 1024 * 1024,
+    "persona_cap_bytes": 1024 * 1024,
+    "memory_cap_bytes": 4 * 1024 * 1024,
+    "chat_rollover_tokens": 1_000_000,
+    "idle_rotate_tokens": 1_000_000,
+    "cache_ttl_seconds": 86_400,
+    "archive_offserver_pct": 99,
+    "batch_max_messages": 200,
+    "batch_max_bytes": 16 * 1024 * 1024,
+}
+
 
 def _home_from_file() -> str | None:
     """Fallback for shells that never read ~/.bashrc (ssh host 'cb ...')."""
@@ -99,6 +128,10 @@ class Config:
                 raise RuntimeError(
                     f"{path}: {key} must be a whole number of 1 or more, "
                     f"not {value!r}")
+            cap = _NUM_CEILINGS.get(key)
+            if cap is not None and value > cap:
+                raise RuntimeError(
+                    f"{path}: {key} must be at most {cap}, not {value!r}")
             setattr(self, key, value)
 
     @property

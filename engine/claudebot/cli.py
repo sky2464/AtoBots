@@ -9,7 +9,7 @@ from . import (admin_live, archive, backup, bots, chat, dispatcher, doctor,
                tasks, usage)
 from . import __version__
 from .config import Config
-from .db import connect, init_db
+from .db import connect, harden_data_files, init_db
 
 MODULES = [store, bots, items, messages, requests, search, routines,
            dispatcher, archive, chat, doctor, backup, admin_live, usage,
@@ -34,6 +34,7 @@ def init_company(cfg: Config, company: str) -> list[str]:
     cfg.secrets_dir.mkdir(mode=0o700, exist_ok=True)
     cfg.secrets_dir.chmod(0o700)
     init_db(cfg)
+    harden_data_files(cfg)
     gitlog.ensure_repo(cfg)
     rules = cfg.home / "rules.md"
     if not rules.exists():
