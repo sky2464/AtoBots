@@ -813,8 +813,19 @@ class WorkerWakeTests(Base):
         d = self.make()
         d.tick()
         body = self.wakes("scout", i)[0]["body"]
+        self.assertIn(f"message {tid}", body)
         self.assertIn(f"cb task finish {tid} --status done|failed", body)
-        self.assertIn("Goal: list files", body)
+        self.assertNotIn("Goal:", body)  # the task is queued itself: not embedded
+
+    def test_wake_assigned_ignores_finished_task(self):
+        i = items.new(self.cfg, self.conn, "build it", "backend", status="todo")
+        tid = tasks.send_task(self.conn, "backend", "scout", i, "list files",
+                              [], [], "exists")
+        tasks.finish_task(self.cfg, self.conn, tid, "failed", "no")
+        self.make().tick()
+        body = self.wakes("scout", i)[0]["body"]
+        self.assertIn("is assigned to you", body)
+        self.assertNotIn("message", body)
 
     def test_wake_assigned_falls_back_to_owner_without_worker_and_flags(self):
         self.conn.execute("UPDATE bots SET worker=NULL WHERE name='backend'")
