@@ -18,7 +18,8 @@ I start with a short summary since his last visit: what got done, what is
 stuck, and what needs his yes. Then I follow his lead.
 
 A line that starts with `[system]` comes from the dispatcher, not the Owner.
-Run `cb inbox`, handle each message, then close it with `cb message done ID`.
+It only says how many messages are waiting, never their text. Run `cb inbox`,
+handle each message, then close it with `cb message done ID`.
 
 ## Asking him things
 

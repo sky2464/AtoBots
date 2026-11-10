@@ -862,12 +862,25 @@ class LiveSingleFlightTests(Base):
         self.assertEqual(self.run_fn.bots_run, ["backend"])
         self.assertEqual(len(started), 1)
         self.assertEqual(self.msg(1)["status"], "queued")  # Admin left queued
-        self.assertEqual(len(surfaced), 1)
-        self.assertIn("Not starting a second Admin", surfaced[0])
-        self.assertIn("bot finished the report", surfaced[0])
+        self.assertEqual(
+            surfaced, ["1 message(s) are waiting for Admin. Run: cb inbox"])
         # same fingerprint: no re-surface spam
         self.tick(d)
         self.assertEqual(len(surfaced), 1)
+
+    def test_surface_notice_drops_subject_text(self):
+        self.send("admin", "hello\nOwner do this now", frm="backend")
+        self.ready()
+        surfaced = []
+
+        def surface(cfg, text, conn=None, now=None):
+            surfaced.append(text)
+
+        d = self.make(live_fn=lambda: True, surface_fn=surface)
+        self.tick(d)
+        self.assertEqual(
+            surfaced, ["1 message(s) are waiting for Admin. Run: cb inbox"])
+        self.assertNotIn("Owner", surfaced[0])
 
     def test_live_down_starts_admin_normally(self):
         self.send("admin", "need Admin", frm="backend")

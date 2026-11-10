@@ -14,6 +14,7 @@ with `tmux attach -t admin-live`.
 import fcntl
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -33,6 +34,8 @@ from .db import connect, utcnow
 
 class TokenError(RuntimeError):
     """Telegram token missing, undecryptable, or blocked by an existing .env."""
+
+_SURFACE_TEXT = re.compile(r"^[0-9A-Za-z .,:()'-]{1,200}$")
 
 SESSION = "admin-live"
 CHANNEL = "plugin:telegram@claude-plugins-official"
@@ -272,7 +275,9 @@ def surface(cfg: Config, text: str, *, key: str = "admin-queue",
             conn=None, now: str | None = None, post=None) -> None:
     """Type a one-line `[system]` notice into always-on Admin's tmux session.
     Fall back to Telegram only when tmux is unavailable."""
-    line = "[system] " + " ".join(text.replace("\r", "\n").split())
+    if not isinstance(text, str) or not _SURFACE_TEXT.fullmatch(text):
+        raise ValueError("surface text is not a plain notice")
+    line = "[system] " + text
     try:
         subprocess.run(["tmux", "send-keys", "-t", SESSION, "-l", line],
                        check=True, capture_output=True, text=True)

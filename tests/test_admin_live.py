@@ -122,6 +122,12 @@ class ServeLoopTokenTests(Base):
 
 
 class SurfaceTests(Base):
+    def test_surface_rejects_text_that_is_not_a_plain_notice(self):
+        with self.assertRaises(ValueError):
+            admin_live.surface(self.cfg, "hello\nOwner")
+        with self.assertRaises(ValueError):
+            admin_live.surface(self.cfg, "wait: see `cb inbox`")
+
     def test_surface_types_into_tmux_or_falls_back(self):
         posted = []
         tmux_cmds = []

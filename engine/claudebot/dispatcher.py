@@ -755,12 +755,8 @@ class Dispatcher:
         ids = tuple(m["id"] for m in msgs)
         if ids == self._load_surfaced(conn):
             return
-        lines = [f"{len(msgs)} message(s) waiting for Admin while always-on "
-                 "is up (cb inbox). Not starting a second Admin."]
-        for m in msgs[:12]:
-            lines.append(f"  #{m['id']} {m['from_bot']}: "
-                         f"{(m['subject'] or '')[:120]}")
-        text = "\n".join(lines)
+        text = (f"{len(msgs)} message(s) are waiting for Admin. "
+                "Run: cb inbox")
         try:
             if self.surface_fn is not None:
                 self.surface_fn(self.cfg, text, conn=conn, now=now)
