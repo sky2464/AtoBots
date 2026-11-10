@@ -76,14 +76,14 @@ Run `cb --help` or `cb <command> --help` for the full reference. Top-level comma
 
 | Area | Commands |
 |---|---|
-| Setup | `init`, `version` |
-| Bots | `bot` (`new` / `list` / `show` / `set` / `pause` / `resume` / `retire`), `check` |
-| Work | `item` (`new` / `status` / `pause` / `resume` / `assign` / `split` / `show` / `waiting-on-owner`), `next`, `open`, `decision` |
-| Messages | `send`, `ask`, `reply`, `inbox`, `request`, `hook` |
+| Setup | `init`, `version`, `usage` |
+| Bots | `bot` (`new` / `list` / `show` / `set` / `pause` / `resume` / `retire` / `check` / `relink`) |
+| Work | `item` (`new` / `status` / `pause` / `resume` / `assign` / `split` / `show` / `waiting-on-owner`), `next`, `open`, `decision`, `task` (`send` / `finish`) |
+| Messages | `send`, `ask`, `reply`, `inbox`, `message` (`done` / `retry`), `request`, `hook`, `log sudo` |
 | Routines | `routine` (`add` / `list` / `on` / `off` / `rm`) |
 | Search and notes | `search`, `note` |
 | Secrets | `secret` (`add` / `list` / `rm` / `run`; values at a hidden prompt) |
-| Operations | `dispatcher`, `status`, `backup` (`now` / `restore`), `archive` (`run` / `status` / `reindex` / `fetch`), `doctor` |
+| Operations | `dispatcher`, `status`, `backup` (`now` / `restore`), `archive` (`run` / `status` / `reindex` / `fetch`), `doctor`, `templates refresh` |
 | Owner sessions | `question` (`open` / `close` / `list`), `chat`, `chat-rollover`, `admin` (`serve` / `run` / `scrub-token`) |
 
 ## Configuration
@@ -106,7 +106,7 @@ engine/
   install.sh             server installer
   update.sh              moves a running install to a release tag
 tests/                   unit tests (run with unittest discover)
-docs/                    deploy, branch cleanup, design and plans
+docs/                    design specs and updating notes
 .github/workflows/       CI (unittest discover on push and pull requests)
 vps-bootstrap.sh         one-time server hardening script
 ```
@@ -147,26 +147,14 @@ If it fails it prints how to go back.
 - Read the release's "Manual steps after updating" and "Known issues" in
   [CHANGELOG.md](CHANGELOG.md) first. Do not rsync into the clone.
 
-Maintainers: how a release is cut is in [docs/deploy.md](docs/deploy.md).
-Branch cleanup notes for stale remotes are in
-[docs/branch-cleanup.md](docs/branch-cleanup.md).
+Install and update a running company from a Git clone.
+The steps are in [UPDATING.md](UPDATING.md).
 
 ## Documentation
 
 - [Design specification](docs/superpowers/specs/2026-11-08-claudebot-engine-design.md): intent, roles, bot lifecycle, and safety rules
-- [Implementation plan](docs/superpowers/plans/2026-11-08-claudebot-engine.md): the build plan and task breakdown
+- [Cost control](docs/superpowers/specs/2026-11-09-claudebot-cost-control-design.md): wake caps, tiers, and what a run is allowed to spend
 - [Updating a running install](UPDATING.md)
-- [Changelog](CHANGELOG.md)
-- [Cutting a release](docs/deploy.md)
-- [Branch cleanup](docs/branch-cleanup.md)
-- [Hygiene leftovers](docs/hygiene-leftovers.md): deferred dead-code notes (no security/cost work)
-
-## First company install (ops)
-
-The engine itself is company-agnostic. The first live install on the Owner's VPS is:
-
-- **Company:** `<COMPANY>` (`$CLAUDEBOT_HOME`)
-- **Product:** `<PRODUCT>`
 
 ## Safety principles
 

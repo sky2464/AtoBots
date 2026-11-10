@@ -41,6 +41,20 @@ def _rules() -> str:
     return (TEMPLATES / "rules.md").read_text().lower()
 
 
+class DocLinkTests(unittest.TestCase):
+    def test_readme_updating_and_changelog_links_exist(self):
+        link = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+        for name in ("README.md", "UPDATING.md", "CHANGELOG.md"):
+            text = (ROOT / name).read_text()
+            for target in link.findall(text):
+                if target.startswith(("http://", "https://", "mailto:")):
+                    continue
+                path = target.split("#", 1)[0]
+                if not path:
+                    continue
+                self.assertTrue((ROOT / path).is_file(), f"{name} -> {target}")
+
+
 class RulesTest(unittest.TestCase):
     def test_rules_have_required_lines(self):
         r = _rules()

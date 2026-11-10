@@ -6,7 +6,7 @@ Engine for a company of Claude Code bots on a private VPS. Owner talks to Admin;
 
 - `engine/` — the `cb` CLI, dispatcher, backup, archive, routines, doctor
 - `tests/` — unittest suite (`python3 -m unittest discover -s tests`)
-- `docs/` — design, plans, acceptance notes
+- `docs/` — design
 - `vps-bootstrap.sh` — one-time Debian bootstrap (keys from argv / `SSH_PUBKEYS_FILE`, never hard-coded)
 
 Company data lives in `CLAUDEBOT_HOME` (the company home), not in this repo. Secrets stay in `.secrets/` on the server and are never backed up.
