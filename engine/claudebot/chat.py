@@ -17,6 +17,7 @@ import fcntl
 import json
 import os
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -449,8 +450,34 @@ def _command(cfg, bot, session_id, prompt_file, settings_file, mcp_file,
     return cmd + ["--dangerously-skip-permissions", "--session-id", session_id]
 
 
-def _launch(cmd, cwd, env):
-    return subprocess.Popen(cmd, cwd=cwd, env=env)
+def memory_wrap(cfg: Config, cmd: list) -> list:
+    """Apply MemoryMax to interactive Admin (chat / live) via systemd-run
+    --pty when a user manager is available. On hosts without systemd-run
+    (dev Macs) the bare command is returned unchanged."""
+    sr = shutil.which("systemd-run")
+    if not sr:
+        return list(cmd)
+    # User scope keeps the Owner's TTY and avoids passwordless sudo.
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    use_user = bool(runtime and Path(runtime, "systemd").is_dir())
+    wrapped = [sr]
+    if use_user:
+        wrapped.append("--user")
+    wrapped += ["--pty", "--collect",
+                "-p", f"MemoryMax={cfg.run_memory_max}",
+                "-p", "MemorySwapMax=0",
+                "--", *cmd]
+    return wrapped
+
+
+def _launch(cmd, cwd, env, cfg: Config | None = None):
+    final = memory_wrap(cfg, cmd) if cfg is not None else list(cmd)
+    try:
+        return subprocess.Popen(final, cwd=cwd, env=env)
+    except OSError:
+        if final != list(cmd):
+            return subprocess.Popen(cmd, cwd=cwd, env=env)
+        raise
 
 
 def _wait(proc, cfg, token=None, stop=None) -> int:
@@ -530,7 +557,13 @@ def _one_session(cfg, conn, summary, token, first: bool, live=None) -> str:
         env = dict(os.environ, CB_BOT=BOT, CLAUDEBOT_HOME=str(cfg.home),
                    CB_SESSION_ID=session_id)
         if live:
-            env.update(live.session_env(cfg, conn))
+            # TokenError must refuse the start (no empty Telegram spam loop).
+            from . import admin_live
+            try:
+                env.update(live.session_env(cfg, conn))
+            except admin_live.TokenError:
+                reason = "no-token"
+                raise
         env.pop(TOKEN_ENV, None)
         if token:
             env[TOKEN_ENV] = token
@@ -542,7 +575,7 @@ def _one_session(cfg, conn, summary, token, first: bool, live=None) -> str:
                   flush=True)
         elif first:
             print(text, flush=True)  # on screen only; not sent as a prompt
-        proc = _launch(cmd, str(cfg.bots_dir / BOT), env)
+        proc = _launch(cmd, str(cfg.bots_dir / BOT), env, cfg)
         # The marker stays until this session ends well; the summary file is
         # never deleted.
         _write_private(pid_path(cfg), f"{proc.pid}\n")

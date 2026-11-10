@@ -68,13 +68,19 @@ class Dispatcher:
                  commit_fn=gitlog.commit_run,
                  reindex_fn=search.reindex_records,
                  archive_fn=archive.archive_transcript,
-                 daily_fn=archive.daily):
+                 daily_fn=archive.daily, live_fn=None,
+                 surface_fn=None):
         """`routines_fn(cfg, conn, now)` fires due routines by queueing
         messages (Task 10). `owner_fn()` says whether the Owner is connected
-        to a chat (Task 12)."""
+        to a chat (Task 12) — that holds *all* new runs. `live_fn()` says
+        whether always-on Admin is up; that only blocks a second Admin run
+        (bots keep working). `surface_fn` delivers Admin-bound results to
+        live/Telegram when the second Admin is skipped."""
         self.cfg = cfg
         self.run_fn, self.mem_fn, self.clock = run_fn, mem_fn, clock
         self.owner_fn = owner_fn
+        self.live_fn = live_fn
+        self.surface_fn = surface_fn
         self.routines_fn = routines_fn
         self.commit_fn, self.reindex_fn = commit_fn, reindex_fn
         self.archive_fn, self.daily_fn = archive_fn, daily_fn
@@ -83,6 +89,20 @@ class Dispatcher:
         self._running: dict[str, _Worker] = {}
         self._dv = None
         self._dirty = False
+        self._surfaced = None  # last surfaced admin-queue fingerprint
+
+    def _live_up(self) -> bool:
+        """Always-on Admin is running (single-flight: no second Admin)."""
+        if self.live_fn is not None:
+            try:
+                return bool(self.live_fn())
+            except Exception:  # noqa: BLE001
+                return False
+        from . import admin_live
+        try:
+            return admin_live.is_running(self.cfg)
+        except Exception:  # noqa: BLE001
+            return False
 
     # ---- connections: one per thread ----
 
@@ -462,13 +482,16 @@ class Dispatcher:
         """Admin goes back to open work when nothing is queued for it and the
         Owner is not in a chat, at most once an hour, and only if the list of
         open work changed since the last wake or 24 hours have passed. Items
-        waiting on the Owner are not Admin's to chase."""
+        waiting on the Owner are not Admin's to chase. Skipped while
+        always-on Admin is already up (single-flight)."""
         bot = "admin"
         if bot not in {b.name for b in bots.list_bots(conn, include_reserved=True)}:
             return
         with self._lock:
             if bot in self._running:
                 return
+        if self._live_up():
+            return
         if conn.execute("SELECT 1 FROM messages WHERE to_bot=? AND status IN"
                         " ('queued','claimed')", (bot,)).fetchone():
             return
@@ -538,10 +561,39 @@ class Dispatcher:
             now=now)
         return True
 
+    def _surface_admin(self, conn, msgs, now: str) -> None:
+        """When live Admin is up, do not start a second Admin: leave the
+        messages queued and surface a digest to the live session / Telegram."""
+        ids = tuple(m["id"] for m in msgs)
+        if ids == self._surfaced:
+            return
+        lines = [f"{len(msgs)} message(s) waiting for Admin while always-on "
+                 "is up (cb inbox). Not starting a second Admin."]
+        for m in msgs[:12]:
+            lines.append(f"  #{m['id']} {m['from_bot']}: "
+                         f"{(m['subject'] or '')[:120]}")
+        text = "\n".join(lines)
+        try:
+            if self.surface_fn is not None:
+                self.surface_fn(self.cfg, text, conn=conn, now=now)
+            else:
+                from . import admin_live
+                admin_live.surface(self.cfg, text, key="admin-queue",
+                                   conn=conn, now=now)
+            self._surfaced = ids
+            _log(conn, "admin_live.surface",
+                 f"surfaced {len(msgs)} queued Admin message(s)", "admin")
+        except Exception as e:  # noqa: BLE001
+            _log(conn, "admin_live.surface_failed",
+                 f"{type(e).__name__}: {e}")
+
     def _start_ready(self, conn, now, hold: bool = False) -> list:
         """`hold`: the Owner is in a chat, so only Admin's urgent messages to
-        other bots (such as the test wake of a new bot) may start a run."""
+        other bots (such as the test wake of a new bot) may start a run.
+        Always-on Admin (`live_fn`) does not hold other bots; it only blocks
+        a second Admin and surfaces its queue instead."""
         active = {b.name: b for b in bots.list_bots(conn, include_reserved=True)}
+        live_up = self._live_up()
         groups: dict[str, list] = {}
         for m in conn.execute("SELECT * FROM messages WHERE status='queued'"
                               " ORDER BY id"):
@@ -553,6 +605,9 @@ class Dispatcher:
         cands = []
         for name, msgs in groups.items():
             if name not in active:
+                continue
+            if name == "admin" and live_up:
+                self._surface_admin(conn, msgs, now)
                 continue
             urgent = any(m["priority"] == _URGENT for m in msgs)
             oldest = msgs[0]["created_at"]

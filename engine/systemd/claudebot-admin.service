@@ -6,13 +6,17 @@ Wants=network-online.target
 [Service]
 User=claude
 Environment=CLAUDEBOT_HOME=@HOME@
+# Cap the always-on Admin tree so a live session cannot overcommit the
+# 2 GB host alongside a chat. Interactive claude is also wrapped with
+# systemd-run --pty MemoryMax in chat.py / admin serve.
+MemoryMax=1200M
+MemorySwapMax=0
 # The supervisor keeps tmux session "admin-live" alive and ends it on stop.
 # It must be the only process systemd kills: the tmux server may be the
 # Owner's own, shared with his sessions.
 ExecStart=@ENGINE@/bin/cb admin run
 ExecStopPost=-/usr/bin/tmux kill-session -t =admin-live
-# Remove the token file a killed session may have left (only if the store
-# holds the token).
+# Always scrub the Telegram plugin .env on stop (token must not linger).
 ExecStopPost=-@ENGINE@/bin/cb admin scrub-token
 KillMode=process
 Restart=always

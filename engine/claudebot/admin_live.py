@@ -12,6 +12,7 @@ and it restarts claude by itself, with a back-off when it keeps failing.
 with `tmux attach -t admin-live`.
 """
 import fcntl
+import json
 import os
 import shlex
 import signal
@@ -19,12 +20,19 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import activity, bots, chat, store
 from .config import Config
 from .db import connect, utcnow
+
+
+class TokenError(RuntimeError):
+    """Telegram token missing, undecryptable, or blocked by an existing .env."""
 
 SESSION = "admin-live"
 CHANNEL = "plugin:telegram@claude-plugins-official"
@@ -84,29 +92,42 @@ class Live:
         """Called before each claude start. The bot token comes from the
         secure store into the plugin's own .env file, mode 600, for as long
         as the session runs (`cleanup` removes it); the plugin does not get
-        it from claude's environment. The use is recorded by name. Without
-        the secret the session is not started (see serve_loop)."""
+        it from claude's environment. The use is recorded by name. Raises
+        TokenError when the secret cannot be decrypted or an unexpected
+        .env is already present — the session must not start without a
+        working token (see serve_loop)."""
+        path = token_file()
+        if path.exists() and self.token_path != path:
+            raise TokenError(
+                f"refusing to start: {path} already exists "
+                "(stop the other session or run: cb admin scrub-token)")
         try:
             got = store.use_env(cfg, conn, chat.BOT,
                                 {TOKEN_VAR: TOKEN_SECRET})
-            path = token_file()
-            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            chat._write_private(path, f"{TOKEN_VAR}={got[TOKEN_VAR]}\n")
-            self.token_path = path
         except (KeyError, PermissionError, RuntimeError, ValueError, OSError,
                 UnicodeDecodeError) as e:
-            activity.record(conn, chat.BOT, "admin-live.no-token",
-                            f"{TOKEN_SECRET} not read from the store "
-                            f"({type(e).__name__})")
+            raise TokenError(
+                f"{TOKEN_SECRET} not readable from the store "
+                f"({type(e).__name__}: {e})") from e
+        value = got.get(TOKEN_VAR) or ""
+        if not str(value).strip():
+            raise TokenError(f"{TOKEN_SECRET} decrypted to an empty token")
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        chat._write_private(path, f"{TOKEN_VAR}={value}\n")
+        self.token_path = path
         return dict(self.env)
 
     def cleanup(self) -> None:
-        """Remove the token file this process wrote."""
+        """Remove the token file this process wrote (and scrub leftovers)."""
         path, self.token_path = self.token_path, None
-        if path is not None:
+        for p in {path, token_file()}:
+            if p is None:
+                continue
             try:
-                os.unlink(path)
+                os.unlink(p)
             except FileNotFoundError:
+                pass
+            except OSError:
                 pass
 
     def compose(self, cfg, conn, brief_text: str, summary) -> str:
@@ -147,14 +168,14 @@ def has_token(cfg: Config) -> bool:
         return False
 
 
-def scrub_token(cfg: Config) -> bool:
-    """Remove a leftover plugin .env (a killed session cannot clean up). Only
-    when the store holds the token, so a file the Owner made by hand stays."""
-    if not has_token(cfg):
-        return False
+def scrub_token(cfg: Config | None = None) -> bool:
+    """Remove the plugin .env on every exit path (killed session, unit stop,
+    refused start). Returns True when a file was removed."""
     try:
         os.unlink(token_file())
         return True
+    except FileNotFoundError:
+        return False
     except OSError:
         return False
 
@@ -177,6 +198,92 @@ def is_running(cfg: Config) -> bool:
 
 def state_dir(cfg: Config) -> Path:
     return cfg.home / STATE_DIRNAME
+
+
+def alerts_dir(cfg: Config) -> Path:
+    """Local out-of-band notices for live Admin / Owner (not the message queue)."""
+    return state_dir(cfg) / "alerts"
+
+
+def write_alert(cfg: Config, key: str, text: str, now: str | None = None) -> Path:
+    """Write a local alert file. Survives dispatcher-down (doctor / surface)."""
+    d = alerts_dir(cfg)
+    d.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = d / f"{key}.txt"
+    stamp = now or utcnow()
+    chat._write_private(path, f"{stamp}\n{text.rstrip()}\n")
+    return path
+
+
+def access_allow_from() -> list:
+    """Owner Telegram ids from the channel access file, or []."""
+    base = os.environ.get("TELEGRAM_STATE_DIR")
+    if base:
+        path = Path(base) / "access.json"
+    else:
+        conf = os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude")
+        path = Path(conf) / "channels" / "telegram" / "access.json"
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError, TypeError):
+        return []
+    raw = data.get("allowFrom") if isinstance(data, dict) else None
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for x in raw:
+        if x is None or x == "":
+            continue
+        out.append(x)
+    return out
+
+
+def notify_telegram(cfg: Config, text: str, conn=None,
+                    token: str | None = None,
+                    post=None) -> bool:
+    """Best-effort Telegram sendMessage to allowFrom, without the dispatcher
+    queue. Returns True when at least one chat accepted the message."""
+    post = post or _telegram_post
+    if not token:
+        if conn is None or not has_token(cfg):
+            return False
+        try:
+            got = store.use_env(cfg, conn, chat.BOT, {TOKEN_VAR: TOKEN_SECRET})
+            token = got.get(TOKEN_VAR) or ""
+        except (KeyError, PermissionError, RuntimeError, ValueError, OSError,
+                UnicodeDecodeError):
+            return False
+    if not str(token).strip():
+        return False
+    ok = False
+    for chat_id in access_allow_from():
+        try:
+            post(token, chat_id, text)
+            ok = True
+        except (OSError, urllib.error.URLError, TimeoutError, ValueError):
+            continue
+    return ok
+
+
+def _telegram_post(token: str, chat_id, text: str) -> None:
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    body = urllib.parse.urlencode(
+        {"chat_id": str(chat_id), "text": text[:3500]}).encode()
+    req = urllib.request.Request(url, data=body, method="POST")
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        resp.read()
+
+
+def surface(cfg: Config, text: str, *, key: str = "admin-queue",
+            conn=None, now: str | None = None, post=None) -> Path:
+    """Surface a notice to live Admin / Owner: local alert file, then Telegram
+    when a token is available. Used when the dispatcher skips a second Admin."""
+    path = write_alert(cfg, key, text, now=now)
+    try:
+        notify_telegram(cfg, f"ClaudeBot: {text}", conn=conn, post=post)
+    except Exception:  # noqa: BLE001  # never block the dispatcher
+        pass
+    return path
 
 
 def _env_for_claude(cfg: Config) -> dict:
@@ -209,6 +316,7 @@ def serve_loop(cfg: Config, live: Live, conn, sleep=None,
         if not has_token(cfg):
             # Never start claude without the token: it would run with no
             # Telegram and look healthy. Record it, back off, look again.
+            scrub_token(cfg)
             delay, fails = next_delay(0, fails)
             activity.record(conn, chat.BOT, "admin-live.no-token",
                             f"secret {TOKEN_SECRET} is not in the store; "
@@ -217,12 +325,29 @@ def serve_loop(cfg: Config, live: Live, conn, sleep=None,
             continue
         try:
             reason = chat._one_session(cfg, conn, summary, token, first, live)
+        except TokenError as e:
+            # Decrypt failed or unexpected .env: do not start a headless
+            # spam loop. Scrub, back off, try again later.
+            live.cleanup()
+            scrub_token(cfg)
+            reason = "no-token"
+            delay, fails = next_delay(0, fails)
+            activity.record(conn, chat.BOT, "admin-live.no-token",
+                            f"{e}; not starting Admin, retrying in {delay} s")
+            if live.stop.is_set():
+                return
+            sleep(delay)
+            continue
         except Exception as e:  # noqa: BLE001  # never end the loop
             reason = "crash"
             activity.record(conn, chat.BOT, "admin-live.error",
                             f"{type(e).__name__}: {e}")
+            live.cleanup()
+            scrub_token(cfg)
         first = False
         if live.stop.is_set():
+            live.cleanup()
+            scrub_token(cfg)
             return
         if reason == "rollover":
             summary, token = chat._pending(cfg)
@@ -262,6 +387,7 @@ def serve(cfg: Config) -> int:
         serve_loop(cfg, live, conn)
     finally:
         live.cleanup()
+        scrub_token(cfg)
         conn.close()
         os.close(lock)
     return 0
@@ -341,7 +467,7 @@ def _cmd_run(args) -> int:
 
 
 def _cmd_scrub(args) -> int:
-    scrub_token(Config.load())
+    scrub_token(Config.load())  # always remove leftover .env on unit stop
     return 0
 
 
