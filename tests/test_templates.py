@@ -393,6 +393,16 @@ class TemplatesTest(unittest.TestCase):
         self.assertIn("cb: do not run as root", install)
         self.assertNotIn('ln -sfn "$ENGINE_DIR/bin/cb" /usr/local/bin/cb', install)
 
+    def test_ci_workflow_is_locked_down(self):
+        text = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+        self.assertIn("permissions:", text)
+        self.assertIn("contents: read", text)
+        self.assertIn("branches: [main]", text)
+        self.assertIn("actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4", text)
+        self.assertIn("actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5", text)
+        self.assertIn("shellcheck engine/*.sh engine/lib/*.sh", text)
+        self.assertIn("CB_BANNED_TERMS: ${{ secrets.CB_BANNED_TERMS }}", text)
+
 
 if __name__ == "__main__":
     unittest.main()

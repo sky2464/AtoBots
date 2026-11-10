@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Render the engine's systemd units into /etc/systemd/system.
 # Sourced by install.sh and update.sh. Not executed on its own.
 install_units() {
