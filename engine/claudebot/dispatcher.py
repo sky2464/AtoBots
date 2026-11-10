@@ -542,7 +542,9 @@ class Dispatcher:
         active = {b.name for b in bots.list_bots(conn, include_reserved=True)}
         rows = conn.execute(
             "SELECT id, owner, title, updated_at FROM items WHERE status='doing'"
-            " AND archived_at IS NULL AND updated_at<? ORDER BY n",
+            " AND archived_at IS NULL AND updated_at<?"
+            " AND (waiting_on IS NULL OR waiting_on='')"
+            " AND COALESCE(owner_waiting,0)=0 ORDER BY n",
             (limit,)).fetchall()
         for r in rows:
             if conn.execute(

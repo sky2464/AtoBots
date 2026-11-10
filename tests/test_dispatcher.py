@@ -714,6 +714,27 @@ class WakeTests(Base):
         self.assertEqual(len(wakes), 1)
         self.assertEqual(wakes[0]["to_bot"], "backend")
 
+    def test_waiting_item_is_not_treated_as_stalled(self):
+        old = (T0 - timedelta(seconds=self.cfg.lease_seconds + 1)
+               ).isoformat(timespec="seconds")
+        waiting = items.new(self.cfg, self.conn, "on admin", "backend",
+                            status="doing")
+        owned = items.new(self.cfg, self.conn, "on owner", "backend",
+                          status="doing")
+        self.conn.execute(
+            "UPDATE items SET waiting_on='admin', updated_at=? WHERE id=?",
+            (old, waiting))
+        self.conn.execute(
+            "UPDATE items SET owner_waiting=1, updated_at=? WHERE id=?",
+            (old, owned))
+        d = self.make()
+        d.tick()
+        for i in (waiting, owned):
+            status = self.conn.execute(
+                "SELECT status FROM items WHERE id=?", (i,)).fetchone()["status"]
+            self.assertEqual(status, "doing")
+        self.assertFalse(self.kinds("item.stall_revert"))
+
     def test_idle_admin_returns_to_open_work(self):
         d = self.make()
         d.tick()
