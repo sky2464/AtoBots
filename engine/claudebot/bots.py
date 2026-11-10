@@ -273,18 +273,35 @@ def _read_capped(path: Path, cap: int) -> str:
 
 
 def identity_prompt(cfg: Config, conn: sqlite3.Connection, name: str) -> str:
-    """Soul, Persona, Memory (each capped) and shared rules. Never skills."""
+    """Soul, Persona (each capped) and shared rules. Never skills, and never
+    Memory: it changes between runs, so it travels in the task packet (see
+    memory_block) and this text stays byte-identical for the cached prefix."""
     get(conn, name)
     d = _bot_dir(cfg, name)
     parts = [
         ("Soul", _read_capped(d / "SOUL.md", cfg.soul_cap_bytes)),
         ("Persona", _read_capped(d / "PERSONA.md", cfg.persona_cap_bytes)),
-        ("Memory", _read_capped(d / "MEMORY.md", cfg.memory_cap_bytes)),
     ]
     rules = cfg.home / "rules.md"
     if rules.is_file():
         parts.append(("Shared rules", _read_capped(rules, 4 * 1024)))
     return "\n\n".join(f"# {title}\n\n{text.strip()}" for title, text in parts)
+
+
+def memory_block(cfg: Config, name: str) -> str:
+    """The bot's MEMORY.md, capped, as a `## Memory` block for the task packet."""
+    text = _read_capped(_bot_dir(cfg, name) / "MEMORY.md", cfg.memory_cap_bytes)
+    return f"## Memory\n\n{text.strip()}"
+
+
+def colleagues_block(conn: sqlite3.Connection, exclude: str) -> str:
+    """The other active bots by name and role, for the task packet. Sorted by
+    name, so the text is the same for the same set of bots."""
+    lines = [f"- {b.name}: {b.role or b.name}" for b in list_bots(conn, "active")
+             if b.name != exclude]
+    body = "\n".join(lines) if lines else "No other active bots."
+    return ("## Colleagues\n\nHand work to a colleague with `cb send`; do not "
+            "do their work yourself.\n\n" + body)
 
 
 def model_mismatches(conn: sqlite3.Connection, include_retired: bool = False
