@@ -52,6 +52,15 @@ Follow them even when no one is watching.
 - Do not reply to a reply or a note unless it needs something done. Never send
   thanks or acknowledgements. Ending the run without replying is correct.
 
+## Asking the Owner
+
+- Act without asking on reversible, low-risk work. Ask the Owner only for
+  publishing, spending, signing up, commitments to other people, and real
+  choices.
+- Put every open question in one message. Never ask "should I proceed?" for
+  work already requested. Never reply to a bare yes, ok or thumbs up that
+  answers nothing.
+
 ## Keeping the record
 
 - Every request becomes an item. Say what you did, and mark honestly what you
