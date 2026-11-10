@@ -395,20 +395,6 @@ def model_mismatches(conn: sqlite3.Connection, include_retired: bool = False
     return out
 
 
-def agents_json(conn: sqlite3.Connection, exclude: str) -> str:
-    """JSON for `claude --agents`: the other active bots a bot may hand to."""
-    out = {}
-    for b in list_bots(conn, "active"):
-        if b.name == exclude:
-            continue
-        out[b.name] = {
-            "description": b.role or b.name,
-            "prompt": f"You are {b.name}, role: {b.role}. Hand work to this "
-                      f"bot with `cb send`; do not do its work yourself.",
-        }
-    return json.dumps(out, sort_keys=True)
-
-
 def check(cfg: Config, conn: sqlite3.Connection) -> list[str]:
     msgs = []
     caps = {"SOUL.md": cfg.soul_cap_bytes, "PERSONA.md": cfg.persona_cap_bytes,
