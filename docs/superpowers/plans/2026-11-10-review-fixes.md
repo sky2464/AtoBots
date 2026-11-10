@@ -232,7 +232,7 @@ Do not delete from `activity` (it is append-only by design).
 ### Task 26: Remove host details from docs
 **Files:** `docs/superpowers/plans/acceptance-notes.md`, `docs/superpowers/specs/2026-11-08-claudebot-engine-design.md`, `docs/superpowers/plans/2026-11-09-claudebot-cost-control.md`, other files under `docs/superpowers/`
 **Change:** Replace the server host name, deploy-key file names, backup organisation and repository names, the SSH alias, and the two company names with neutral placeholders (`<server>`, `<deploy-key>`, `<backup-repo>`, `<ssh-alias>`, `<company>`). Do not rewrite git history.
-**Done when:** `grep -rni "racknerd" docs` returns nothing and the other names are gone.
+**Done when:** a case-insensitive search of `docs/` for the old server hostname returns nothing, and the other company and server names are gone.
 
 ### Task 27: Bring specs and changelog in line with the code
 **Files:** `docs/superpowers/specs/2026-11-08-claudebot-engine-design.md`, `CHANGELOG.md`, `docs/hygiene-leftovers.md`, `docs/branch-cleanup.md`, `docs/ops-checklist-review-backlog.md`

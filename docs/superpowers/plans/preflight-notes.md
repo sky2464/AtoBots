@@ -81,7 +81,7 @@ Other [D]: `StopFailure` (runs instead of Stop on API errors) gets `error` in {`
 
 ## Step 5: Folders on the server [V]
 
-`~/ClaudeBot`: empty (no entries). `~/DTbyNavid`: **empty** (no entries; created 05:19 on Nov 9 server time). Nothing to ask the Owner about. Not read or changed.
+`~/ClaudeBot`: empty (no entries). `$CLAUDEBOT_HOME`: **empty** (no entries; created 05:19 on Nov 9 server time). Nothing to ask the Owner about. Not read or changed.
 
 Context seen, names only: `~/.claude/projects/` already held `-home-claude-ClaudeBot`, `-home-claude-ClaudeBot-Linux` and later `-home-claude-Linux` (the Owner's sessions; one tmux server socket `/tmp/tmux-1000` appeared during my work). I did not touch these. The Owner had no live claude process when I started.
 
