@@ -301,6 +301,12 @@ def _run(fn):
         conn.close()
 
 
+class SendActionParser(argparse.ArgumentParser):
+    def error(self, message):
+        sys.stderr.write('Not sent. Example: cb send tl "subject" "body"\n')
+        super().error(message)
+
+
 def _cmd_send(args):
     def go(cfg, conn):
         frm = resolve_from(conn, args.frm, command="send")
@@ -315,6 +321,7 @@ def _cmd_send(args):
                   file=sys.stderr)
             return 1
         print(mid)
+        sys.stderr.write(f"Sent to {args.to} as message {mid}.\n")
         return 0
     return _run(go)
 
@@ -330,6 +337,7 @@ def _cmd_ask(args):
                   file=sys.stderr)
             return 1
         print(mid)
+        sys.stderr.write(f"Sent to {args.to} as message {mid}.\n")
         return 0
     return _run(go)
 
@@ -337,9 +345,15 @@ def _cmd_ask(args):
 def _cmd_reply(args):
     def go(cfg, conn):
         frm = resolve_from(conn, args.frm, command="reply")
-        print(reply(conn, frm, args.message_id, args.body, file=args.file,
+        row = conn.execute("SELECT from_bot FROM messages WHERE id=?",
+                           (args.message_id,)).fetchone()
+        to_name = row["from_bot"] if row else None
+        mid = reply(conn, frm, args.message_id, args.body, file=args.file,
                     hop_limit=cfg.hop_limit, chain_window_s=cfg.chain_window_s,
-                    home=cfg.home))
+                    home=cfg.home)
+        print(mid)
+        if mid and to_name:
+            sys.stderr.write(f"Sent to {to_name} as message {mid}.\n")
         return 0
     return _run(go)
 
@@ -377,6 +391,7 @@ def _cmd_retry(args):
 def register(subparsers) -> None:
     from .runner import EFFORT_ORDER
     s = subparsers.add_parser("send", help="send a message to a bot")
+    s.__class__ = SendActionParser
     s.add_argument("to")
     s.add_argument("subject")
     s.add_argument("body")
@@ -391,6 +406,7 @@ def register(subparsers) -> None:
     s.add_argument("--dedupe-key")
     s.set_defaults(func=_cmd_send)
     a = subparsers.add_parser("ask", help="ask a bot and leave a handoff note")
+    a.__class__ = SendActionParser
     a.add_argument("to")
     a.add_argument("item")
     a.add_argument("question")
@@ -400,6 +416,7 @@ def register(subparsers) -> None:
                    help="sender when run from the shell; a bot session sends as itself")
     a.set_defaults(func=_cmd_ask)
     r = subparsers.add_parser("reply", help="answer a message")
+    r.__class__ = SendActionParser
     r.add_argument("message_id", type=int)
     r.add_argument("body")
     r.add_argument("--file", help="path of a longer answer")

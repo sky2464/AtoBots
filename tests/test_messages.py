@@ -286,7 +286,10 @@ class MessagesCliTests(MessagesBase):
         e = {"CLAUDEBOT_HOME": str(self.cfg.home)}
         e.update(env or {})
         with mock.patch.dict(os.environ, e), redirect_stdout(out), redirect_stderr(err):
-            rc = cli.main(list(argv))
+            try:
+                rc = cli.main(list(argv))
+            except SystemExit as ex:
+                rc = ex.code
         return rc, out.getvalue(), err.getvalue()
 
     def test_send_inbox_reply_flow_uses_cb_bot(self):
@@ -338,13 +341,15 @@ class MessagesCliTests(MessagesBase):
             "SELECT detail FROM activity WHERE kind='auth.refused'"
             ).fetchone()["detail"], "send")
         rc, out, err = self.run_cli("send", "admin", "hi", "body", env=env)
-        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(rc, 0)
+        self.assertIn("Sent to admin as message 1.", err)
         self.assertEqual(self.msg(int(out.strip()))["from_bot"], "backend")
 
     def test_cli_may_choose_from(self):
         rc, out, err = self.run_cli(
             "send", "backend", "hi", "body", "--from", "admin")
-        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(rc, 0)
+        self.assertIn("Sent to backend as message 1.", err)
         self.assertEqual(self.msg(int(out.strip()))["from_bot"], "admin")
 
     def test_inbox_done_and_retry_follow_the_caller(self):
@@ -388,6 +393,67 @@ class MessagesCliTests(MessagesBase):
                 messages.send(self.conn, "system", "admin", "s", "b")
             mid = messages.send(self.conn, "backend", "admin", "ok", "body")
         self.assertEqual(self.msg(mid)["from_bot"], "backend")
+
+
+class SendConfirmationAndUsageTests(MessagesBase):
+    def run_cli(self, *argv, env=None):
+        out, err = io.StringIO(), io.StringIO()
+        e = {"CLAUDEBOT_HOME": str(self.cfg.home)}
+        e.update(env or {})
+        with mock.patch.dict(os.environ, e), redirect_stdout(out), redirect_stderr(err):
+            try:
+                rc = cli.main(list(argv))
+            except SystemExit as ex:
+                rc = ex.code
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_send_success_stdout_and_stderr(self):
+        rc, out, err = self.run_cli("send", "backend", "subj", "body",
+                                   env={"CB_BOT": "admin"})
+        self.assertEqual(rc, 0)
+        mid = out.strip()
+        self.assertEqual(mid, "1")
+        self.assertEqual(err, f"Sent to backend as message {mid}.\n")
+
+    def test_ask_success_stdout_and_stderr(self):
+        t = items.new(self.cfg, self.conn, "t", "admin")
+        h = Path(self._tmp.name) / "handoff.md"
+        h.write_text("what to do")
+        rc, out, err = self.run_cli("ask", "backend", t, "which color?",
+                                   "--handoff-file", str(h),
+                                   env={"CB_BOT": "admin"})
+        self.assertEqual(rc, 0)
+        mid = out.strip()
+        self.assertEqual(mid, "1")
+        self.assertEqual(err, f"Sent to backend as message {mid}.\n")
+
+    def test_reply_success_stdout_and_stderr(self):
+        mid = messages.send(self.conn, "backend", "admin", "q", "body")
+        rc, out, err = self.run_cli("reply", str(mid), "blue",
+                                   env={"CB_BOT": "admin"})
+        self.assertEqual(rc, 0)
+        reply_id = out.strip()
+        self.assertEqual(reply_id, "2")
+        self.assertEqual(err, f"Sent to backend as message {reply_id}.\n")
+
+    def test_send_usage_error_shows_not_sent_prefix_and_exit_2(self):
+        rc, out, err = self.run_cli("send")
+        self.assertEqual(rc, 2)
+        lines = err.splitlines()
+        self.assertEqual(lines[0], 'Not sent. Example: cb send tl "subject" "body"')
+        self.assertTrue(any("usage:" in l for l in lines))
+
+    def test_ask_usage_error_shows_not_sent_prefix_and_exit_2(self):
+        rc, out, err = self.run_cli("ask")
+        self.assertEqual(rc, 2)
+        lines = err.splitlines()
+        self.assertEqual(lines[0], 'Not sent. Example: cb send tl "subject" "body"')
+
+    def test_reply_usage_error_shows_not_sent_prefix_and_exit_2(self):
+        rc, out, err = self.run_cli("reply")
+        self.assertEqual(rc, 2)
+        lines = err.splitlines()
+        self.assertEqual(lines[0], 'Not sent. Example: cb send tl "subject" "body"')
 
 
 class OwnerHoldSpoofTests(MessagesBase):

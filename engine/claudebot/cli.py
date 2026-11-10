@@ -248,8 +248,27 @@ def _cmd_templates_refresh(_args) -> int:
     return 0
 
 
+class CBArgumentParser(argparse.ArgumentParser):
+    _current_argv = None
+
+    def parse_args(self, args=None, namespace=None):
+        self._current_argv = args if args is not None else sys.argv[1:]
+        return super().parse_args(args, namespace)
+
+    def error(self, message):
+        argv = self._current_argv or []
+        first_cmd = None
+        for a in argv:
+            if not a.startswith("-"):
+                first_cmd = a
+                break
+        if first_cmd in ("send", "ask", "reply"):
+            sys.stderr.write('Not sent. Example: cb send tl "subject" "body"\n')
+        super().error(message)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="cb")
+    p = CBArgumentParser(prog="cb")
     sub = p.add_subparsers(dest="command", required=True)
     for m in MODULES:
         m.register(sub)
