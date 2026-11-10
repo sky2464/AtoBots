@@ -1,9 +1,9 @@
 # Updating ClaudeBot
 
 This guide is for customers who installed ClaudeBot from GitHub: you cloned the
-repository on your server and ran `engine/install.sh`. If you deploy by copying
-files from another machine, use your own deploy path instead (for the Owner's
-setup, see [docs/deploy.md](docs/deploy.md)).
+repository on your server and ran `engine/install.sh`. The supported deploy path
+is a Git clone plus `engine/update.sh` after release tags (see
+[docs/deploy.md](docs/deploy.md)). Do not rsync with `--delete` into the clone.
 
 Run every command below as the user `claude` on the server, in the ClaudeBot
 clone (the folder that holds `engine/`).

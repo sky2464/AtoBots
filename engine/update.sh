@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Update ClaudeBot on this server to a release tag. Run by hand as the user
+# Update ClaudeBot on this server to a release tag. Requires a full Git clone
+# (do not deploy with rsync --delete into this tree). Run by hand as the user
 # claude, from the clone that engine/install.sh was run from:
 #   engine/update.sh                 # the newest v* tag
 #   engine/update.sh --tag v0.0.1    # a specific tag

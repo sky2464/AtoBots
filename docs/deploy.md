@@ -3,62 +3,93 @@
 Ship a known engine revision to the VPS. Prefer a Git tag over an arbitrary
 branch tip so the server matches a reviewable commit.
 
+Live acceptance evidence is recorded in
+[acceptance-notes.md](superpowers/plans/acceptance-notes.md).
+
 ## Version
 
 - Package / CLI version string: `claudebot.__version__` (printed by `cb version`).
-- First public tag after the review stack merges: **`v0.0.1`** (create the tag on
-  `main` once the hygiene PR lands; do not retag rewritten history).
+- Release tags look like `v0.0.1` on `main`. Create annotated tags on `main` after
+  the commit you intend to ship; do not retag rewritten history.
 
 ```bash
 git tag -a v0.0.1 -m "ClaudeBot v0.0.1"
 git push origin v0.0.1
 ```
 
-## Deploy to the VPS
+## Server layout
 
-On the Mac (or any machine with `atoosa-vps` SSH access):
+The VPS should keep a **full Git clone** of this repository (including `.git`),
+not a copied tree from rsync. `engine/update.sh` uses `git fetch`, `git checkout`,
+and rollback via `git checkout <old ref>`; rsync-only trees break updates and
+can delete `.git` if `--delete` is used against the checkout root.
+
+- **Engine checkout:** e.g. `~/ClaudeBot` (clone of the engine repo).
+- **Company home:** `CLAUDEBOT_HOME` (set by `engine/install.sh`), holding
+  `company.db`, bots, work, and `.secrets/`. Deploy and update **never** replace
+  the company home.
+
+Owner-specific hostnames, SSH aliases, and inventory live in
+[server-inventory.md](templates/server-inventory.md) (copy outside the repo; do
+not commit real values).
+
+## First install (new server)
+
+As user `claude` on the VPS:
 
 ```bash
-# 1. Check out the tag you intend to ship
-git fetch --tags origin
-git switch --detach v0.0.1
-
-# 2. Sync engine + tests so the server tree matches the tag
-#    --delete removes files that left the repo (required for a true match).
-rsync -a --delete \
-  --exclude '.git/' \
-  --exclude '__pycache__/' \
-  --exclude '*.pyc' \
-  ./engine/ ./tests/ \
-  atoosa-vps:~/ClaudeBot/
-```
-
-On the server:
-
-```bash
-ssh atoosa-vps
+git clone git@github.com:ORG/claudebot.git ~/ClaudeBot
 cd ~/ClaudeBot
 python3 -m unittest discover -s tests
-# Re-link / restart only if install layout or units changed:
-#   engine/install.sh --start "Atoosa Dev" /home/claude/AtoosaDev
-sudo systemctl restart claudebot-dispatcher
-# If always-on Admin is enabled:
-#   sudo systemctl restart claudebot-admin
-cb doctor
-cb version   # expect 0.0.1 (or the tagged package version)
+engine/install.sh --start "My Company" /home/claude/MyCompany
 ```
 
-Notes:
+Use your real org/repo URL and company name. See [UPDATING.md](../UPDATING.md) for
+day-to-day upgrades.
 
-- Company data lives under `CLAUDEBOT_HOME` (today `/home/claude/AtoosaDev`), not
-  under `~/ClaudeBot`. rsync of the engine must not touch the company home.
-- Older deploys sometimes used `rsync` without `--delete`, which left removed
-  Python modules on the server. Always use `--delete` for engine/tests.
-- Do not rsync `.git` from a detached tag checkout unless you intentionally want
-  a full clone on the server.
+## Update an existing install
 
-## Company naming
+On a machine that can push tags (typically your laptop):
 
-- **Company (install):** Atoosa Dev (`~/AtoosaDev`)
-- **Product / line of business:** DecisionTreeByNavid (YouTube channel)
-- Engine docs and templates stay company-agnostic; only ops notes name Atoosa Dev.
+```bash
+git fetch --tags origin
+git tag -a v0.0.2 -m "ClaudeBot v0.0.2"   # when ready
+git push origin v0.0.2
+```
+
+On the VPS, in the existing clone:
+
+```bash
+cd ~/ClaudeBot
+git fetch --tags origin
+engine/update.sh                 # newest v* tag
+# or: engine/update.sh --tag v0.0.1
+```
+
+`engine/update.sh` backs up the company database, checks out the tag, runs
+`cb init`, restarts services, and runs `cb doctor`. See [UPDATING.md](../UPDATING.md)
+for rollback steps.
+
+Optional sanity check after update:
+
+```bash
+python3 -m unittest discover -s tests
+cb version
+cb doctor
+```
+
+## What not to do
+
+- Do **not** `rsync -a --delete` into `~/ClaudeBot` on the server. That can
+  remove `.git` and leaves no supported update path. If you must copy files
+  once for bootstrap, clone from Git instead.
+- Do **not** rsync or overwrite the company home when shipping engine changes.
+- Do **not** create or push a GitHub Release unless the Owner asked; tagging
+  `main` is enough for `engine/update.sh`.
+
+## When systemd units change
+
+`engine/update.sh` does not reinstall unit files. If a release changes files
+under `engine/systemd/`, read that release in [CHANGELOG.md](../CHANGELOG.md)
+and re-run `engine/install.sh` (no `--start` required) or install units by hand
+as documented there.
