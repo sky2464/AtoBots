@@ -219,17 +219,15 @@ class PromptTests(BotsBase):
         p = bots.identity_prompt(self.cfg, self.conn, "backend")
         self.assertLessEqual(len(p.encode()), 4096 + 4096 + 8192 + 1024)
 
-    def test_agents_json_omits_self_and_retired(self):
+    def test_no_agents_json_stub(self):
+        # Cost control: colleagues travel in the task packet; Claude --agents
+        # is not used (its payload would bust the cached prefix).
+        self.assertFalse(hasattr(bots, "agents_json"))
         self.new("admin", role="Chief")
         self.new("backend")
-        self.new("old")
-        self.new("pausy")
-        bots.set_status(self.conn, "old", "retired", "admin")
-        bots.set_status(self.conn, "pausy", "paused", "admin")
-        data = json.loads(bots.agents_json(self.conn, exclude="admin"))
-        self.assertEqual(sorted(data), ["backend"])
-        self.assertIn("Backend engineer", data["backend"]["description"])
-        self.assertIn("prompt", data["backend"])
+        block = bots.colleagues_block(self.conn, exclude="admin")
+        self.assertIn("backend", block)
+        self.assertIn("cb send", block)
 
 
 class CliTests(BotsBase):

@@ -33,7 +33,14 @@ class Config:
     hop_limit: int = 8
     chain_window_s: int = 900
     wakes_per_bot_per_hour: int = 12
+    # Soft hourly wake caps by model (cost control). Unknown models fall back
+    # to wakes_per_bot_per_hour. Overridable in config.json.
+    wake_cap_opus: int = 3
+    wake_cap_sonnet: int = 6
+    wake_cap_haiku: int = 12
     batch_delay_seconds: int = 5
+    # Workers wait longer so several task messages land in one run.
+    worker_batch_delay_seconds: int = 60
     poll_seconds: int = 5
     usage_limit_retry_seconds: int = 900
     soul_cap_bytes: int = 4 * 1024

@@ -197,7 +197,8 @@ class StartTests(Base):
                          ["heavy", "heavy", "normal"])
 
     def test_wake_cap(self):
-        for k in range(12):
+        # Default backend is sonnet → soft cap wake_cap_sonnet (6).
+        for k in range(self.cfg.wake_cap_sonnet):
             self.conn.execute(
                 "INSERT INTO runs(bot, started_at, ended_at, reason)"
                 " VALUES ('backend',?,?,'ok')",
@@ -211,9 +212,71 @@ class StartTests(Base):
         notes = self.system_notes()
         self.assertEqual(len(notes), 1)
         self.assertIn("backend", notes[0]["subject"])
+        self.assertIn(str(self.cfg.wake_cap_sonnet), notes[0]["body"])
         # an hour later the old wakes have aged out
         self.clock.advance(3601)
         self.assertEqual(self.tick(d).__len__(), 2)  # backend + the admin note
+
+    def test_opus_bot_capped_at_three_runs_per_hour(self):
+        bots.update(self.cfg, self.conn, "backend", "admin", model="opus")
+        for _ in range(3):
+            self.conn.execute(
+                "INSERT INTO runs(bot, started_at, ended_at, reason)"
+                " VALUES ('backend',?,?,'ok')",
+                (self.clock(), self.clock()))
+        self.send("backend")
+        self.ready()
+        d = self.make()
+        self.assertEqual(self.tick(d), [])
+        self.assertEqual(self.run_fn.bots_run, [])
+        notes = self.system_notes()
+        self.assertEqual(len(notes), 1)
+        self.assertIn("limit (3)", notes[0]["body"])
+
+    def test_owner_message_bypasses_cap(self):
+        bots.update(self.cfg, self.conn, "backend", "admin", model="opus")
+        for _ in range(3):
+            self.conn.execute(
+                "INSERT INTO runs(bot, started_at, ended_at, reason)"
+                " VALUES ('backend',?,?,'ok')",
+                (self.clock(), self.clock()))
+        # Owner is a reserved sender (not a bot row); insert the queue row
+        # the way an Owner-channel path would land work.
+        self.conn.execute(
+            "INSERT INTO messages(from_bot, to_bot, kind, subject, body, "
+            "priority, level, status, created_at) VALUES "
+            "('owner','backend','wake','s','body','normal','normal',"
+            "'queued',?)", (self.clock(),))
+        self.ready()
+        d = self.make()
+        self.assertEqual(len(self.tick(d)), 1)
+        self.assertEqual(self.run_fn.bots_run, ["backend"])
+
+    def test_admin_urgent_bypasses_cap(self):
+        bots.update(self.cfg, self.conn, "backend", "admin", model="opus")
+        for _ in range(3):
+            self.conn.execute(
+                "INSERT INTO runs(bot, started_at, ended_at, reason)"
+                " VALUES ('backend',?,?,'ok')",
+                (self.clock(), self.clock()))
+        self.send("backend", priority="urgent")
+        d = self.make()
+        self.assertEqual(len(self.tick(d)), 1)
+        self.assertEqual(self.run_fn.bots_run, ["backend"])
+
+    def test_worker_waits_sixty_seconds_to_batch(self):
+        bots.create(self.cfg, self.conn, "worker1", role="worker", soul="s",
+                    persona="p", model="haiku", tier="worker")
+        self.send("worker1", "first")
+        d = self.make()
+        # 10 s is enough for a thinker (batch_delay=5) but not a worker (60).
+        self.clock.advance(10)
+        self.assertEqual(self.tick(d), [])
+        self.send("worker1", "second")
+        self.clock.advance(55)  # first message now past 60 s
+        self.assertEqual(len(self.tick(d)), 1)
+        self.assertEqual(self.run_fn.bots_run, ["worker1"])
+        self.assertEqual(len(self.run_fn.calls[0][1]), 2)
 
     def test_owner_connected_defers_new_runs(self):
         self.send("backend")

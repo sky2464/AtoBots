@@ -49,8 +49,17 @@ class RulesTest(unittest.TestCase):
             "sources the owner approved",
             "one server account",
             "not a technical lock",
+            "asking the owner",
+            "put every open question in one message",
+            "should i proceed",
         ):
             self.assertIn(needle, r, needle)
+
+    def test_admin_persona_batches_questions(self):
+        text = " ".join(
+            (TEMPLATES / "admin" / "PERSONA.md").read_text().lower().split())
+        self.assertIn("put every open question in one message", text)
+        self.assertNotIn("one question at a time", text)
 
 
 class InitTest(unittest.TestCase):
