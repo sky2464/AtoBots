@@ -19,7 +19,6 @@ from . import activity, bots, items, messages, tasks, usage
 from .config import Config
 from .db import tx, utcnow
 
-CLAUDE_HOME = "/home/claude"
 LEVEL_ORDER = ("housekeeping", "normal", "deep", "heavy")
 # A level may lower a thinker's model, and only housekeeping does. No level
 # raises a model: deep and heavy keep the bot's own (they change lane and
@@ -70,7 +69,13 @@ def settings_for(bot: bots.Bot, msgs) -> tuple:
 
 
 def _resolve(cfg: Config, kind: str, name: str, suffix: str = "") -> Path:
-    p = Path(name) if os.path.isabs(name) else cfg.home / kind / (name + suffix)
+    if os.path.isabs(name) or ".." in Path(name).parts:
+        raise ValueError(f"{kind} name must be relative with no ..: {name!r}")
+    p = cfg.home / kind / (name + suffix)
+    try:
+        p.resolve().relative_to(cfg.home.resolve())
+    except ValueError as e:
+        raise ValueError(f"{kind} name must stay under the company home") from e
     if not p.exists():
         raise FileNotFoundError(f"{kind} {name!r} not found at {p}")
     return p
@@ -120,25 +125,23 @@ def task_prompt_for_file(task_file: str) -> str:
 
 def unit_name_for(run_id: int) -> str:
     """Transient systemd unit name for one run (stopped on Python timeout)."""
-    return f"claudebot-run-{int(run_id)}.scope"
+    return f"claudebot-run-{int(run_id)}.service"
 
 
 def build_command(cfg: Config, bot: bots.Bot, session_id: str, prompt_file,
-                  lane: str, *, task: str = "", task_file: str | None = None,
+                  lane: str, *, task_file: str | None = None,
                   unit: str | None = None, model: str | None = None,
-                  effort: str | None = None, mcp_config=None,
-                  agents: str | None = None) -> list:
+                  effort: str | None = None, mcp_config=None) -> list:
     """The full command line. `prompt_file` holds the identity text and goes in
     with --append-system-prompt-file. The task body lives in `task_file` (mode
     600); `-p` only carries a short path pointer so subjects/bodies stay out of
     `ps` and the journal. `lane` only labels the run (limits are the same in
     every lane)."""
-    if task_file:
-        prompt = task_prompt_for_file(task_file)
-    else:
-        prompt = task
+    if not task_file:
+        raise ValueError("task_file is required")
+    prompt = task_prompt_for_file(task_file)
     cmd = ["sudo", "systemd-run", "--wait", "--collect", "--pipe",
-           "--uid=claude"]
+           f"--uid={cfg.run_user}"]
     if unit:
         cmd += [f"--unit={unit}"]
     cmd += [
@@ -147,8 +150,8 @@ def build_command(cfg: Config, bot: bots.Bot, session_id: str, prompt_file,
            "-p", "MemorySwapMax=0",
            "-p", f"RuntimeMaxSec={cfg.run_seconds}",
            f"--working-directory={cfg.bots_dir / bot.name}",
-           f"--setenv=HOME={CLAUDE_HOME}",
-           f"--setenv=PATH={CLAUDE_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin",
+           f"--setenv=HOME={cfg.run_home}",
+           f"--setenv=PATH={cfg.run_home}/.local/bin:/usr/local/bin:/usr/bin:/bin",
            f"--setenv=CB_BOT={bot.name}",
            f"--setenv=CB_SESSION_ID={session_id}",
            f"--setenv=CLAUDEBOT_HOME={cfg.home}",
@@ -170,8 +173,6 @@ def build_command(cfg: Config, bot: bots.Bot, session_id: str, prompt_file,
         cmd += ["--mcp-config", str(mcp_config)]
     for d in _plugin_dirs(cfg, bot):
         cmd += ["--plugin-dir", str(d)]
-    if agents:
-        cmd += ["--agents", agents]
     return cmd
 
 

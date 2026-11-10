@@ -6,13 +6,13 @@ systemd-run: it needs the Owner's terminal). It holds an exclusive flock on
 `.chat.lock` for as long as the chat is open; the dispatcher reads that lock
 (`owner_connected`) and stays quiet while the Owner is talking.
 
-Rollover: `cb chat-rollover --summary-file F` stores a summary, drops a
-marker and sends SIGTERM to the claude process named in the pid file (Admin's
-Bash tool is a child of claude, but not always its direct child, so the parent
-pid is not used). chat_loop sees the marker, archives the old transcript and
-starts claude again with the summary in its prompt. The live Admin's rollover
-is started by the engine itself (rotation.py) for both the live Admin and
-`cb chat`; the Stop hook no longer blocks.
+Rollover: the engine watches the session (rotation.Watcher, from the wait
+loop). When the context is too large, or large and idle past the cache
+lifetime, it builds a summary from the records and calls `rollover`, which
+stores the summary, drops a marker and sends SIGTERM to the claude process
+named in the pid file. chat_loop sees the marker, archives the old transcript
+and starts claude again with the summary in its prompt. Admin can still ask
+for the same thing with `cb chat-rollover --summary-file F`.
 """
 import fcntl
 import json
@@ -27,7 +27,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import activity, archive, bots, items, requests, runner, usage
+from . import activity, archive, bots, items, requests, rotation, runner
 from .config import Config
 from .db import connect, ct_display, tx, utcnow
 
@@ -39,7 +39,6 @@ LAST_CHECK_KEY = "chat.last_check"
 SUMMARY_PROMPT_CAP = 20000
 TRANSCRIPT_SCAN_CAP = 16 * 1024 * 1024
 KILL_GRACE_SECONDS = 20
-TOKEN_ENV = "CB_ROLLOVER_TOKEN"
 STATE_ENV = "CB_STATE_DIR"  # set by `cb admin serve`: its own state directory
 
 
@@ -47,8 +46,8 @@ STATE_ENV = "CB_STATE_DIR"  # set by `cb admin serve`: its own state directory
 
 def chat_dir(cfg: Config) -> Path:
     """State of the running chat. The always-on Admin session sets
-    CB_STATE_DIR so `cb chat-rollover` and the engine's rotation find its
-    files, not those of a `cb chat`."""
+    CB_STATE_DIR so the Stop hook and `cb chat-rollover` find its files, not
+    those of a `cb chat`."""
     override = os.environ.get(STATE_ENV)
     return Path(override) if override else cfg.home / ".chat"
 
@@ -175,7 +174,7 @@ def _setup_section(cfg: Config) -> list:
     return [("Not set up", [_clip(f.text) for f in found])] if found else []
 
 
-def _sections(conn, since: str, cfg: Config | None = None) -> list:
+def _sections(conn, since: str, now: str, cfg: Config | None = None) -> list:
     out = []
     reqs = requests.unhandled(conn)
     if reqs:
@@ -188,12 +187,20 @@ def _sections(conn, since: str, cfg: Config | None = None) -> list:
     if need:
         out.append(("Needs you", [
             _clip(f"{i['id']} [{i['status']}] {i['title']}") for i in need]))
+    week = (datetime.fromisoformat(now) - timedelta(days=7)).isoformat(
+        timespec="seconds")
     failed = conn.execute(
-        "SELECT * FROM messages WHERE status='failed' ORDER BY id").fetchall()
+        "SELECT * FROM messages WHERE status='failed'"
+        " AND COALESCE(done_at, created_at) >= ? ORDER BY id",
+        (week,)).fetchall()
     if failed:
-        out.append(("Stuck", [
+        stuck = [
             _clip(f"message {m['id']} {m['from_bot']}->{m['to_bot']}: "
-                  f"{m['subject']}") for m in failed]))
+                  f"{m['subject']}") for m in failed]
+        stuck.append(_clip(
+            "Clear one with `cb message done ID` or rerun it with "
+            "`cb message retry ID`."))
+        out.append(("Stuck", stuck))
     done, seen = [], set()
     for a in activity.since(conn, since):
         if (a["kind"] == "item.status" and (a["detail"] or "").endswith("-> done")
@@ -218,7 +225,7 @@ def brief(cfg: Config, conn, since: str | None = None,
     ).isoformat(timespec="seconds")
     head = f"Brief as of {ct_display(now)}"
     foot = "Full lists: cb open, cb request unhandled."
-    sections = _sections(conn, since, cfg)
+    sections = _sections(conn, since, now, cfg)
     if not sections:
         return (f"{head}\nNothing new: no open requests, nothing waiting on "
                 f"the Owner, nothing stuck.\n{foot}")
@@ -300,15 +307,7 @@ def settings_for_chat(cfg: Config) -> dict:
     def hook(sub):
         return [{"hooks": [{"type": "command", "command": f"{cb} hook {sub}",
                             "timeout": 30}]}]
-    # No Stop hook: rotation is done by the engine (rotation.py). The
-    # `cb hook stop` subcommand still exists for settings written earlier.
     return {"hooks": {"UserPromptSubmit": hook("prompt")}}
-
-
-def cmd_hook_stop(args) -> int:
-    """Stop hook. Retired: rotation is done by the engine (rotation.py), so
-    the hook never blocks the chat. Kept so existing settings still run."""
-    return 0
 
 
 # ---- rollover ----
@@ -373,7 +372,8 @@ def _compose_prompt(cfg, conn, brief_text: str, summary) -> str:
     if summary is not None:
         parts.append(
             "# Continuing an earlier chat\n\nThe earlier chat grew long and "
-            "was restarted. Your own summary of it follows. Carry on from "
+            "was restarted. Summary built by the engine from the record (it "
+            "has no conversation text). Carry on from "
             "it; do not greet the Owner as if this were new.\n\n"
             + summary[:SUMMARY_PROMPT_CAP])
     return "\n\n".join(parts)
@@ -404,22 +404,21 @@ def _command(cfg, bot, session_id, prompt_file, settings_file, mcp_file,
 
 def memory_wrap(cfg: Config, cmd: list) -> list:
     """Apply MemoryMax to interactive Admin (chat / live) via systemd-run
-    --pty when a user manager is available. On hosts without systemd-run
-    (dev Macs) the bare command is returned unchanged."""
+    --user --scope when a user manager is available. Scope mode keeps the
+    caller's environment, working directory, terminal and pid. On hosts
+    without a user manager the bare command is returned unchanged (no
+    system-mode systemd-run, which needs a password prompt)."""
     sr = shutil.which("systemd-run")
     if not sr:
         return list(cmd)
-    # User scope keeps the Owner's TTY and avoids passwordless sudo.
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     use_user = bool(runtime and Path(runtime, "systemd").is_dir())
-    wrapped = [sr]
-    if use_user:
-        wrapped.append("--user")
-    wrapped += ["--pty", "--collect",
-                "-p", f"MemoryMax={cfg.run_memory_max}",
-                "-p", "MemorySwapMax=0",
-                "--", *cmd]
-    return wrapped
+    if not use_user:
+        return list(cmd)
+    return [sr, "--user", "--scope", "--collect",
+            "-p", f"MemoryMax={cfg.run_memory_max}",
+            "-p", "MemorySwapMax=0",
+            "--", *cmd]
 
 
 def _launch(cmd, cwd, env, cfg: Config | None = None):
@@ -432,7 +431,7 @@ def _launch(cmd, cwd, env, cfg: Config | None = None):
         raise
 
 
-def _wait(proc, cfg, token=None, stop=None) -> int:
+def _wait(proc, cfg, token=None, stop=None, watcher=None) -> int:
     """Wait for claude. Ctrl-C belongs to claude, not to us. If a rollover
     was requested (or `stop` is set) and claude ignores SIGTERM, kill it after
     a grace period."""
@@ -441,6 +440,8 @@ def _wait(proc, cfg, token=None, stop=None) -> int:
         try:
             return proc.wait(timeout=1)
         except subprocess.TimeoutExpired:
+            if watcher is not None:
+                watcher.tick()  # may request a rollover; never raises
             if stop is not None and stop.is_set():
                 if not termed:
                     termed = True
@@ -477,7 +478,7 @@ def _one_session(cfg, conn, summary, token, first: bool, live=None) -> str:
             " VALUES (?,?,?,?)", (BOT, session_id, lane, utcnow())).lastrowid
         activity.record(conn, BOT, f"{prefix}.start" if live else "chat.start",
                         f"{prefix} session {session_id}", str(run_id))
-    temp, code, reason, watch = [], None, "error", None
+    temp, code, reason = [], None, "error"
     try:
         try:
             since = last_check(conn, live.check_key if live
@@ -499,7 +500,7 @@ def _one_session(cfg, conn, summary, token, first: bool, live=None) -> str:
         settings = runner._private_file(json.dumps(
             live.settings(cfg) if live else settings_for_chat(cfg)), ".json")
         temp.append(settings)
-        mcp_text = runner._mcp_text(cfg, bot)
+        mcp_text = runner._mcp_text(cfg, bot, conn)
         mcp = None
         if mcp_text:
             mcp = runner._private_file(mcp_text, ".json")
@@ -516,9 +517,6 @@ def _one_session(cfg, conn, summary, token, first: bool, live=None) -> str:
             except admin_live.TokenError:
                 reason = "no-token"
                 raise
-        env.pop(TOKEN_ENV, None)
-        if token:
-            env[TOKEN_ENV] = token
         if summary is not None:
             print("Continuing this chat in a fresh session.", flush=True)
         elif live:
@@ -530,11 +528,8 @@ def _one_session(cfg, conn, summary, token, first: bool, live=None) -> str:
         # The marker stays until this session ends well; the summary file is
         # never deleted.
         _write_private(pid_path(cfg), f"{proc.pid}\n")
-        from . import rotation  # the engine rotates long sessions
-        watch = rotation.Watch(cfg, session_id, token,
-                               ttl=None if live else rotation.CHAT_CACHE_TTL)
-        watch.start()
-        code = _wait(proc, cfg, token, live.stop if live else None)
+        code = _wait(proc, cfg, token, live.stop if live else None,
+                     rotation.Watcher(cfg, conn, session_id))
         now_token = _read_token(cfg)
         if live and live.stop.is_set():
             reason = "stopped"
@@ -545,8 +540,6 @@ def _one_session(cfg, conn, summary, token, first: bool, live=None) -> str:
             if reason == "ok" and token is not None:
                 _unlink(marker_path(cfg))  # the summary did its job
     finally:
-        if watch is not None:
-            watch.stop()  # before the pid file goes: it may be signalled
         if live:
             live.cleanup()
         _unlink(pid_path(cfg))
@@ -558,10 +551,6 @@ def _one_session(cfg, conn, summary, token, first: bool, live=None) -> str:
                 (utcnow(), code, reason, run_id))
             activity.record(conn, BOT, f"{prefix}.end" if live else "chat.end",
                             f"{prefix} session ended: {reason}", str(run_id))
-        try:
-            usage.ingest_transcripts(cfg, conn, BOT)
-        except Exception:  # noqa: BLE001
-            pass  # ledger is best-effort; cb usage can catch up
     if reason == "rollover":
         try:
             archive.archive_transcript(cfg, conn, run_id)

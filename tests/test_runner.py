@@ -133,12 +133,13 @@ class RunnerBase(unittest.TestCase):
 class CommandTests(RunnerBase):
     def test_command_has_limits(self):
         cmd = runner.build_command(self.cfg, self.bot(), "sid-1",
-                                   "/tmp/ident.md", "normal", task="do it",
-                                   unit="claudebot-run-1.scope")
+                                   "/tmp/ident.md", "normal",
+                                   task_file="/tmp/task.md",
+                                   unit="claudebot-run-1.service")
         self.assertEqual(cmd[:3], ["sudo", "systemd-run", "--wait"])
-        for flag in ("--collect", "--pipe", "--uid=claude"):
+        for flag in ("--collect", "--pipe", f"--uid={self.cfg.run_user}"):
             self.assertIn(flag, cmd)
-        self.assertIn("--unit=claudebot-run-1.scope", cmd)
+        self.assertIn("--unit=claudebot-run-1.service", cmd)
         self.assertIn("MemoryMax=1200M", cmd)
         self.assertIn("RuntimeMaxSec=1800", cmd)
         self.assertEqual(cmd[cmd.index("MemoryMax=1200M") - 1], "-p")
@@ -147,9 +148,9 @@ class CommandTests(RunnerBase):
         self.assertIn(f"--working-directory={self.cfg.bots_dir / 'backend'}", cmd)
         self.assertIn("--setenv=CB_BOT=backend", cmd)
         self.assertIn(f"--setenv=CLAUDEBOT_HOME={self.cfg.home}", cmd)
-        self.assertIn("--setenv=HOME=/home/claude", cmd)
+        self.assertIn(f"--setenv=HOME={self.cfg.run_home}", cmd)
         tail = cmd[cmd.index(self.cfg.claude_bin):]
-        self.assertEqual(tail[1:3], ["-p", "do it"])
+        self.assertIn("/tmp/task.md", tail[tail.index("-p") + 1])
         self.assertIn("--dangerously-skip-permissions", tail)
         self.assertEqual(tail[tail.index("--output-format") + 1], "json")
         self.assertEqual(tail[tail.index("--setting-sources") + 1], "project,local")
@@ -171,31 +172,33 @@ class CommandTests(RunnerBase):
     def test_limits_follow_config(self):
         self.cfg.run_memory_max = "900M"
         self.cfg.run_seconds = 60
-        cmd = runner.build_command(self.cfg, self.bot(), "s", "/tmp/i", "normal")
+        cmd = runner.build_command(self.cfg, self.bot(), "s", "/tmp/i", "normal",
+                                   task_file="/tmp/t.task.md")
         self.assertIn("MemoryMax=900M", cmd)
         self.assertIn("RuntimeMaxSec=60", cmd)
 
     def test_connectors_bot_not_strict(self):
         bots.update(self.cfg, self.conn, "backend", "admin", connectors=True)
-        cmd = runner.build_command(self.cfg, self.bot(), "s", "/tmp/i", "normal")
+        cmd = runner.build_command(self.cfg, self.bot(), "s", "/tmp/i", "normal",
+                                   task_file="/tmp/t.task.md")
         self.assertNotIn("--strict-mcp-config", cmd)
 
     def test_command_applies_bot_setup(self):
         (self.cfg.home / "plugins" / "pl").mkdir(parents=True)
         bots.update(self.cfg, self.conn, "backend", "admin", plugins=["pl"])
         cmd = runner.build_command(self.cfg, self.bot(), "s", "/tmp/i", "normal",
-                                   mcp_config="/tmp/m.json", agents="{}")
+                                   task_file="/tmp/t.task.md",
+                                   mcp_config="/tmp/m.json")
         self.assertEqual(cmd[cmd.index("--model") + 1], "sonnet")
         self.assertEqual(cmd[cmd.index("--effort") + 1], "medium")
         self.assertEqual(cmd[cmd.index("--mcp-config") + 1], "/tmp/m.json")
         self.assertEqual(cmd[cmd.index("--plugin-dir") + 1],
                          str(self.cfg.home / "plugins" / "pl"))
-        self.assertEqual(cmd[cmd.index("--agents") + 1], "{}")
-
     def test_command_omits_unset_flags(self):
         bots.update(self.cfg, self.conn, "backend", "admin", effort=None)
-        cmd = runner.build_command(self.cfg, self.bot(), "s", "/tmp/i", "normal")
-        for flag in ("--effort", "--mcp-config", "--plugin-dir", "--agents"):
+        cmd = runner.build_command(self.cfg, self.bot(), "s", "/tmp/i", "normal",
+                                   task_file="/tmp/t.task.md")
+        for flag in ("--effort", "--mcp-config", "--plugin-dir"):
             self.assertNotIn(flag, cmd)
 
     def test_level_and_effort_override(self):
@@ -291,6 +294,42 @@ class PacketTests(RunnerBase):
         self.assertIn("SECOND-BODY", p)
         for old in ("FIRST-BODY", "first job", "sess-from-claude"):
             self.assertNotIn(old, p)
+
+
+class McpSecretTests(RunnerBase):
+    def define(self, defn):
+        (self.cfg.home / "mcp").mkdir(exist_ok=True)
+        (self.cfg.home / "mcp" / "notes.json").write_text(json.dumps(defn))
+        bots.update(self.cfg, self.conn, "backend", "admin", mcp=["notes"])
+        return bots.get(self.conn, "backend")
+
+    def test_secret_reference_is_filled_from_the_store_once_per_name(self):
+        from unittest import mock
+        b = self.define({"mcpServers": {"notes": {
+            "url": "http://x", "env": {"A": "${secret:notes-token}",
+                                       "B": "pre-${secret:notes-token}"},
+            "headers": {"X": "${OTHER}"}}}})
+        calls = []
+
+        def use_env(cfg, conn, actor, env_map, decision=None):
+            calls.append((actor, dict(env_map)))
+            return {"V": "S3CR3T"}
+        with mock.patch("claudebot.store.use_env", use_env):
+            out = json.loads(runner._mcp_text(self.cfg, b, self.conn))
+        srv = out["mcpServers"]["notes"]
+        self.assertEqual(srv["env"], {"A": "S3CR3T", "B": "pre-S3CR3T"})
+        self.assertEqual(srv["headers"], {"X": "${OTHER}"})  # left as written
+        self.assertEqual(calls, [("backend", {"V": "notes-token"})])
+
+    def test_refused_or_unknown_secret_stops_the_run_setup(self):
+        from unittest import mock
+        b = self.define({"mcpServers": {"n": {"env": {"A": "${secret:nope}"}}}})
+        with mock.patch("claudebot.store.use_env",
+                        side_effect=PermissionError("owner-order-only")):
+            with self.assertRaises(PermissionError):
+                runner._mcp_text(self.cfg, b, self.conn)
+        with self.assertRaises(ValueError):
+            runner._mcp_text(self.cfg, b)  # no connection to record the use
 
 
 class ClassifyTests(unittest.TestCase):
