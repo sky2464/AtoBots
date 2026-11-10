@@ -301,9 +301,14 @@ def _archive_session_dir(src_dir: Path, dest: Path) -> None:
         except (OSError, EOFError, tarfile.TarError, ArchiveError) as e:
             raise ArchiveError(f"existing {dest.name} is unreadable: {e}")
         if not set(before) <= have:
-            raise ArchiveError(f"existing {dest.name} lacks files now in "
-                               f"{top}/; left alone")
-        return
+            try:
+                dest.unlink()
+            except OSError as e:
+                raise ArchiveError(
+                    f"existing {dest.name} is stale and could not be removed: {e}"
+                ) from e
+        else:
+            return
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_name(dest.name + ".tmp")
     try:
@@ -373,7 +378,7 @@ class _Plan:
         return len(self.keys.get(table, []))
 
 
-def _plan_items(conn, cutoff, open_req_ids, plan) -> None:
+def _plan_items(conn, cutoff, open_req_ids, plan, archived_at: str) -> None:
     rows = {r["id"]: r for r in conn.execute(
         f"SELECT * FROM items WHERE id IS NOT NULL AND archived_at IS NULL"
         f" AND status IN {_CLOSED} AND updated_at < ?", (cutoff,))}
@@ -393,7 +398,9 @@ def _plan_items(conn, cutoff, open_req_ids, plan) -> None:
                 del rows[id]
                 changed = True
     for r in rows.values():
-        plan.add("items", r["updated_at"][:7], r, (r["n"], r["updated_at"]))
+        stamped = dict(r)
+        stamped["archived_at"] = archived_at
+        plan.add("items", r["updated_at"][:7], stamped, (r["n"], r["updated_at"]))
 
 
 def _plan_requests(conn, cutoff, open_req_ids, plan) -> None:
@@ -422,6 +429,27 @@ def _plan_simple(conn, plan, table, sql, args, month_col, skip=None) -> None:
     for r in conn.execute(sql, args):
         if r["id"] != protect and not (skip and skip(r)):
             plan.add(table, r[month_col][:7], r, (r["id"],))
+
+
+def _record_key(table: str, row: dict) -> tuple:
+    if table == "items":
+        return table, row["n"], row["updated_at"]
+    if table == "request_items":
+        return table, row["request_id"], row["item_id"]
+    return table, row["id"]
+
+
+def _keys_in_month(path: Path) -> set:
+    if not path.is_file():
+        return set()
+    out = set()
+    with gzip.open(path, "rb") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            d = json.loads(line)
+            out.add(_record_key(d["table"], d["row"]))
+    return out
 
 
 def _append_month(cfg, month, new_lines) -> None:
@@ -454,7 +482,7 @@ def archive_old_records(cfg: Config, conn: sqlite3.Connection, now: str,
     open_ids = {r["id"] for r in requests._open_requests(conn)}
     on_disk = _session_files(cfg)
     plan = _Plan()
-    _plan_items(conn, cutoff, open_ids, plan)
+    _plan_items(conn, cutoff, open_ids, plan, now)
     _plan_requests(conn, cutoff, open_ids, plan)
     _plan_simple(conn, plan, "messages",
                  "SELECT * FROM messages WHERE status='done'"
@@ -470,14 +498,29 @@ def archive_old_records(cfg: Config, conn: sqlite3.Connection, now: str,
         return result
     try:
         for month, lines in sorted(plan.lines.items()):
-            _append_month(cfg, month, lines)
+            dest = cfg.archive_dir / month / "records.jsonl.gz"
+            have = _keys_in_month(dest)
+            fresh = []
+            for ln in lines:
+                d = json.loads(ln)
+                if _record_key(d["table"], d["row"]) not in have:
+                    fresh.append(ln)
+            if fresh:
+                _append_month(cfg, month, fresh)
     except OSError as e:
         raise ArchiveError(str(e)) from e
     moved = dict.fromkeys(result, 0)
     with tx(conn):
+        item_keys = plan.keys.get("items", [])
+        if item_keys:
+            conn.executemany(
+                f"UPDATE items SET archived_at=? WHERE n=? AND updated_at=?"
+                f" AND status IN {_CLOSED}",
+                [(now, n, ua) for n, ua in item_keys])
+            moved["items"] = conn.executemany(
+                f"DELETE FROM items WHERE n=? AND updated_at=?"
+                f" AND status IN {_CLOSED}", item_keys).rowcount
         for table, sql in (
-                ("items", "DELETE FROM items WHERE n=? AND updated_at=?"
-                          f" AND status IN {_CLOSED}"),
                 ("messages", "DELETE FROM messages WHERE id=? AND status='done'"),
                 ("runs", "DELETE FROM runs WHERE id=? AND ended_at IS NOT NULL")):
             moved[table] = conn.executemany(sql, plan.keys.get(table, [])
