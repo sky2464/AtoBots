@@ -10,7 +10,7 @@ from unittest import mock
 ENGINE = Path(__file__).resolve().parent.parent / "engine"
 sys.path.insert(0, str(ENGINE))
 
-from claudebot import backup, gitlog  # noqa: E402
+from claudebot import backup, bots, gitlog  # noqa: E402
 from claudebot.config import Config  # noqa: E402
 from claudebot.db import connect, init_db  # noqa: E402
 
@@ -173,6 +173,38 @@ class RestoreArchiveTests(BackupBase):
         with self.assertRaises(backup.BackupError):
             backup.restore_archive(str(Path(self._tmp.name) / "nope"),
                                    Path(self._tmp.name) / "t")
+
+
+class DumpRedactTests(BackupBase):
+    def test_prefix_mention_is_not_a_hit(self):
+        self.conn.execute(
+            "INSERT INTO activity(at, actor, kind, detail) VALUES (?,?,?,?)",
+            ("2026-11-10T00:00:00+00:00", "cli", "note",
+             "keys start with sk-ant-"))
+        path, hits = backup.export_sql(self.cfg, self.conn)
+        self.assertEqual(hits, [])
+        self.assertIn("keys start with sk-ant-", path.read_text())
+
+    def test_full_token_is_redacted_and_the_snapshot_continues(self):
+        bots.create(self.cfg, self.conn, "admin", role="a", soul="s",
+                    persona="p")
+        token = "sk-ant-" + ("a" * 32)
+        self.conn.execute(
+            "INSERT INTO activity(at, actor, kind, detail) VALUES (?,?,?,?)",
+            ("2026-11-10T00:00:00+00:00", "cli", "note", f"leak {token} end"))
+        sha = backup.snapshot(self.cfg, self.conn)
+        self.assertTrue(sha)
+        dump = (self.cfg.home / backup.SQL_REL).read_text()
+        self.assertNotIn(token, dump)
+        self.assertIn("[redacted:Anthropic API key]", dump)
+        stored = self.conn.execute(
+            "SELECT detail FROM activity WHERE kind='note'").fetchone()["detail"]
+        self.assertIn(token, stored)
+        notes = self.conn.execute(
+            "SELECT subject, body FROM messages WHERE kind='alert'").fetchall()
+        self.assertEqual(len(notes), 1)
+        self.assertNotIn(token, notes[0]["body"])
+        self.assertIn("activity row", notes[0]["body"])
 
 
 if __name__ == "__main__":

@@ -54,12 +54,12 @@ SECRETS_NOTE = ("Secrets are NOT backed up: .secrets/ never leaves this server "
                 "and its key has no other copy. After losing the server, the "
                 "store's secrets must be entered again.")
 _DUMP_SECRET_PATTERNS = (
-    (re.compile(r"sk-ant-"), "anthropic API key"),
-    (re.compile(r"ghp_"), "GitHub token"),
-    (re.compile(r"github_pat_"), "GitHub token"),
-    (re.compile(r"xox[bap]-"), "Slack token"),
-    (re.compile(r"AKIA[0-9A-Z]{16}"), "AWS access key"),
-    (re.compile(r"\d{8,10}:[A-Za-z0-9_-]{35}"), "Telegram bot token"),
+    (re.compile(r"sk-ant-[A-Za-z0-9_-]{32,}"), "Anthropic API key"),
+    (re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}"), "GitHub token"),
+    (re.compile(r"github_pat_[A-Za-z0-9_]{60,}"), "GitHub token"),
+    (re.compile(r"xox[bap]-[0-9A-Za-z-]{20,}"), "Slack token"),
+    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "AWS access key"),
+    (re.compile(r"\b\d{8,10}:[A-Za-z0-9_-]{35}\b"), "Telegram bot token"),
     (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"), "private key"),
 )
 
@@ -160,33 +160,48 @@ def _alert_admin(cfg: Config, conn, key: str, subject: str, body: str,
 
 # ---- snapshot and push ----
 
+def _row_place(line: str, n: int) -> tuple[str, str]:
+    table, row_id = "?", str(n)
+    m = re.match(r'INSERT INTO "(\w+)"', line)
+    if m:
+        table = m.group(1)
+        rid = re.search(r"VALUES\((\d+)", line)
+        if rid:
+            row_id = rid.group(1)
+    return table, row_id
+
+
+def _redact_dump(text: str) -> tuple[str, list[str]]:
+    """Replace full token shapes in dump text. The live database is not read."""
+    out, hits = [], []
+    for n, line in enumerate(text.splitlines(keepends=True), 1):
+        table, row_id = _row_place(line, n)
+        for pattern, label in _DUMP_SECRET_PATTERNS:
+            if pattern.search(line):
+                hits.append(f"{table} row {row_id}: {label}")
+                line = pattern.sub(f"[redacted:{label}]", line)
+        out.append(line)
+    return "".join(out), hits
+
+
 def scan_sql_dump(path: Path) -> list[str]:
     """Return human-readable hits (table + row id), never the matched secret."""
     if not path.is_file():
         return []
-    hits = []
-    with open(path, encoding="utf-8", errors="replace") as f:
-        for n, line in enumerate(f, 1):
-            if not any(p.search(line) for p, _ in _DUMP_SECRET_PATTERNS):
-                continue
-            table = "?"
-            row_id = str(n)
-            m = re.match(r'INSERT INTO "(\w+)"', line)
-            if m:
-                table = m.group(1)
-                rid = re.search(r"VALUES\((\d+)", line)
-                if rid:
-                    row_id = rid.group(1)
-            label = next(l for p, l in _DUMP_SECRET_PATTERNS if p.search(line))
-            hits.append(f"{table} row {row_id}: {label}")
+    _text, hits = _redact_dump(path.read_text(encoding="utf-8", errors="replace"))
     return hits
 
 
-def export_sql(cfg: Config, conn: sqlite3.Connection) -> Path:
-    """Write backup/company.sql from a consistent copy of the live database."""
+def export_sql(cfg: Config, conn: sqlite3.Connection) -> tuple[Path, list[str]]:
+    """Write backup/company.sql from a consistent copy of the live database.
+
+    A second pass redacts token-shaped text in the dump only. Returns the
+    path and the hits (table and row id, never the value).
+    """
     out = cfg.home / SQL_REL
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = Path(_tmpdir(cfg))
+    hits: list[str] = []
     try:
         copy = sqlite3.connect(tmp / "copy.db")
         try:
@@ -200,24 +215,35 @@ def export_sql(cfg: Config, conn: sqlite3.Connection) -> Path:
                     f.write(line + "\n")
                 f.flush()
                 os.fsync(f.fileno())
+            redacted, hits = _redact_dump(part.read_text(encoding="utf-8"))
+            cleaned = tmp / f"company.sql.{os.getpid()}.clean"
+            with open(cleaned, "w", encoding="utf-8") as f:
+                f.write(redacted)
+                f.flush()
+                os.fsync(f.fileno())
+            part = cleaned
         finally:
             copy.close()
         os.replace(part, out)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    return out
+    return out, hits
 
 
 def snapshot(cfg: Config, conn: sqlite3.Connection) -> str | None:
     """Export the database as text and commit the home. Returns the commit ID,
     or None when nothing changed since the last snapshot."""
     gitlog.ensure_repo(cfg)
-    out = export_sql(cfg, conn)
-    leak = scan_sql_dump(out)
-    if leak:
-        raise BackupError(
-            "refusing backup commit: " + "; ".join(leak[:5])
-            + (f" and {len(leak) - 5} more" if len(leak) > 5 else ""))
+    _out, hits = export_sql(cfg, conn)
+    if hits:
+        shown = "; ".join(hits[:20])
+        if len(hits) > 20:
+            shown += f" and {len(hits) - 20} more"
+        _alert_admin(
+            cfg, conn, "dump-redacted",
+            "Dump redacted secret-shaped text",
+            "The live database was not changed. These dump rows were "
+            "redacted: " + shown + ".")
     held, tracked = _hold_back_unsafe(cfg)
     kept = [h for h in held if h not in tracked]
     for names, key, subject, text in (
