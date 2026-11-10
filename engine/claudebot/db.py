@@ -6,6 +6,9 @@ from zoneinfo import ZoneInfo
 
 from .config import Config
 
+# 1 is every database made by 0.0.1 or 0.0.2. Raising this runs _migrate once.
+SCHEMA_VERSION = 2
+
 # Token use per run, one row per model call (cost control).
 USAGE_TABLE = """
 CREATE TABLE IF NOT EXISTS usage(
@@ -104,16 +107,49 @@ def _zone_label(d: datetime) -> str:
 def connect(cfg: Config) -> sqlite3.Connection:
     cfg.home.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(cfg.db_path, timeout=30, isolation_level=None)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=30000")
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    _migrate(conn)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        _migrate(conn)
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 
+def _stored_schema_version(conn: sqlite3.Connection) -> int | None:
+    """None only for an empty file that SCHEMA has not created yet.
+
+    A company database with no recorded version is version 1.
+    """
+    try:
+        found = conn.execute(
+            "SELECT value FROM meta WHERE key='schema_version'").fetchone()
+    except sqlite3.OperationalError:
+        has_tables = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1").fetchone()
+        return None if has_tables is None else 1
+    if found is None:
+        return 1
+    return int(found[0])
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
-    """Columns added after the first release. Cheap, and safe to repeat."""
+    """Bring a company database up to SCHEMA_VERSION.
+
+    A current database costs one SELECT. A newer one is refused: an older
+    engine must not guess at columns it does not know.
+    """
+    stored = _stored_schema_version(conn)
+    if stored is None or stored == SCHEMA_VERSION:
+        return
+    if stored > SCHEMA_VERSION:
+        raise RuntimeError(
+            f"this company database was written by a newer "
+            f"ClaudeBot (schema {stored}); update the engine or restore "
+            f"the pre-update backup")
     cols = [r[1] for r in conn.execute("PRAGMA table_info(owner_requests)")]
     if cols and "source" not in cols:
         try:
@@ -151,6 +187,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
     conn.execute(USAGE_TABLE)
     conn.execute(QUESTIONS_TABLE)
     _ensure_indexes(conn)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
+        (str(SCHEMA_VERSION),))
 
 
 def _ensure_indexes(conn: sqlite3.Connection) -> None:

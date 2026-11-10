@@ -1,15 +1,21 @@
+import io
 import multiprocessing
+import os
 import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "engine"))
 
 from claudebot import activity  # noqa: E402
 from claudebot.config import Config  # noqa: E402
-from claudebot.db import connect, ct_display, init_db, tx  # noqa: E402
+from claudebot import cli  # noqa: E402
+from claudebot.db import (SCHEMA_VERSION, _migrate, connect, ct_display,  # noqa: E402
+                          init_db, tx)
 
 TABLES = {"bots", "items", "messages", "owner_requests", "request_items",
           "decisions", "runs", "routines", "activity", "meta"}
@@ -134,3 +140,56 @@ class IndexMigrationTests(unittest.TestCase):
         self.assertTrue({
             "messages_status_to", "messages_chain", "items_status",
             "runs_bot_open", "runs_session"} <= names)
+
+
+class SchemaVersionTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.cfg = Config(Path(self.tmp.name))
+
+    def test_version_1_database_is_upgraded(self):
+        init_db(self.cfg)
+        raw = sqlite3.connect(self.cfg.db_path)
+        raw.execute("DELETE FROM meta WHERE key='schema_version'")
+        raw.commit()
+        raw.close()
+        conn = connect(self.cfg)
+        version = conn.execute(
+            "SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
+        conn.close()
+        self.assertEqual(version, str(SCHEMA_VERSION))
+
+    def test_current_database_is_not_altered(self):
+        init_db(self.cfg)
+        conn = connect(self.cfg)
+        conn.close()
+        raw = sqlite3.connect(self.cfg.db_path)
+        seen = []
+        raw.set_trace_callback(seen.append)
+        _migrate(raw)
+        raw.close()
+        self.assertFalse(any("ALTER" in sql.upper() for sql in seen))
+        selects = [sql for sql in seen if sql.lstrip().upper().startswith("SELECT")]
+        self.assertEqual(len(selects), 1)
+
+    def test_newer_database_is_refused(self):
+        init_db(self.cfg)
+        conn = connect(self.cfg)
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
+            (str(SCHEMA_VERSION + 1),))
+        conn.close()
+        with self.assertRaises(RuntimeError) as cm:
+            connect(self.cfg)
+        self.assertIn(f"schema {SCHEMA_VERSION + 1}", str(cm.exception))
+        self.assertIn("pre-update backup", str(cm.exception))
+
+    def test_version_schema_prints_engine_and_database(self):
+        init_db(self.cfg)
+        connect(self.cfg).close()
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.cfg.home)}), \
+                redirect_stdout(buf):
+            self.assertEqual(cli.main(["version", "--schema"]), 0)
+        self.assertEqual(buf.getvalue().split(), [str(SCHEMA_VERSION), str(SCHEMA_VERSION)])

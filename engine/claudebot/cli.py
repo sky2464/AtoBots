@@ -9,7 +9,7 @@ from . import (activity, admin_live, archive, backup, bots, chat, dispatcher,
                store, tasks, usage)
 from . import __version__
 from .config import Config
-from .db import connect, init_db
+from .db import SCHEMA_VERSION, connect, init_db
 
 MODULES = [store, bots, items, messages, requests, search, routines,
            dispatcher, archive, chat, doctor, backup, admin_live, usage,
@@ -111,8 +111,25 @@ def _cmd_init(args) -> int:
     return 0
 
 
-def _cmd_version(_args) -> int:
-    print(__version__)
+def _cmd_version(args) -> int:
+    if not args.schema:
+        print(__version__)
+        return 0
+    print(SCHEMA_VERSION)
+    try:
+        cfg = Config.load()
+    except RuntimeError:
+        return 0
+    if not cfg.db_path.exists():
+        return 0
+    conn = connect(cfg)
+    try:
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key='schema_version'").fetchone()
+    finally:
+        conn.close()
+    if row is not None:
+        print(row["value"])
     return 0
 
 
@@ -136,6 +153,9 @@ def build_parser() -> argparse.ArgumentParser:
     ip.add_argument("--company", required=True)
     ip.set_defaults(func=_cmd_init)
     vp = sub.add_parser("version", help="print the ClaudeBot version")
+    vp.add_argument("--schema", action="store_true",
+                    help="print the engine schema version and, when a company "
+                         "home is configured, the database's")
     vp.set_defaults(func=_cmd_version)
     tp = sub.add_parser("templates", help="engine-owned company templates")
     tsub = tp.add_subparsers(dest="templates_cmd", required=True)
