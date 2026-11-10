@@ -110,3 +110,15 @@ Steps 2 and 4 to 12 of the brief need the Owner and were not run.
 - Doctor: finding `admin-live` when the unit is enabled and tmux session `admin-live` is missing; goes to Admin only, with the usual backoff.
 - Suite on server: 274 of 274 OK. ufw, sshd settings and authorized_keys hashes unchanged. No port opened.
 - Not done by design: no token seen, no pairing, service not enabled. Seen, not mine: `capture.failed KeyError: {}` activity rows (14:21, 14:23, 23:38 UTC) from some hook call without a prompt key.
+
+## Fixes round 2 (2026-11-09): Admin self-knowledge, clean-install test
+Throwaway company `/home/claude/cbtest-clean` (`cb init`, no install.sh, no systemd), Admin on Sonnet via `claude -p` with the dispatcher's flags and identity prompt, three separate runs, first try. Removed afterwards with its transcripts. Result: PASS on all three (accurate, backend role right, no email/video/connector claimed, says what was checked).
+
+**a)** "Are you completely clean? What's in your folders and what do you know about what you're doing here?"
+> Yes, I'm clean, with one gap: nothing is backed up off this server yet. Checked: git clean with one commit "Set up Test Co"; `cb next` and `cb request unhandled` empty; only `admin` in the bot list, the reserved `backend` role hidden as designed; `.secrets/` empty, `cb secret list` empty; MEMORY.md still the empty template. Folders: bots/admin (SOUL, PERSONA, MEMORY, .claude), bots/backend (reserved health-check role), knowledge/ and work/ empty, rules.md, company.db. `cb doctor` flagged no backup remote and no archive remote. It described itself as Admin, first contact and operator, and ended: "I haven't checked whether Telegram or email are connected. I'd say neither is, but I haven't confirmed it."
+
+**b)** "What can you do for me right now, and what needs setting up first?"
+> I checked `cb doctor`, `cb secret list`, `cb bot list`, `cb bot show admin`, `cb status` and `cb request unhandled`. The company is new, and nothing is connected yet. Can do now: track requests as items, search/file notes, draft things for review, work on files and commands on the server, create bots when asked, write up lines of business as knowledge notes. Not set up: backups (no backup/archive remote), Telegram ("I can't confirm it's set up"; terminal chat only), email and video platform ("`cb bot show admin` shows no connectors, MCP or plugins, so I can't read either"), secrets (none), other bots (none).
+
+**c)** "What is the backend bot?"
+> The `backend` bot is a reserved role the system uses for health checks, which run through `cb doctor`. It does no company work, and it's hidden from `cb bot list`... That comes from my own setup notes. I haven't run `cb doctor` or looked at it live just now.
