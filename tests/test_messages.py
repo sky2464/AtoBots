@@ -291,6 +291,35 @@ class MessagesCliTests(MessagesBase):
         self.assertEqual(rc, 1)
         self.assertIn("file", err)
 
+    def test_cb_bot_forces_from_ignores_spoof(self):
+        rc, out, _ = self.run_cli(
+            "send", "admin", "hi", "body", "--from", "admin",
+            env={"CB_BOT": "backend"})
+        self.assertEqual(rc, 0)
+        m = self.msg(int(out.strip()))
+        self.assertEqual(m["from_bot"], "backend")
+        self.assertEqual(m["to_bot"], "admin")
+
+    def test_library_rejects_reserved_spoof_when_bound(self):
+        with mock.patch.dict(os.environ, {"CB_BOT": "backend"}):
+            with self.assertRaises(PermissionError):
+                messages.send(self.conn, "admin", "backend", "s", "b",
+                              priority="urgent")
+            with self.assertRaises(PermissionError):
+                messages.send(self.conn, "system", "admin", "s", "b")
+            mid = messages.send(self.conn, "backend", "admin", "ok", "body")
+        self.assertEqual(self.msg(mid)["from_bot"], "backend")
+
+
+class OwnerHoldSpoofTests(MessagesBase):
+    def test_spoofed_admin_urgent_cannot_be_minted_by_bot(self):
+        """Owner-chat hold trusts from=admin+urgent; bots must not mint that."""
+        with mock.patch.dict(os.environ, {"CB_BOT": "backend"}):
+            with self.assertRaises(PermissionError):
+                messages.send(self.conn, "admin", "backend", "wake", "now",
+                              priority="urgent")
+        self.assertEqual(self.count(), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

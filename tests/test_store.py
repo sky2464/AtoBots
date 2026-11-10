@@ -140,20 +140,33 @@ class StoreTests(unittest.TestCase):
         dump = repr([tuple(r) for r in self.conn.execute("SELECT * FROM activity")])
         self.assertNotIn(VALUE, dump)
 
+    def _owner_decision(self, did="D-0001", session="owner-sess"):
+        self.conn.execute(
+            "INSERT OR IGNORE INTO runs(bot, session_id, lane, started_at)"
+            " VALUES ('admin',?,'chat',?)", (session, utcnow()))
+        self.conn.execute(
+            "INSERT INTO decisions(id,title,quote,said_at,session,recorded_by,"
+            "created_at) VALUES(?,?,?,?,?,?,?)",
+            (did, "use it", "go", utcnow(), session, "admin", utcnow()))
+
     def test_owner_order_only_needs_decision(self):
         store.add(self.cfg, "t", "token", VALUE, owner_order_only=True)
         for dec in (None, "D-0009"):
             with self.assertRaises(PermissionError):
                 self.run_x(decision=dec)
-        refused = self.conn.execute(
-            "SELECT * FROM activity WHERE kind='secret.refused'").fetchall()
-        self.assertEqual(len(refused), 2)
-        self.assertEqual(self.conn.execute(
-            "SELECT COUNT(*) FROM activity WHERE kind='secret.use'").fetchone()[0], 0)
+        # Decision without Owner session provenance is refused.
         self.conn.execute(
             "INSERT INTO decisions(id,title,quote,said_at,session,recorded_by,"
-            "created_at) VALUES('D-0001','use it','go',?,?,?,?)",
-            (utcnow(), "s", "admin", utcnow()))
+            "created_at) VALUES('D-0098','t','q',?,?,?,?)",
+            (utcnow(), "bot-sess", "admin", utcnow()))
+        with self.assertRaises(PermissionError):
+            self.run_x(decision="D-0098")
+        refused = self.conn.execute(
+            "SELECT * FROM activity WHERE kind='secret.refused'").fetchall()
+        self.assertEqual(len(refused), 3)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM activity WHERE kind='secret.use'").fetchone()[0], 0)
+        self._owner_decision()
         rc, out, _ = self.run_x(decision="D-0001")
         self.assertEqual((rc, out), (0, b"***\n"))
 
@@ -182,10 +195,13 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(items[f"item{i}"]["owner_order_only"], i % 2 == 0)
             out = io.BytesIO()
             self.conn.execute(
+                "INSERT OR IGNORE INTO runs(bot, session_id, lane, started_at)"
+                " VALUES ('admin','owner-sess','chat',?)", (utcnow(),))
+            self.conn.execute(
                 "INSERT OR IGNORE INTO decisions(id,title,quote,said_at,session,"
                 "recorded_by,created_at) VALUES('D-0001','t','q',?,?,?,?)",
-                (utcnow(), "s", "a", utcnow()))
-            store.run_with(self.cfg, self.conn, "a", {"X": f"item{i}"},
+                (utcnow(), "owner-sess", "admin", utcnow()))
+            store.run_with(self.cfg, self.conn, "admin", {"X": f"item{i}"},
                            ["python3", "-c",
                             "import os;print(os.environ['X'][::-1])"],
                            "D-0001", out=out, err=io.BytesIO())

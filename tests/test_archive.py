@@ -419,6 +419,9 @@ class RecordTests(Base):
         old = self.old_item("Quokka migration", days=60)
         young = self.old_item("Fresh finish", days=5)
         parked = self.old_item("Shelved thing", status="parked", days=62)
+        self.conn.execute(
+            "INSERT INTO runs(bot, session_id, lane, started_at) VALUES"
+            " ('admin','s','chat',?)", (iso(60),))
         dec = items.decide(self.conn, "Pick quokka", "use the quokka plan", iso(60),
                            "s", "admin")
         res = archive.archive_old_records(self.cfg, self.conn, iso(0))

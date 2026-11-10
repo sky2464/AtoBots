@@ -412,7 +412,7 @@ def _have_terminal() -> bool:
 
 
 def _compose_prompt(cfg, conn, brief_text: str, summary) -> str:
-    parts = [bots.identity_prompt(cfg, conn, BOT),
+    parts = [bots.memory_block(cfg, BOT), bots.identity_prompt(cfg, conn, BOT),
              "# This chat\n\nYou are talking live with the Owner. The brief "
              "below was already printed on his screen before the chat opened, "
              "so do not repeat it. Wait for him to speak; answer from the "
