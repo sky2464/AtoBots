@@ -110,3 +110,27 @@ class TierMigrationTests(unittest.TestCase):
         conn = connect(cfg)  # a second connect must be a no-op
         self.assertEqual(dict(conn.execute("SELECT name, tier FROM bots").fetchall()), tiers)
         conn.close()
+
+
+class IndexMigrationTests(unittest.TestCase):
+    def test_connect_adds_tick_indexes_to_an_older_database(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        cfg = Config(Path(tmp.name))
+        raw = sqlite3.connect(cfg.db_path)
+        raw.executescript("""
+            CREATE TABLE messages(
+              id INTEGER PRIMARY KEY, status TEXT, to_bot TEXT, chain_id TEXT);
+            CREATE TABLE items(n INTEGER PRIMARY KEY, status TEXT);
+            CREATE TABLE runs(
+              id INTEGER PRIMARY KEY, bot TEXT, ended_at TEXT, session_id TEXT);
+        """)
+        raw.commit()
+        raw.close()
+        conn = connect(cfg)
+        names = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'")}
+        conn.close()
+        self.assertTrue({
+            "messages_status_to", "messages_chain", "items_status",
+            "runs_bot_open", "runs_session"} <= names)

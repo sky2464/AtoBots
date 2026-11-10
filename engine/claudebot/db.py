@@ -71,6 +71,11 @@ CREATE TABLE IF NOT EXISTS activity(
 );
 CREATE INDEX IF NOT EXISTS activity_at ON activity(at);
 CREATE INDEX IF NOT EXISTS activity_kind_ref ON activity(kind, ref);
+CREATE INDEX IF NOT EXISTS messages_status_to ON messages(status, to_bot);
+CREATE INDEX IF NOT EXISTS messages_chain ON messages(chain_id);
+CREATE INDEX IF NOT EXISTS items_status ON items(status);
+CREATE INDEX IF NOT EXISTS runs_bot_open ON runs(bot, ended_at);
+CREATE INDEX IF NOT EXISTS runs_session ON runs(session_id);
 CREATE TRIGGER IF NOT EXISTS activity_no_update BEFORE UPDATE ON activity
 BEGIN SELECT RAISE(ABORT, 'append-only'); END;
 CREATE TRIGGER IF NOT EXISTS activity_no_delete BEFORE DELETE ON activity
@@ -145,6 +150,30 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 " WHERE session_id IS NOT NULL AND session_id != '')")
     conn.execute(USAGE_TABLE)
     conn.execute(QUESTIONS_TABLE)
+    _ensure_indexes(conn)
+
+
+def _ensure_indexes(conn: sqlite3.Connection) -> None:
+    """Tick-query indexes. Skipped until the tables exist (a fresh file
+    is migrated before SCHEMA creates them)."""
+    have = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    stmts = []
+    if "messages" in have:
+        stmts += [
+            "CREATE INDEX IF NOT EXISTS messages_status_to ON messages(status, to_bot)",
+            "CREATE INDEX IF NOT EXISTS messages_chain ON messages(chain_id)",
+        ]
+    if "items" in have:
+        stmts.append(
+            "CREATE INDEX IF NOT EXISTS items_status ON items(status)")
+    if "runs" in have:
+        stmts += [
+            "CREATE INDEX IF NOT EXISTS runs_bot_open ON runs(bot, ended_at)",
+            "CREATE INDEX IF NOT EXISTS runs_session ON runs(session_id)",
+        ]
+    for stmt in stmts:
+        conn.execute(stmt)
 
 
 def init_db(cfg: Config) -> None:
