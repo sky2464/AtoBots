@@ -316,9 +316,25 @@ def due(cfg: Config, conn, now: str, wait: float = 2.0) -> list[int]:
             if r["id"] in _inflight:
                 continue
         try:
-            if bots.get(conn, r["bot"]).status != "active":
-                continue
+            bot = bots.get(conn, r["bot"])
         except KeyError:
+            with tx(conn):
+                try:
+                    nxt = next_time(r["cron"], now)
+                except ValueError as e:
+                    conn.execute("UPDATE routines SET enabled=0 WHERE id=?",
+                                 (r["id"],))
+                    activity.record(conn, "system", "routine.failed",
+                                    f"routine {r['id']} switched off: {e}",
+                                    str(r["id"]))
+                    continue
+                conn.execute("UPDATE routines SET next_due=? WHERE id=?",
+                             (nxt, r["id"]))
+                activity.record(conn, "system", "routine.failed",
+                                f"routine {r['id']}: bot {r['bot']!r} missing",
+                                str(r["id"]))
+            continue
+        if bot.status != "active":
             continue
         try:
             nxt = next_time(r["cron"], now)
