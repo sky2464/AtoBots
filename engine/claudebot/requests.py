@@ -313,7 +313,7 @@ def _cmd_hook_prompt(args) -> int:
                 rid = capture(conn, inner, str(session), source)
                 activity.record(conn, "hook", "request.channel",
                                 f"request arrived through {source}", str(rid))
-            close_questions(conn)  # he spoke: whatever was asked is answered
+            close_questions(conn)  # they spoke: whatever was asked is answered
         finally:
             conn.close()
     except BaseException as e:
@@ -384,7 +384,7 @@ def register(subparsers) -> None:
     q = subparsers.add_parser(
         "question", help="questions waiting for the Owner's answer")
     qs = q.add_subparsers(dest="question_cmd", required=True)
-    qo = qs.add_parser("open", help="register a question you just asked him")
+    qo = qs.add_parser("open", help="register a question you just asked them")
     qo.add_argument("text")
     qo.set_defaults(func=_cmd_question_open)
     qs.add_parser("close", help="mark every open question answered"

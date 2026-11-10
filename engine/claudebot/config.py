@@ -76,15 +76,15 @@ class Config:
     run_home: str = ""
     claude_bin: str = ""
     # Zone for routine schedules and for times shown to people.
-    timezone: str = "America/Chicago"
+    timezone: str = "UTC"
     claude_projects_dir: Path | None = None
 
     def __post_init__(self):
         self.home = Path(self.home)
         self._fill_account()
         if self.claude_projects_dir is None:
-            # where Claude Code keeps session transcripts for the claude user
-            self.claude_projects_dir = Path.home() / ".claude" / "projects"
+            # Claude Code session transcripts for the account that runs the bots.
+            self.claude_projects_dir = Path(self.run_home) / ".claude" / "projects"
         self.claude_projects_dir = Path(self.claude_projects_dir)
         self._validate_limits()
 
@@ -123,19 +123,22 @@ class Config:
         """Optional `<home>/config.json` overrides the numeric limits above
         and the text settings in `_TEXT_KEYS`. Unknown keys are ignored; a bad
         value stops with a clear message."""
+        self.timezone_unset = False
         path = self.home / "config.json"
+        data: dict = {}
         try:
             text = path.read_text()
         except FileNotFoundError:
-            return
+            text = None
         except OSError as e:
             raise RuntimeError(f"cannot read {path}: {e}") from None
-        try:
-            data = json.loads(text)
-        except ValueError as e:
-            raise RuntimeError(f"{path} is not valid JSON: {e}") from None
-        if not isinstance(data, dict):
-            raise RuntimeError(f"{path} must hold a JSON object")
+        if text is not None:
+            try:
+                data = json.loads(text)
+            except ValueError as e:
+                raise RuntimeError(f"{path} is not valid JSON: {e}") from None
+            if not isinstance(data, dict):
+                raise RuntimeError(f"{path} must hold a JSON object")
         account = any(k in data for k in ("run_user", "run_home"))
         numeric = {f.name for f in fields(self) if f.type in (int, "int")}
         for key, value in data.items():
@@ -166,6 +169,37 @@ class Config:
             self.claude_bin = ""
             self._fill_account()
         self._validate_limits()
+        if "timezone" not in data and self._legacy_company_clock():
+            self.timezone = "America/Chicago"
+            self.timezone_unset = True
+
+    def _legacy_company_clock(self) -> bool:
+        """True when this company already has schedules and no timezone key.
+
+        Those schedules were written for America/Chicago. Keep that zone
+        until config.json names one.
+        """
+        if not self.db_path.is_file():
+            return False
+        import sqlite3
+        try:
+            conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+        except sqlite3.Error:
+            return False
+        try:
+            names = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            if "routines" in names and conn.execute(
+                    "SELECT 1 FROM routines LIMIT 1").fetchone():
+                return True
+            if "decisions" in names and conn.execute(
+                    "SELECT 1 FROM decisions LIMIT 1").fetchone():
+                return True
+            return False
+        except sqlite3.Error:
+            return False
+        finally:
+            conn.close()
 
     @property
     def db_path(self) -> Path:

@@ -1,5 +1,5 @@
 """Routines: a prompt sent to a bot on a 5-field cron schedule, in the
-company's zone (`timezone` in config.json; Central Time by default).
+company's zone (`timezone` in config.json; the company's time zone by default).
 
 A routine may carry a check command. It exits 0 when there is work and 1 when
 there is none; anything else is a failed check, which is recorded and skipped.
@@ -433,8 +433,7 @@ def _cmd_rm(args) -> int:
 def register(subparsers) -> None:
     sp = subparsers.add_parser("routine", help="scheduled prompts")
     sub = sp.add_subparsers(dest="routine_cmd", required=True)
-    a = sub.add_parser("add", help="add a routine (cron is in the company's zone, "
-                       "Central Time unless config.json says otherwise)")
+    a = sub.add_parser("add", help="add a routine (cron is in the company's time zone)")
     a.add_argument("bot")
     a.add_argument("cron", help='5 fields, e.g. "0 7 * * *"')
     a.add_argument("prompt")

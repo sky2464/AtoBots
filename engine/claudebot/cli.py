@@ -1,6 +1,7 @@
 """The `cb` command line. Each module adds its commands via register()."""
 import argparse
 import hashlib
+import json
 import os
 import shutil
 import sys
@@ -22,9 +23,7 @@ MODULES = [store, bots, items, messages, requests, search, routines,
 
 TEMPLATES = Path(__file__).resolve().parent.parent / "templates"
 ADMIN_SKILLS = ("cb-basics", "work-tracking", "create-bot")
-ADMIN_MODEL = "sonnet"
 BACKEND_SKILLS = ("cb-basics",)
-BACKEND_MODEL = "sonnet"
 RULES_SHA_KEY = "templates.rules_sha"
 # Templates shipped in 0.0.1 and 0.0.2. A company file with one of these
 # hashes was never edited, even though that install recorded no hash.
@@ -79,7 +78,8 @@ def init_company(cfg: Config, company: str) -> list[str]:
             bots.create(cfg, conn, "admin", "Owner's contact and operator",
                         (admin / "SOUL.md").read_text(),
                         (admin / "PERSONA.md").read_text(), reports_to=None,
-                        model=ADMIN_MODEL, skills=ADMIN_SKILLS, actor="system")
+                        model=cfg.default_model, skills=ADMIN_SKILLS,
+                        actor="system")
             shutil.copyfile(admin / "MEMORY.md",
                             cfg.bots_dir / "admin" / "MEMORY.md")
             done.append("admin")
@@ -91,7 +91,7 @@ def init_company(cfg: Config, company: str) -> list[str]:
                         (be / "SOUL.md").read_text(),
                         (be / "PERSONA.md").read_text(),
                         org=bots.RESERVED_ORG, reports_to=None,
-                        model=BACKEND_MODEL, skills=BACKEND_SKILLS,
+                        model=cfg.default_model, skills=BACKEND_SKILLS,
                         actor="system")
             shutil.copyfile(be / "MEMORY.md",
                             cfg.bots_dir / "backend" / "MEMORY.md")
@@ -170,9 +170,32 @@ def refresh_engine_templates(cfg: Config, conn=None) -> list[str]:
     return done
 
 
+def _write_timezone(cfg: Config, zone: str) -> None:
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    try:
+        ZoneInfo(zone)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise ValueError(f"unknown timezone {zone!r}") from None
+    path = cfg.home / "config.json"
+    data = {}
+    if path.is_file():
+        loaded = json.loads(path.read_text())
+        if isinstance(loaded, dict):
+            data = loaded
+    data["timezone"] = zone
+    path.write_text(json.dumps(data, indent=2) + "\n")
+
+
 def _cmd_init(args) -> int:
     try:
         cfg = Config.load()
+        if args.timezone:
+            cfg.home.mkdir(parents=True, exist_ok=True)
+            _write_timezone(cfg, args.timezone)
+            from . import db
+            db.set_zone(args.timezone)
+            cfg.timezone = args.timezone
+            cfg.timezone_unset = False
         done = init_company(cfg, args.company)
     except (RuntimeError, ValueError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
@@ -232,6 +255,7 @@ def build_parser() -> argparse.ArgumentParser:
         m.register(sub)
     ip = sub.add_parser("init", help="set up the company home and Admin")
     ip.add_argument("--company", required=True)
+    ip.add_argument("--timezone", help="write timezone into config.json")
     ip.set_defaults(func=_cmd_init)
     vp = sub.add_parser("version", help="print the ClaudeBot version")
     vp.add_argument("--schema", action="store_true",

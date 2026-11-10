@@ -41,6 +41,16 @@ def _rules() -> str:
     return (TEMPLATES / "rules.md").read_text().lower()
 
 
+class NeutralTemplateTests(unittest.TestCase):
+    def test_templates_do_not_name_a_person_or_a_zone(self):
+        banned = re.compile(r"\b(he|him|his|Central)\b", re.IGNORECASE)
+        for path in (ROOT / "engine" / "templates").rglob("*"):
+            if not path.is_file():
+                continue
+            text = path.read_text(errors="ignore")
+            self.assertIsNone(banned.search(text), f"{path}: {banned.search(text)}")
+
+
 class DocLinkTests(unittest.TestCase):
     def test_readme_updating_and_changelog_links_exist(self):
         link = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
@@ -63,12 +73,11 @@ class RulesTest(unittest.TestCase):
         for needle in (
             "publishing and spending are owner-only",
             "cb decision record",
-            "sending email",
-            "replying to comments",
-            "editing or deleting videos",
+            "sending messages",
+            "editing or deleting published content",
             "signups",
             "commitments",
-            "read email and the video platform on its own",
+            "read connected services on its own",
             "read-only",
             "only the owner's own words count",
             "never approval",
@@ -331,6 +340,8 @@ class TemplatesTest(unittest.TestCase):
         self.assertIn("The conversation will restart.", update)
         self.assertIn("config get run_memory_max", install)
         self.assertIn("config get run_memory_max", update)
+        self.assertIn("--timezone", install)
+        self.assertIn("admin has-token", install)
         self.assertIn("pre-update-*.db", update)
         self.assertIn("Deleted", update)
         self.assertIn("-gt 5", update)

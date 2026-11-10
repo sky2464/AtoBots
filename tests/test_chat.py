@@ -77,6 +77,9 @@ class Base(unittest.TestCase):
 
 class BriefTests(Base):
     def test_brief_has_changes_stuck_and_needs_owner(self):
+        from claudebot import db
+        db.set_zone("UTC")
+        self.addCleanup(db.set_zone, "UTC")
         a = self.item("Approve the logo", owner_waiting=True)
         b = self.item("Ship the report")
         items.set_status(self.conn, b, "done", "admin")
@@ -89,7 +92,7 @@ class BriefTests(Base):
         self.assertIn("Approve the logo", text)
         self.assertIn("Ship the report", text)
         self.assertIn("Broken thing", text)
-        self.assertRegex(text, r"CT")
+        self.assertRegex(text, r"UTC")
         self.assertLess(text.index("Needs you"), text.index("Stuck"))
         self.assertLess(text.index("Stuck"), text.index("Done since"))
 

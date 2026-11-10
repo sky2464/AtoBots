@@ -117,7 +117,7 @@ def build_summary(cfg: Config, conn, last_owner_messages: int = 5) -> str:
     except Exception:  # noqa: BLE001  # an older database without the table
         asked = []
     if asked:
-        out.append("\n## Questions you asked that he has not answered")
+        out.append("\n## Questions you asked that they have not answered")
         out += [f"- {_clip(r['text'], 300)}" for r in asked]
     dec = conn.execute(
         "SELECT id, title, quote FROM decisions ORDER BY n DESC LIMIT 5"

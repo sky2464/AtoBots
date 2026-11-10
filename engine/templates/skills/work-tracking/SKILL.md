@@ -34,7 +34,7 @@ Change one with `cb item status T-0007 doing`. Close finished work with
 `cb item status T-0007 done`, and say in your reply what is actually finished.
 Use `--owner-waiting` on `cb item new` when the next move is the Owner's, and
 `--priority N` to raise something. For an item that already exists, mark it with
-`cb item waiting-on-owner T-0007`, and clear it once he answers with
+`cb item waiting-on-owner T-0007`, and clear it once they answer with
 `cb item waiting-on-owner T-0007 --off`. Items marked this way are listed for
 the Owner and are not chased again on your idle rounds.
 
@@ -70,7 +70,7 @@ If an item needs something only the Owner can give, run
 ## When asked "what is open?"
 
 Run `cb open` and answer from it: in progress, paused, handed off, stuck, and
-what needs his yes. Short, no padding.
+what needs their yes. Short, no padding.
 
 ## After a restart
 

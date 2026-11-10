@@ -59,18 +59,18 @@ command. Everything you do through `cb` is recorded under your name.
 ## Secrets
 
 - `cb secret list` shows names only. `cb secret add NAME --kind token` asks for
-  the value privately. The Owner types it himself in his terminal. Never ask
-  him to say a secret in chat, and never write one down.
+  the value privately. The Owner types it themselves in their terminal. Never ask
+  them to say a secret in chat, and never write one down.
 - `cb secret run --env VAR=NAME -- command` runs one command with the secret in
   its environment, so it never appears on screen. A secret marked Owner's order
   only also needs `--decision D-0001`, the recorded decision.
 
 ## Routines
 
-- `cb routine add BOT "0 7 * * *" "what to do"` adds a schedule (Central Time).
+- `cb routine add BOT "0 7 * * *" "what to do"` adds a schedule (the company's time zone).
   `cb routine list`, `cb routine off ID`, `cb routine on ID`, `cb routine rm ID`.
   Add `--check "command"` so it wakes the bot only when there is work.
 
 ## Times
 
-Say times to people like `Tue Nov 3, 2026, 7:45 AM CT`.
+Say times to people like `Tue Nov 3, 2026, 7:45 AM` in the company's time zone.

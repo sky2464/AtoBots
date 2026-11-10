@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "engine"))
 
 from claudebot import bots, cli, routines  # noqa: E402
 from claudebot.config import Config  # noqa: E402
-from claudebot.db import connect, init_db  # noqa: E402
+from claudebot.db import connect, init_db, set_zone  # noqa: E402
 
 
 def _iso(*a):
@@ -25,6 +25,10 @@ class RoutinesBase(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.cfg = Config(Path(self._tmp.name) / "home")
         init_db(self.cfg)
+        # These cases were written for America/Chicago. A fresh install
+        # defaults to UTC; name the zone here so the arithmetic stays put.
+        set_zone("America/Chicago")
+        self.addCleanup(set_zone, "UTC")
         self.conn = connect(self.cfg)
         self.addCleanup(self.conn.close)
         bots.create(self.cfg, self.conn, "admin", role="a", soul="s",
@@ -268,6 +272,7 @@ class RoutineTests(RoutinesBase):
             self.add_routine("nobody", "0 7 * * *", "p")
 
     def test_cli_add_list_off_on_rm(self):
+        (self.cfg.home / "config.json").write_text('{"timezone": "UTC"}\n')
         env = {"CLAUDEBOT_HOME": str(self.cfg.home), "CB_BOT": "admin"}
         rel = self.check_script("cli.sh", "exit 0\n")
 
@@ -283,7 +288,7 @@ class RoutineTests(RoutinesBase):
         rc, out = run("routine", "list")
         self.assertIn("0 7 * * *", out)
         self.assertIn("morning", out)
-        self.assertIn("CT", out)
+        self.assertIn("UTC", out)
         self.assertIn(rel, out)
         self.assertEqual(run("routine", "off", "1")[0], 0)
         self.assertIn("off", run("routine", "list")[1])

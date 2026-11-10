@@ -50,7 +50,7 @@ class DbTests(unittest.TestCase):
 
     def test_ct_display(self):
         self.assertEqual(ct_display("2026-11-03T13:45:00+00:00"),
-                         "Tue Nov 3, 2026, 7:45 AM CT")
+                         "Tue Nov 3, 2026, 1:45 PM UTC")
 
     def test_activity_is_append_only(self):
         conn = connect(self.cfg)

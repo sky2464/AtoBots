@@ -913,7 +913,7 @@ class StatusAndRoutineTests(Base):
         text = dispatcher.status_text(self.conn, self.clock())
         self.assertIn("Running: backend", text)
         self.assertIn("Queued: 1", text)
-        self.assertIn("Paused until: Mon Nov 9, 2026, 6:15 AM CT", text)
+        self.assertIn("Paused until: Mon Nov 9, 2026, 12:15 PM UTC", text)
         self.assertIn("Stuck: 1", text)
 
     def test_status_idle(self):

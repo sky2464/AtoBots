@@ -73,7 +73,12 @@ done
 
 # 1. Set up the company first. If this fails, nothing below runs.
 echo "Setting up $COMPANY at $HOME_DIR ..."
-CLAUDEBOT_HOME=$HOME_DIR "$ENGINE_DIR/bin/cb" init --company "$COMPANY"
+INIT_TZ=()
+if [ ! -e "$HOME_DIR/company.db" ]; then
+    ZONE=$(cat /etc/timezone 2>/dev/null || echo UTC)
+    INIT_TZ=(--timezone "$ZONE")
+fi
+CLAUDEBOT_HOME=$HOME_DIR "$ENGINE_DIR/bin/cb" init --company "$COMPANY" "${INIT_TZ[@]}"
 
 # 2. The cb command.
 mkdir -p "$BIN_DIR"
@@ -126,7 +131,7 @@ done
 # The always-on Admin (Telegram). Enabling makes it start at every boot, so it
 # is enabled and started only with --start and only when the bot token is in
 # the secure store (name only is checked; the value is never read here).
-if [ "$START" -eq 1 ] && "$ENGINE_DIR/bin/cb" secret list 2>/dev/null | grep -q '^telegram-bot[[:space:]]'; then
+if [ "$START" -eq 1 ] && "$ENGINE_DIR/bin/cb" admin has-token; then
     sudo systemctl enable "$ADMIN_UNIT"
     # start, not restart: a restart would end the Owner's conversation.
     if systemctl is-active --quiet "$ADMIN_UNIT"; then

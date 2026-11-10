@@ -35,13 +35,13 @@ WAITING_HOURS = 48      # an item waiting on a bot this long is a finding
 # brief, never sent to a bot (a bot cannot add a remote).
 # "models": the Owner decides a bot's model; nobody is woken to change it.
 NO_WAKE = ("backup-remote", "archive-remote", "admin-live-token", "models",
-           "workers", "rules-new")
+           "workers", "rules-new", "timezone-unset")
 # Every finding key the doctor can raise. `cb item new --finding` accepts only
 # these, so an item can only be tied to a finding that really exists.
 FINDING_KEYS = ("dispatcher", "admin-live", "admin-live-token", "disk",
                 "git-size", "sql-size", "database", "backup-remote",
                 "archive-remote", "backup-push", "backup-snapshot", "memory",
-                "workers", "rules-new")
+                "workers", "rules-new", "timezone-unset")
 FINDING_PREFIXES = ("run:", "waiting:", "stall:", "bots:", "wakecap:")
 CLEAR_RUNS = 2          # clean runs without the finding before its item closes
 CLOSABLE = ("todo", "next")
@@ -137,6 +137,12 @@ def checks(cfg: Config, conn: sqlite3.Connection | None = None,
         skipped.append("disk usage unreadable")
         out.append(Finding("disk", f"Could not read disk usage: {e}"))
     out.extend(_backup_size_checks(cfg))
+    if getattr(cfg, "timezone_unset", False):
+        out.append(Finding(
+            "timezone-unset",
+            "config.json has no timezone key, so schedules stay on "
+            "America/Chicago. Add a timezone key, for example "
+            "\"America/Chicago\" or \"UTC\"."))
     if (cfg.home / "rules.md.new").is_file():
         out.append(Finding(
             "rules-new",
@@ -525,7 +531,7 @@ def run(cfg: Config, conn: sqlite3.Connection, **kw) -> list[Finding]:
                     if f.key == "admin-live":
                         subject, hint = (
                             "The always-on Admin is not running",
-                            " Tell the Owner; he restarts it with sudo "
+                            " Tell the Owner; they restart it with sudo "
                             "systemctl restart " + ADMIN_UNIT + ".")
                     elif f.key.startswith("stall:"):
                         subject, hint = (

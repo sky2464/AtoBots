@@ -21,7 +21,7 @@ class ConfigTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.home = Path(self._tmp.name) / "home"
         self.home.mkdir()
-        self.addCleanup(db.set_zone, "America/Chicago")
+        self.addCleanup(db.set_zone, "UTC")
 
     def load(self, data=None):
         if data is not None:
@@ -34,7 +34,10 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(cfg.run_user)
         self.assertTrue(cfg.run_home.startswith("/"))
         self.assertEqual(cfg.claude_bin, f"{cfg.run_home}/.local/bin/claude")
-        self.assertEqual(cfg.timezone, "America/Chicago")
+        self.assertEqual(cfg.timezone, "UTC")
+        self.assertEqual(
+            cfg.claude_projects_dir,
+            Path(cfg.run_home) / ".claude" / "projects")
         self.assertEqual(cfg.rules_cap_bytes, 4 * 1024)
 
     def test_config_get_prints_one_value(self):
@@ -71,6 +74,24 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaises(RuntimeError, msg=bad):
                 self.load(bad)
 
+    def test_existing_schedules_keep_chicago_until_timezone_is_set(self):
+        from claudebot.config import Config
+        from claudebot.db import init_db
+        cfg = Config(self.home)
+        init_db(cfg)
+        conn = db.connect(cfg)
+        conn.execute(
+            "INSERT INTO routines(bot, cron, prompt, level, enabled, next_due)"
+            " VALUES ('admin','0 7 * * *','look','normal',1,"
+            " '2026-11-10T12:00:00+00:00')")
+        conn.close()
+        cfg = self.load()
+        self.assertEqual(cfg.timezone, "America/Chicago")
+        self.assertTrue(cfg.timezone_unset)
+        cfg = self.load({"timezone": "UTC"})
+        self.assertEqual(cfg.timezone, "UTC")
+        self.assertFalse(cfg.timezone_unset)
+
     def test_zone_drives_display_and_routine_times(self):
         self.load({"timezone": "Europe/Berlin"})
         shown = db.ct_display("2026-07-01T10:00:00+00:00")
@@ -82,7 +103,7 @@ class ConfigTests(unittest.TestCase):
             "2026-07-01T05:00:00+00:00")
         db.set_zone("America/Chicago")
         self.assertTrue(db.ct_display("2026-07-01T10:00:00+00:00"
-                                      ).endswith("5:00 AM CT"))
+                                      ).endswith("5:00 AM CDT"))
 
 
 if __name__ == "__main__":

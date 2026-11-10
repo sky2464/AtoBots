@@ -86,7 +86,7 @@ BEGIN SELECT RAISE(ABORT, 'append-only'); END;
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
 """ + USAGE_TABLE + QUESTIONS_TABLE
 
-_zone = ZoneInfo("America/Chicago")
+_zone = ZoneInfo("UTC")
 
 
 def set_zone(name: str) -> None:
@@ -101,7 +101,7 @@ def zone_name() -> str:
 
 
 def _zone_label(d: datetime) -> str:
-    return "CT" if _zone.key == "America/Chicago" else (d.tzname() or _zone.key)
+    return d.tzname() or _zone.key
 
 
 def connect(cfg: Config) -> sqlite3.Connection:
