@@ -39,7 +39,8 @@ NO_WAKE = ("backup-remote", "archive-remote", "admin-live-token", "models")
 # these, so an item can only be tied to a finding that really exists.
 FINDING_KEYS = ("dispatcher", "admin-live", "admin-live-token", "disk",
                 "git-size", "sql-size", "database", "backup-remote",
-                "archive-remote", "backup-push", "backup-snapshot", "memory")
+                "archive-remote", "backup-push", "backup-snapshot", "memory",
+                "workers")
 FINDING_PREFIXES = ("run:", "waiting:", "stall:", "bots:")
 CLEAR_RUNS = 2          # clean runs without the finding before its item closes
 CLOSABLE = ("todo", "next")
@@ -279,6 +280,11 @@ def _db_checks(cfg: Config, conn: sqlite3.Connection, now: str,
                                        for b, m, p in mismatches)
                            + ". The Owner sets the model with cb bot set "
                            "NAME --model MODEL."))
+    missing_workers = bots.thinkers_missing_worker(conn)
+    if missing_workers:
+        out.append(Finding("workers", "Thinker bots with no active worker: "
+                           + "; ".join(f"{b} ({p})" for b, p in missing_workers)
+                           + ". Set one with cb bot set NAME --worker WORKER."))
     return out
 
 

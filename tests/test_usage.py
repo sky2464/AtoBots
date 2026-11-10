@@ -138,6 +138,28 @@ class IngestTests(UsageBase):
                           "VALUES ('admin', 'sess-run', 'normal', 'x')")
         self.assertEqual(usage.ingest_transcripts(self.cfg, self.conn), 0)
 
+    def test_ingest_records_chat_sessions_with_run_row(self):
+        f = self.project_folder() / "chat-sess.jsonl"
+        f.write_bytes(_line("m-chat"))
+        self.conn.execute(
+            "INSERT INTO runs(bot, session_id, lane, started_at, ended_at)"
+            " VALUES ('admin', 'chat-sess', 'chat', 'x', 'y')")
+        self.assertEqual(usage.ingest_transcripts(self.cfg, self.conn), 1)
+        row = self.conn.execute(
+            "SELECT lane, trigger, ref FROM usage").fetchone()
+        self.assertEqual((row["lane"], row["trigger"], row["ref"]),
+                         ("chat", "session", "chat-sess"))
+
+    def test_ingest_records_live_lane(self):
+        f = self.project_folder() / "live-sess.jsonl"
+        f.write_bytes(_line("m-live"))
+        self.conn.execute(
+            "INSERT INTO runs(bot, session_id, lane, started_at, ended_at)"
+            " VALUES ('admin', 'live-sess', 'live', 'x', 'y')")
+        self.assertEqual(usage.ingest_transcripts(self.cfg, self.conn), 1)
+        self.assertEqual(self.conn.execute(
+            "SELECT lane FROM usage").fetchone()["lane"], "live")
+
     def test_missing_folder_is_zero(self):
         self.assertEqual(usage.ingest_transcripts(self.cfg, self.conn), 0)
 
@@ -168,8 +190,11 @@ class ReportTests(UsageBase):
         usage.record(self.conn, bot="admin", model="claude-sonnet-5-0", lane="n",
                      trigger="owner", ref="1", input_tokens=7, cache_write=0,
                      cache_read=0, output_tokens=0, at=old)
-        self.assertNotIn("admin", usage.report(self.conn, since="7d", by="bot"))
-        self.assertIn("admin", usage.report(self.conn, since="30d", by="bot"))
+        short = usage.report(self.conn, since="7d", by="bot")
+        long = usage.report(self.conn, since="30d", by="bot")
+        table = short.split("\n\nThinker bots", 1)[0]
+        self.assertNotIn("admin", table)
+        self.assertIn("admin", long.split("\n\nThinker bots", 1)[0])
 
     def test_report_flags_model_mismatch(self):
         usage.record(self.conn, bot="backend", model="claude-opus-5-0", lane="n",

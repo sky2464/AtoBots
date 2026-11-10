@@ -27,7 +27,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import activity, archive, bots, items, requests, runner
+from . import activity, archive, bots, items, requests, runner, usage
 from .config import Config
 from .db import connect, ct_display, tx, utcnow
 
@@ -558,6 +558,10 @@ def _one_session(cfg, conn, summary, token, first: bool, live=None) -> str:
                 (utcnow(), code, reason, run_id))
             activity.record(conn, BOT, f"{prefix}.end" if live else "chat.end",
                             f"{prefix} session ended: {reason}", str(run_id))
+        try:
+            usage.ingest_transcripts(cfg, conn, BOT)
+        except Exception:  # noqa: BLE001
+            pass  # ledger is best-effort; cb usage can catch up
     if reason == "rollover":
         try:
             archive.archive_transcript(cfg, conn, run_id)
