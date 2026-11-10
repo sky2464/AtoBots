@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Install ClaudeBot on this server. Run by hand as the user `claude`:
+# Install ClaudeBot on this server. Run by hand as the user `claude`, from a
+# full Git clone of the engine repo (needed later for engine/update.sh):
 #   engine/install.sh [--start] COMPANY_NAME /home/claude/COMPANY_HOME
 # The dispatcher and timers are enabled (they start at boot) but are NOT started
 # now unless you pass --start, so you can look around first.

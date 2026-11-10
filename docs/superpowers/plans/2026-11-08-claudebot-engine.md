@@ -63,13 +63,13 @@ Server: engine at `~/ClaudeBot/`, company home at `~/AtoosaDev/` (live name; old
 **Interfaces:**
 - Produces: notes consumed by Tasks 8, 9, 12 and 15: real session memory, exact flag behavior, usage-limit message text, and connector behavior.
 
-- [ ] **Step 1: Check the plan.** From Anthropic's current docs and terms, record whether unattended `claude -p` on the Owner's current plan is allowed, and how limits apply. **If it isn't allowed or isn't workable, stop and give the Owner the options.** Paying for more is his decision.
-- [ ] **Step 2: Measure.** Use one `claude -p --model haiku "Reply OK"` on the server, sampling peak RSS with `/usr/bin/time -v` or `/proc`. Record it, and revise the floor and `MemoryMax` if needed. This uses a small amount of the Owner's usage.
-- [ ] **Step 3: Verify flags.** Record exact behavior of `--append-system-prompt-file`, `--agents`, `--model`, `--effort`, `--mcp-config`, `--plugin-dir`, `--settings`, `--session-id`, `--output-format json`, the transcript path under `~/.claude/projects/`, and whether skills in `<cwd>/.claude/skills/` load in `-p` mode. Record the JSON or text that a usage-limit failure produces; if it can't be triggered safely, record the documented form and mark it unverified.
-- [ ] **Step 4: Check hooks.** Confirm `UserPromptSubmit` and `Stop` hook input fields (`prompt`, `transcript_path`) from current docs.
-- [ ] **Step 5: Check the folders.** List `~/DTbyNavid` and `~/ClaudeBot` on the server. If `~/DTbyNavid` holds anything, **ask the Owner** before using it.
-- [ ] **Step 6: Check connectors.** Record which models and connectors the plan provides, and whether account connectors work in unattended server runs. Where they don't, note MCP plus a store token as the path.
-- [ ] **Step 7: Commit** the notes.
+- [x] **Step 1: Check the plan.** From Anthropic's current docs and terms, record whether unattended `claude -p` on the Owner's current plan is allowed, and how limits apply. **If it isn't allowed or isn't workable, stop and give the Owner the options.** Paying for more is his decision.
+- [x] **Step 2: Measure.** Use one `claude -p --model haiku "Reply OK"` on the server, sampling peak RSS with `/usr/bin/time -v` or `/proc`. Record it, and revise the floor and `MemoryMax` if needed. This uses a small amount of the Owner's usage.
+- [x] **Step 3: Verify flags.** Record exact behavior of `--append-system-prompt-file`, `--agents`, `--model`, `--effort`, `--mcp-config`, `--plugin-dir`, `--settings`, `--session-id`, `--output-format json`, the transcript path under `~/.claude/projects/`, and whether skills in `<cwd>/.claude/skills/` load in `-p` mode. Record the JSON or text that a usage-limit failure produces; if it can't be triggered safely, record the documented form and mark it unverified.
+- [x] **Step 4: Check hooks.** Confirm `UserPromptSubmit` and `Stop` hook input fields (`prompt`, `transcript_path`) from current docs.
+- [x] **Step 5: Check the folders.** List `~/DTbyNavid` and `~/ClaudeBot` on the server. If `~/DTbyNavid` holds anything, **ask the Owner** before using it.
+- [x] **Step 6: Check connectors.** Record which models and connectors the plan provides, and whether account connectors work in unattended server runs. Where they don't, note MCP plus a store token as the path.
+- [x] **Step 7: Commit** the notes.
 
 ### Task 2: Foundation: config, database, activity record
 
@@ -395,7 +395,7 @@ This is the feature that keeps 10 interrupted requests from being lost.
   - `test_admin_has_all_three_skills`.
   - `test_admin_soul_under_cap`.
 - [ ] **Step 2: Run the tests.** Expected: FAIL.
-- [ ] **Step 3: Write** the templates and installer. Admin's model is `opus` by default, because it holds the org's judgment, with `--effort` unset. Mark it in the template header as changeable.
+- [x] **Step 3: Write** the templates and installer. Admin's model is `sonnet` by default (`ADMIN_MODEL` in `cli.py`); the template header notes `cb bot set admin --model …` for opus/haiku. `--effort` stays unset unless needed.
 - [ ] **Step 4: Run the tests.** Expected: PASS.
 - [ ] **Step 5: Commit.**
 
@@ -436,7 +436,7 @@ Live, against the Owner's usage. Each check gets pass or fail plus evidence in `
 - Create: `docs/superpowers/plans/acceptance-notes.md`
 - Modify: `CLAUDE.md` (status and how to run)
 
-- [ ] **Step 1: Deploy.** Prefer a tagged checkout and `rsync -a --delete` of `engine/` and `tests/` to `atoosa-vps:~/ClaudeBot/` (see [docs/deploy.md](../../deploy.md)). Run the suite there; expected all PASS. Run `CLAUDEBOT_HOME=~/AtoosaDev cb init --company "Atoosa Dev"` and `install.sh` when setting up a fresh home. Verify with a second SSH login that access is unaffected, and `systemctl status claudebot-dispatcher` is active.
+- [x] **Step 1: Deploy.** Keep a full Git clone on the VPS; ship with `engine/update.sh` after a `v*` tag (see [docs/deploy.md](../../deploy.md)). Historical first install used rsync without `--delete`; do not rsync `--delete` into the checkout. Evidence in [acceptance-notes.md](acceptance-notes.md). For fresh homes use `install.sh` and `cb init --company …`.
 - [ ] **Step 2: OWNER DOES:** create the private GitHub `backup` and `archive` repos and add the deploy keys. Add first store items with `cb secret add` in his own terminal. Wait for "done". Never ask for values in chat.
 - [ ] **Step 3: Measure** idle dispatcher RSS and 2 concurrent sessions. Set the floor, `MemoryMax` and concurrency from real numbers, and record them.
 - [ ] **Step 4: Owner tests Admin:** he runs `cb chat` from an SSH session and gets an accurate brief.

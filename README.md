@@ -70,6 +70,27 @@ cb doctor
 cb version
 ```
 
+## Talking to Admin
+
+| Mode | Command | What it is |
+|---|---|---|
+| Terminal chat | `cb chat` | Interactive Admin in your SSH session; ends when you exit. |
+| Always-on + phone | `claudebot-admin` + Telegram | Long-lived Admin (`engine/install.sh --start` after `cb secret add telegram-bot`). Attach with `tmux attach -t admin-live` on the server when needed. |
+
+Admin ships with model **`sonnet`** (`ADMIN_MODEL` in `engine/claudebot/cli.py`); change with `cb bot set admin --model …` if you want more judgment or lower cost.
+
+Admin registers open questions with **`cb question open "…"`** and **`cb question close`** when answered. Bare “ok” / “yes” replies are ignored unless a question is open (cost-control hook).
+
+## Cost control commands
+
+| Command | Purpose |
+|---|---|
+| `cb usage` | Token totals, cache hit rate, and model-mismatch lines (`--since 24h` or `7d`; `--by bot`, `model`, or `trigger`). |
+| `cb task send …` / `cb task finish …` | Worker bots run delegated work; thinkers get `result` messages when tasks complete. |
+| `cb question open` / `close` | Tracks Owner questions so acknowledgements are not treated as approvals. |
+
+See [CHANGELOG.md](CHANGELOG.md) and the cost-control design doc under `docs/superpowers/specs/`.
+
 ## Updating
 
 To move an install to a newer release, run `engine/update.sh` from the clone on the server. It backs up the database first and can be rolled back. See [UPDATING.md](UPDATING.md) for the steps, and [CHANGELOG.md](CHANGELOG.md) for what each release changes.
@@ -120,9 +141,10 @@ push and pull request.
 
 ## Deploy
 
-Ship a tagged checkout and rsync with `--delete` so the server matches the tag.
-See [docs/deploy.md](docs/deploy.md). Branch cleanup notes for stale remotes are
-in [docs/branch-cleanup.md](docs/branch-cleanup.md).
+Keep a **full Git clone** on the server and ship with **`engine/update.sh`**
+after pushing a `v*` tag. Do not rsync `--delete` into the checkout (that can
+wipe `.git`). See [docs/deploy.md](docs/deploy.md). GitHub currently has only
+`main`; see [docs/branch-cleanup.md](docs/branch-cleanup.md).
 
 ## Documentation
 
@@ -133,14 +155,13 @@ in [docs/branch-cleanup.md](docs/branch-cleanup.md).
 - [Branch cleanup](docs/branch-cleanup.md)
 - [Hygiene leftovers](docs/hygiene-leftovers.md): deferred dead-code notes (no security/cost work)
 
-## First company install (ops)
+## Owner inventory (not in Git)
 
-The engine itself is company-agnostic. The first live install on the Owner's VPS is:
-
-- **Company:** Atoosa Dev (`~/AtoosaDev`)
-- **Product:** DecisionTreeByNavid (YouTube channel)
-
-Older docs that say the company *is* DecisionTreeByNavid mean that product line; the install name is Atoosa Dev.
+The engine is company-agnostic. Hostnames, SSH aliases, backup/archive repo
+names, and channel handles belong in a private copy of
+[docs/templates/server-inventory.md](docs/templates/server-inventory.md).
+Acceptance evidence for a live install is in
+[acceptance-notes.md](docs/superpowers/plans/acceptance-notes.md).
 
 ## Safety principles
 
