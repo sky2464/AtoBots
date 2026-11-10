@@ -27,10 +27,24 @@ class GitlogTests(unittest.TestCase):
         gitlog.ensure_repo(self.cfg)
         ig = (self.cfg.home / ".gitignore").read_text().split()
         for pat in (".secrets/", "*.db", "*.db-wal", "*.db-shm", "archive/",
-                    "media/", ".claude/projects/"):
+                    "media/", ".claude/projects/", "backups/", ".superpowers/"):
             self.assertIn(pat, ig)
         self.assertEqual(git(self.cfg, "config", "--local", "user.name").strip(),
                          "claudebot")
+
+    def test_backups_and_superpowers_not_committed(self):
+        self.write("backups/old.sql", "dump")
+        self.write(".superpowers/note.md", "local")
+        self.write("work/T-0001/keep.md")
+        gitlog.commit_run(self.cfg, "admin", ["T-0001"], 1)
+        gitlog.commit_sweep(self.cfg, "s")
+        files = git(self.cfg, "ls-files").split()
+        self.assertIn("work/T-0001/keep.md", files)
+        self.assertNotIn("backups/old.sql", files)
+        self.assertNotIn(".superpowers/note.md", files)
+        for f in files:
+            self.assertFalse(f.startswith("backups/"), f)
+            self.assertFalse(f.startswith(".superpowers/"), f)
 
     def write(self, rel, text="x"):
         p = self.cfg.home / rel

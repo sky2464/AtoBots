@@ -37,11 +37,24 @@ class RoutinesBase(unittest.TestCase):
         self.conn.execute("UPDATE routines SET next_due=? WHERE id=?",
                           (due, rid))
 
+    def check_script(self, name, body):
+        """Write a relative check script under the company home; return path."""
+        rel = f"checks/{name}"
+        p = self.cfg.home / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("#!/bin/sh\n" + body)
+        p.chmod(0o755)
+        return rel
+
+    def add_routine(self, *args, check_cmd=None, **kwargs):
+        return routines.add(self.conn, *args, check_cmd=check_cmd,
+                            home=self.cfg.home, **kwargs)
+
 
 class RoutineTests(RoutinesBase):
     def test_check_says_nothing_no_message(self):
-        rid = routines.add(self.conn, "admin", "0 7 * * *", "look",
-                           check_cmd="exit 1")
+        rid = self.add_routine("admin", "0 7 * * *", "look",
+                               check_cmd=self.check_script("noop.sh", "exit 1\n"))
         self.make_due(rid)
         sent = routines.due(self.cfg, self.conn, _iso(2026, 11, 8, 13))
         self.assertEqual(sent, [])
@@ -58,8 +71,9 @@ class RoutineTests(RoutinesBase):
                            datetime.fromisoformat(_iso(2026, 11, 8, 13)))
 
     def test_check_says_work_sends_message(self):
-        rid = routines.add(self.conn, "admin", "0 7 * * *", "do the thing",
-                           check_cmd="exit 0", level="deep")
+        rid = self.add_routine("admin", "0 7 * * *", "do the thing",
+                               check_cmd=self.check_script("work.sh", "exit 0\n"),
+                               level="deep")
         self.make_due(rid)
         sent = routines.due(self.cfg, self.conn, _iso(2026, 11, 8, 13))
         self.assertEqual(sent, [rid])
@@ -70,14 +84,14 @@ class RoutineTests(RoutinesBase):
                          f"routine:{rid}:2026-11-08T12:00:00+00:00")
 
     def test_no_check_always_sends(self):
-        rid = routines.add(self.conn, "admin", "0 7 * * *", "x")
+        rid = self.add_routine("admin", "0 7 * * *", "x")
         self.make_due(rid)
         self.assertEqual(routines.due(self.cfg, self.conn,
                                       _iso(2026, 11, 8, 13)), [rid])
 
     def test_failing_check_recorded_and_skipped(self):
-        rid = routines.add(self.conn, "admin", "0 7 * * *", "x",
-                           check_cmd="exit 127")
+        rid = self.add_routine("admin", "0 7 * * *", "x",
+                               check_cmd=self.check_script("bad.sh", "exit 127\n"))
         self.make_due(rid)
         self.assertEqual(routines.due(self.cfg, self.conn,
                                       _iso(2026, 11, 8, 13)), [])
@@ -87,8 +101,9 @@ class RoutineTests(RoutinesBase):
         ).fetchone())
 
     def test_check_timeout_recorded_and_skipped(self):
-        rid = routines.add(self.conn, "admin", "0 7 * * *", "x",
-                           check_cmd="sleep 30")
+        rid = self.add_routine(
+            "admin", "0 7 * * *", "x",
+            check_cmd=self.check_script("slow.sh", "sleep 30\n"))
         self.make_due(rid)
         with mock.patch.object(routines, "CHECK_TIMEOUT", 0.3):
             self.assertEqual(routines.due(self.cfg, self.conn,
@@ -99,8 +114,9 @@ class RoutineTests(RoutinesBase):
         ).fetchone()[0])
 
     def test_slow_check_does_not_block_the_tick(self):
-        rid = routines.add(self.conn, "admin", "0 7 * * *", "x",
-                           check_cmd="sleep 1; exit 0")
+        rid = self.add_routine(
+            "admin", "0 7 * * *", "x",
+            check_cmd=self.check_script("lag.sh", "sleep 1\nexit 0\n"))
         self.make_due(rid)
         t = time.monotonic()
         sent = routines.due(self.cfg, self.conn, _iso(2026, 11, 8, 13),
@@ -153,7 +169,7 @@ class RoutineTests(RoutinesBase):
         self.assertEqual(nt("0 0 29 2 *", a), "2028-02-29T06:00:00+00:00")
 
     def test_missed_routine_runs_once(self):
-        rid = routines.add(self.conn, "admin", "0 7 * * *", "daily")
+        rid = self.add_routine("admin", "0 7 * * *", "daily")
         self.make_due(rid, "2026-11-04T13:00:00+00:00")  # 4 days behind
         now = _iso(2026, 11, 8, 3)
         self.assertEqual(routines.due(self.cfg, self.conn, now), [rid])
@@ -163,7 +179,7 @@ class RoutineTests(RoutinesBase):
         self.assertEqual(nd, "2026-11-08T13:00:00+00:00")
 
     def test_same_due_time_never_sends_twice(self):
-        rid = routines.add(self.conn, "admin", "0 7 * * *", "daily")
+        rid = self.add_routine("admin", "0 7 * * *", "daily")
         self.make_due(rid)
         routines.due(self.cfg, self.conn, _iso(2026, 11, 8, 13))
         self.make_due(rid)  # e.g. restored from a backup
@@ -171,7 +187,7 @@ class RoutineTests(RoutinesBase):
         self.assertEqual(len(self.msgs()), 1)
 
     def test_disabled_routine_does_not_fire(self):
-        rid = routines.add(self.conn, "admin", "0 7 * * *", "daily")
+        rid = self.add_routine("admin", "0 7 * * *", "daily")
         routines.set_enabled(self.conn, rid, False)
         self.make_due(rid)
         self.assertEqual(routines.due(self.cfg, self.conn,
@@ -181,8 +197,46 @@ class RoutineTests(RoutinesBase):
         self.assertGreater(datetime.fromisoformat(nd),
                            datetime.now(timezone.utc))
 
+    def test_paused_bot_skips_without_advancing(self):
+        bots.create(self.cfg, self.conn, "worker", role="w", soul="s",
+                    persona="p")
+        rid = self.add_routine("worker", "0 7 * * *", "daily")
+        bots.set_status(self.conn, "worker", "paused", "admin")
+        due = "2026-11-08T12:00:00+00:00"
+        self.make_due(rid, due)
+        self.assertEqual(routines.due(self.cfg, self.conn,
+                                      _iso(2026, 11, 8, 13)), [])
+        self.assertEqual(self.msgs(), [])
+        nd = self.conn.execute("SELECT next_due FROM routines WHERE id=?",
+                               (rid,)).fetchone()[0]
+        self.assertEqual(nd, due)
+        bots.set_status(self.conn, "worker", "active", "admin")
+        self.assertEqual(routines.due(self.cfg, self.conn,
+                                      _iso(2026, 11, 8, 13)), [rid])
+        self.assertEqual(len(self.msgs()), 1)
+
+    def test_dangerous_check_rejected(self):
+        for bad in ("rm -rf /", "checks/x.sh; reboot", "sudo checks/x.sh",
+                    "/bin/true", "~/bin/x", "checks/../etc/passwd",
+                    "checks/x.sh && id", "checks/x.sh | tee /tmp/x",
+                    "checks/`id`.sh", "checks/$(id).sh"):
+            with self.assertRaises(ValueError, msg=bad):
+                routines.validate_check_cmd(self.cfg.home, bad)
+            with self.assertRaises(ValueError, msg=bad):
+                self.add_routine("admin", "0 7 * * *", "p", check_cmd=bad)
+
+    def test_check_audited_in_activity(self):
+        rel = self.check_script("audit.sh", "exit 0\n")
+        rid = self.add_routine("admin", "0 7 * * *", "morning look",
+                               check_cmd=rel, actor="ceo")
+        detail = self.conn.execute(
+            "SELECT detail FROM activity WHERE kind='routine.add' AND ref=?",
+            (str(rid),)).fetchone()[0]
+        self.assertIn(f"check={rel}", detail)
+        self.assertIn("morning look", detail)
+
     def test_changes_recorded_in_activity(self):
-        rid = routines.add(self.conn, "admin", "0 7 * * *", "daily", actor="ceo")
+        rid = self.add_routine("admin", "0 7 * * *", "daily", actor="ceo")
         routines.set_enabled(self.conn, rid, False, actor="ceo")
         routines.set_enabled(self.conn, rid, True, actor="ceo")
         routines.remove(self.conn, rid, actor="ceo")
@@ -201,20 +255,21 @@ class RoutineTests(RoutinesBase):
                     "* * 0 * *", "* * * 13 *", "* * * * 8", "5-1 * * * *",
                     "*/0 * * * *", "a * * * *", "1,,2 * * * *", "*/x * * * *"):
             with self.assertRaises(ValueError, msg=bad):
-                routines.add(self.conn, "admin", bad, "p")
+                self.add_routine("admin", bad, "p")
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM routines"
                                            ).fetchone()[0], 0)
 
     def test_bad_arguments_rejected(self):
         with self.assertRaises(ValueError):
-            routines.add(self.conn, "admin", "0 7 * * *", "p", level="loud")
+            self.add_routine("admin", "0 7 * * *", "p", level="loud")
         with self.assertRaises(ValueError):
-            routines.add(self.conn, "admin", "0 7 * * *", "  ")
+            self.add_routine("admin", "0 7 * * *", "  ")
         with self.assertRaises(KeyError):
-            routines.add(self.conn, "nobody", "0 7 * * *", "p")
+            self.add_routine("nobody", "0 7 * * *", "p")
 
     def test_cli_add_list_off_on_rm(self):
         env = {"CLAUDEBOT_HOME": str(self.cfg.home), "CB_BOT": "ceo"}
+        rel = self.check_script("cli.sh", "exit 0\n")
 
         def run(*argv):
             out = io.StringIO()
@@ -223,12 +278,13 @@ class RoutineTests(RoutinesBase):
             return rc, out.getvalue()
 
         rc, out = run("routine", "add", "admin", "0 7 * * *", "morning",
-                      "--check", "exit 0", "--level", "deep")
+                      "--check", rel, "--level", "deep")
         self.assertEqual(rc, 0)
         rc, out = run("routine", "list")
         self.assertIn("0 7 * * *", out)
         self.assertIn("morning", out)
         self.assertIn("CT", out)
+        self.assertIn(rel, out)
         self.assertEqual(run("routine", "off", "1")[0], 0)
         self.assertIn("off", run("routine", "list")[1])
         self.assertEqual(run("routine", "on", "1")[0], 0)
