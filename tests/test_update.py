@@ -217,6 +217,20 @@ class LocalBuildTests(Base):
         exclude = (self.repo / ".git" / "info" / "exclude").read_text()
         self.assertIn("__pycache__/", exclude)
 
+    def test_caches_in_a_folder_that_was_run_from_are_not_committed(self):
+        """engine/adopt.sh imports the folder it runs from, which by then
+        holds Python's caches (always on Linux)."""
+        src = fakes.copy_engine(self.tmp / "ran")
+        cache = src / "engine" / "atobots" / "__pycache__"
+        cache.mkdir()
+        (cache / "cli.cpython-313.pyc").write_bytes(b"\0")
+        (src / "engine" / "stray.pyc").write_bytes(b"\0")
+        commit = update.import_local(self.repo, src, "ab" * 32, "ran")
+        files = fakes.git(self.repo, "ls-tree", "-r", "--name-only", commit)
+        self.assertNotIn(".pyc", files)
+        self.assertIn("engine/bin/cb", files)
+        self.assertTrue((cache / "cli.cpython-313.pyc").exists())  # untouched
+
     def test_a_release_tree_never_carries_the_local_marker(self):
         tracked = subprocess.check_output(["git", "ls-files"], cwd=ROOT,
                                           text=True).split()

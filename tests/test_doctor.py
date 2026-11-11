@@ -1,6 +1,7 @@
 """Doctor: checks and out-of-band dispatcher-down alerts."""
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ENGINE = Path(__file__).resolve().parent.parent / "engine"
@@ -134,11 +135,18 @@ class OutOfBandTests(Base):
         )
         self.conn.commit()
 
-        found = doctor.checks(
-            self.cfg, self.conn, active_fn=lambda: True,
-            mem_fn=lambda: 4000, live_enabled_fn=lambda: False,
-            live_session_fn=lambda: False, token_fn=lambda c: True,
-            track=False, now=self.now)
+        # Some machines have a bare `python` and some do not; the check must
+        # be tested for a server that has none.
+        real_which = doctor.shutil.which
+        with mock.patch.object(
+                doctor.shutil, "which",
+                side_effect=lambda name, *a, **k: None if name == "python"
+                else real_which(name, *a, **k)):
+            found = doctor.checks(
+                self.cfg, self.conn, active_fn=lambda: True,
+                mem_fn=lambda: 4000, live_enabled_fn=lambda: False,
+                live_session_fn=lambda: False, token_fn=lambda c: True,
+                track=False, now=self.now)
 
         keys = [f.key for f in found]
         self.assertIn("commands:settings.json:python", keys)

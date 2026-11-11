@@ -478,6 +478,11 @@ def import_local(repo, root, sha: str, name: str) -> str:
         # -f: the server's own ignore lists (a global gitignore, the clone's
         # info/exclude) must not silently drop a file of the build.
         git(repo, "add", "-A", "-f", env=env, cwd=root)
+        # Forcing also brings in Python's caches when the build folder has
+        # been run from (engine/adopt.sh runs from it). They are taken out
+        # of the commit here, without touching the folder.
+        git(repo, "rm", "-r", "-q", "--cached", "--ignore-unmatch", "--",
+            ":(glob)**/__pycache__/**", ":(glob)**/*.pyc", env=env, cwd=root)
         _ignore_caches(Path(git_dir))
         tree = git(repo, "write-tree", env=env, cwd=root)
         ref = f"refs/heads/{LOCAL_BRANCH}"
