@@ -11,6 +11,7 @@ time comes from the injected `clock` and all memory readings from `mem_fn`.
 """
 import hashlib
 import json
+import re
 import signal
 import sqlite3
 import sys
@@ -66,6 +67,24 @@ def _log(conn, kind: str, detail: str, ref: str | None = None) -> None:
         activity.record(conn, "system", kind, detail, ref)
     except Exception as e:  # noqa: BLE001
         print(f"dispatcher: could not log {kind}: {e}", file=sys.stderr)
+
+
+_SENDER_RE = re.compile(r"[a-z][a-z0-9-]{0,30}")
+
+
+def _senders_summary(names, limit: int = 3) -> str:
+    """Up to `limit` distinct sender names for a live-session notice. A name
+    that is not a plain bot name is shown as "another sender", so bot-chosen
+    text never reaches the Owner's session and the line stays short."""
+    seen: list[str] = []
+    for n in names:
+        n = n if isinstance(n, str) and _SENDER_RE.fullmatch(n) else "another sender"
+        if n not in seen:
+            seen.append(n)
+    shown = ", ".join(seen[:limit])
+    if len(seen) > limit:
+        shown += f" and {len(seen) - limit} more"
+    return shown
 
 
 class _Worker:
@@ -802,12 +821,7 @@ class Dispatcher:
         ids = tuple(m["id"] for m in msgs)
         if ids == self._load_surfaced(conn):
             return
-        senders = []
-        for m in msgs:
-            f = m["from_bot"]
-            if f not in senders:
-                senders.append(f)
-        senders_str = ", ".join(senders)
+        senders_str = _senders_summary(m["from_bot"] for m in msgs)
         text = (f"{len(msgs)} message(s) are waiting for Admin, from {senders_str}. "
                 "Read them with cb inbox and tell the Owner what matters.")
         try:
@@ -895,7 +909,7 @@ class Dispatcher:
         from zoneinfo import ZoneInfo
         try:
             zone = ZoneInfo(self.cfg.timezone)
-        except Exception:
+        except (ValueError, KeyError, OSError):  # unknown zone: doctor reports it
             zone = timezone.utc
         now_dt = datetime.fromisoformat(now)
         if now_dt.tzinfo is None:

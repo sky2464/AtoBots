@@ -160,6 +160,46 @@ the old version and the database back by itself and says so.
 - Read the release's "Manual steps after updating" in
   [CHANGELOG.md](CHANGELOG.md) first. Do not rsync into the clone.
 
+## Running costs
+
+AtoBots itself is free to run. What costs money:
+
+- **The server.** One small Linux server runs the whole company. Each bot run
+  is capped at `run_memory_max` (1200M by default) and at most
+  `max_concurrent_runs` (2) run at once, so 2-4 GB of memory is enough.
+- **Claude usage.** Every bot run and every Admin turn is Claude Code usage on
+  the account logged in on the server, billed by that account's plan or API
+  key. The engine keeps it down with hourly wake caps per model
+  (`wake_cap_opus` 3, `wake_cap_sonnet` 6, `wake_cap_haiku` 12 runs per bot)
+  and a cheaper `default_model` (`sonnet`). `cb usage` shows what was used;
+  the daily digest includes it.
+- **Off-server backups.** The `backup` and `archive` remotes are ordinary Git
+  repositories; a private repository on a free plan is usually enough.
+
+## Uninstalling
+
+This removes the engine and its services. It does not touch Claude Code, the
+server account or its sudo rights. Take a last backup first (`cb backup now`)
+and make sure the `backup` remote has it.
+
+```bash
+for u in dispatcher admin backup.timer backup doctor.timer doctor; do
+    sudo systemctl disable --now "atobots-$u"
+done
+```
+
+```bash
+sudo rm -f /etc/systemd/system/atobots-*.service /etc/systemd/system/atobots-*.timer
+sudo systemctl daemon-reload
+sudo rm -f /usr/local/bin/cb /etc/atobots.env
+```
+
+Then delete the engine clone. The company home (`$ATOBOTS_HOME`) holds the
+company's data, its secure store and its history: delete it only when you no
+longer need any of it, because nothing outside the backup remotes keeps a
+copy. Installing left `/usr/local/bin/python` as a link to `python3` when
+there was no `python`; remove it too if nothing else uses it.
+
 ## Documentation
 
 - [Design specification](docs/superpowers/specs/2026-11-08-engine-design.md): intent, roles, bot lifecycle, and safety rules

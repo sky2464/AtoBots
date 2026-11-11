@@ -100,7 +100,11 @@ def build_digest(cfg: Config, conn: sqlite3.Connection,
     # 7. Health findings
     try:
         findings = doctor.checks(cfg, conn=conn, active_fn=lambda: True, track=False)
-    except Exception:
+    except Exception as e:  # noqa: BLE001  # the digest still goes out
+        has_changes = True  # a broken check is news even on a quiet day
+        sections.append(("Health findings",
+                         [f"[doctor] the health check itself failed "
+                          f"({type(e).__name__}: {e}); run cb doctor"]))
         findings = []
     if findings:
         sections.append(("Health findings", [f"[{f.key}] {f.text}" for f in findings]))

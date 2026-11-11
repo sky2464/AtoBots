@@ -11,6 +11,7 @@ progress is never interrupted.
 """
 import json
 import os
+import sys
 import time
 
 from .config import Config
@@ -206,7 +207,9 @@ class Watcher:
         self._next = self.clock() + CHECK_SECONDS
         try:
             return self.check()
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001  # never stop the live session
+            print(f"rotation: check failed: {type(e).__name__}: {e}",
+                  file=sys.stderr)
             return False
 
     def _do_fallback_rollover(self) -> bool:
