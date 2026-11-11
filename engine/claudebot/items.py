@@ -8,7 +8,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from . import activity, bots
+from . import activity, bots, cliutil
 from .config import Config
 from .db import connect, ct_display, tx, utcnow
 
@@ -230,15 +230,7 @@ _actor = activity.actor
 
 
 def _run(fn):
-    cfg = Config.load()
-    conn = connect(cfg)
-    try:
-        return fn(cfg, conn)
-    except (ValueError, KeyError, OSError, PermissionError) as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-    finally:
-        conn.close()
+    return cliutil.run(fn)
 
 
 def _line(r) -> str:

@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import activity, bots, messages
+from . import activity, bots, cliutil, messages
 from .config import Config
 from .db import connect, ct_display, tx, utcnow, zone_name
 
@@ -362,15 +362,7 @@ def wait_idle() -> None:
 # ---- CLI ------------------------------------------------------------------
 
 def _run(fn):
-    cfg = Config.load()
-    conn = connect(cfg)
-    try:
-        return fn(cfg, conn)
-    except (ValueError, KeyError, PermissionError) as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-    finally:
-        conn.close()
+    return cliutil.run(fn)
 
 
 def _guard(conn, bot: str, command: str):

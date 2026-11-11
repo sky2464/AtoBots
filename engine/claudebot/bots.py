@@ -15,7 +15,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import activity
+from . import activity, cliutil
 from .config import Config
 from .db import connect, ct_display, tx, utcnow
 
@@ -502,15 +502,7 @@ def _read(path):
 
 
 def _run(fn):
-    cfg = Config.load()
-    conn = connect(cfg)
-    try:
-        return fn(cfg, conn)
-    except (ValueError, KeyError, OSError, PermissionError) as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-    finally:
-        conn.close()
+    return cliutil.run(fn)
 
 
 def _cmd_new(args) -> int:

@@ -8,7 +8,7 @@ import sys
 import uuid
 from datetime import datetime
 
-from . import activity, bots, items
+from . import activity, bots, cliutil, items
 from .config import Config
 from .db import connect, ct_display, tx, utcnow
 
@@ -290,15 +290,7 @@ def _who(conn):
 
 
 def _run(fn):
-    cfg = Config.load()
-    conn = connect(cfg)
-    try:
-        return fn(cfg, conn)
-    except (ValueError, KeyError, OSError, PermissionError) as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-    finally:
-        conn.close()
+    return cliutil.run(fn)
 
 
 class SendActionParser(argparse.ArgumentParser):

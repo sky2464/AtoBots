@@ -24,7 +24,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import activity, bots, messages, requests, search, usage
+from . import activity, bots, cliutil, messages, requests, search, usage
 from .config import Config
 from .db import connect, tx, utcnow
 
@@ -725,15 +725,7 @@ def fetch(cfg: Config, ref: str) -> Path:
 # ---- CLI ----
 
 def _run(fn):
-    cfg = Config.load()
-    conn = connect(cfg)
-    try:
-        return fn(cfg, conn)
-    except (ValueError, KeyError, OSError, ArchiveError) as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-    finally:
-        conn.close()
+    return cliutil.run(fn, ArchiveError)
 
 
 def _cmd_run(args):

@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from . import activity
+from . import activity, cliutil
 from .config import Config
 from .db import connect, ct_display, tx, utcnow
 
@@ -315,15 +315,7 @@ def add_note(cfg: Config, conn: sqlite3.Connection, bot: str, title: str,
 # ---- CLI ----
 
 def _run(fn):
-    cfg = Config.load()
-    conn = connect(cfg)
-    try:
-        return fn(cfg, conn)
-    except (ValueError, KeyError, OSError) as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-    finally:
-        conn.close()
+    return cliutil.run(fn)
 
 
 def _cmd_search(args):

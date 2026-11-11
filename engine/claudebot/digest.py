@@ -88,7 +88,9 @@ def build_digest(cfg: Config, conn: sqlite3.Connection,
     table_names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if "changes" in table_names:
         ch_rows = conn.execute(
-            "SELECT id, title, status FROM changes WHERE updated_at >= ? ORDER BY id",
+            "SELECT id, title, status FROM changes"
+            " WHERE COALESCE(completed_at, approved_at, created_at) >= ?"
+            " ORDER BY id",
             (since,)).fetchall()
         if ch_rows:
             has_changes = True
