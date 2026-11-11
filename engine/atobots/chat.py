@@ -27,7 +27,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import activity, archive, bots, items, requests, rotation, runner
+from . import (activity, archive, bots, items, names, requests, rotation,
+               runner)
 from .config import Config
 from .db import connect, ct_display, tx, utcnow
 
@@ -524,8 +525,8 @@ def _one_session(cfg, conn, summary, token, first: bool, live=None) -> str:
             temp.append(mcp)
         cmd = _command(cfg, bot, session_id, prompt, settings, mcp,
                        channels=live.channels if live else None)
-        env = dict(os.environ, CB_BOT=BOT, CLAUDEBOT_HOME=str(cfg.home),
-                   CB_SESSION_ID=session_id)
+        env = dict(os.environ, CB_BOT=BOT, CB_SESSION_ID=session_id,
+                   **names.home_env(cfg.home))
         if live:
             # TokenError must refuse the start (no empty Telegram spam loop).
             from . import admin_live

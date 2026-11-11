@@ -11,9 +11,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "engine"))
 
-from claudebot import bots, cli  # noqa: E402
-from claudebot.config import Config  # noqa: E402
-from claudebot.db import connect  # noqa: E402
+from atobots import bots, cli  # noqa: E402
+from atobots.config import Config  # noqa: E402
+from atobots.db import connect  # noqa: E402
 
 TEMPLATES = ROOT / "engine" / "templates"
 SKILLS = ("cb-basics", "work-tracking", "create-bot")
@@ -133,7 +133,7 @@ class RulesTest(unittest.TestCase):
         sentence = ("masking hides the raw, base64 and hex forms only. "
                     "any bot can read the store key.")
         readme = (ROOT / "README.md").read_text().lower()
-        module = (ROOT / "engine" / "claudebot" / "store.py").read_text().lower()
+        module = (ROOT / "engine" / "atobots" / "store.py").read_text().lower()
         self.assertNotIn("never passed through a model session", readme)
         for text in (readme, module, _rules()):
             self.assertIn(sentence, " ".join(text.split()), text[:40])
@@ -154,16 +154,16 @@ class InitTest(unittest.TestCase):
 
     def init(self, name="Acme"):
         import os
-        old = os.environ.get("CLAUDEBOT_HOME")
-        os.environ["CLAUDEBOT_HOME"] = str(self.home)
+        old = os.environ.get("ATOBOTS_HOME")
+        os.environ["ATOBOTS_HOME"] = str(self.home)
         try:
             with redirect_stdout(io.StringIO()):
                 return cli.main(["init", "--company", name])
         finally:
             if old is None:
-                del os.environ["CLAUDEBOT_HOME"]
+                del os.environ["ATOBOTS_HOME"]
             else:
-                os.environ["CLAUDEBOT_HOME"] = old
+                os.environ["ATOBOTS_HOME"] = old
 
     def names(self):
         conn = connect(self.cfg)
@@ -208,20 +208,20 @@ class InitTest(unittest.TestCase):
 
     def _refresh(self):
         buf = io.StringIO()
-        old = os.environ.get("CLAUDEBOT_HOME")
-        os.environ["CLAUDEBOT_HOME"] = str(self.home)
+        old = os.environ.get("ATOBOTS_HOME")
+        os.environ["ATOBOTS_HOME"] = str(self.home)
         try:
             with redirect_stdout(buf):
                 rc = cli.main(["templates", "refresh"])
         finally:
             if old is None:
-                os.environ.pop("CLAUDEBOT_HOME", None)
+                os.environ.pop("ATOBOTS_HOME", None)
             else:
-                os.environ["CLAUDEBOT_HOME"] = old
+                os.environ["ATOBOTS_HOME"] = old
         return rc, buf.getvalue()
 
     def test_refresh_keeps_edited_rules_and_doctor_says_so(self):
-        from claudebot import doctor
+        from atobots import doctor
         self.init()
         rules = self.home / "rules.md"
         template = (TEMPLATES / "rules.md").read_text()
@@ -269,17 +269,17 @@ class EnvFileTest(unittest.TestCase):
     def test_home_falls_back_to_env_file(self):
         import os
         from unittest import mock
-        from claudebot import config
+        from atobots import config
         with tempfile.TemporaryDirectory() as d:
-            f = Path(d) / "claudebot.env"
-            f.write_text("CLAUDEBOT_HOME=/srv/co\n")
-            env = {k: v for k, v in os.environ.items() if k != "CLAUDEBOT_HOME"}
+            f = Path(d) / "atobots.env"
+            f.write_text("ATOBOTS_HOME=/srv/co\n")
+            env = {k: v for k, v in os.environ.items() if k != "ATOBOTS_HOME"}
             with mock.patch.object(config, "ENV_FILE", f), \
                     mock.patch.dict(os.environ, env, clear=True):
                 self.assertEqual(Config.load().home, Path("/srv/co"))
-                os.environ["CLAUDEBOT_HOME"] = "/other"
+                os.environ["ATOBOTS_HOME"] = "/other"
                 self.assertEqual(Config.load().home, Path("/other"))
-                del os.environ["CLAUDEBOT_HOME"]
+                del os.environ["ATOBOTS_HOME"]
                 f.unlink()
                 with self.assertRaises(RuntimeError):
                     Config.load()
@@ -357,8 +357,8 @@ class TemplatesTest(unittest.TestCase):
         self.assertIn("set -euo pipefail", text)
         self.assertIn("sudo -n true", text)
         self.assertLess(text.index("sudo -n true"), text.index(" init --company"))
-        self.assertIn("/etc/claudebot.env", text)
-        unit = (ROOT / "engine" / "systemd" / "claudebot-dispatcher.service").read_text()
+        self.assertIn("/etc/atobots.env", text)
+        unit = (ROOT / "engine" / "systemd" / "atobots-dispatcher.service").read_text()
         self.assertIn("@ENGINE@", unit)
         self.assertNotIn("/home/", unit)
         for forbidden in ("sshd", "ufw", "sudoers"):
@@ -398,8 +398,8 @@ class TemplatesTest(unittest.TestCase):
         # A hung `cb` must end the wait, not wedge the job.
         self.assertIn("cb_timeout 60", common)
         self.assertIn("dispatcher idle", common)
-        finish = (ROOT / "engine" / "claudebot" / "update_finish.py").read_text()
-        self.assertIn("update-pending", (ROOT / "engine" / "claudebot"
+        finish = (ROOT / "engine" / "atobots" / "update_finish.py").read_text()
+        self.assertIn("update-pending", (ROOT / "engine" / "atobots"
                                          / "admin_live.py").read_text())
         self.assertIn("Verifying services", finish)
 
@@ -407,8 +407,8 @@ class TemplatesTest(unittest.TestCase):
         lib = ROOT / "engine" / "lib" / "units.sh"
         install = (ROOT / "engine" / "install.sh").read_text()
         update = (ROOT / "engine" / "update.sh").read_text()
-        finish = (ROOT / "engine" / "claudebot" / "update_finish.py").read_text()
-        admin = (ROOT / "engine" / "systemd" / "claudebot-admin.service").read_text()
+        finish = (ROOT / "engine" / "atobots" / "update_finish.py").read_text()
+        admin = (ROOT / "engine" / "systemd" / "atobots-admin.service").read_text()
         for path in sorted((ROOT / "engine").glob("*.sh")) \
                 + sorted((ROOT / "engine" / "lib").glob("*.sh")) \
                 + sorted((ROOT / "engine" / "migrations").glob("*.sh")):
@@ -447,7 +447,7 @@ class TemplatesTest(unittest.TestCase):
                         sysfiles.index('install -m "$mode"'))
 
     def test_shell_and_python_names_agree(self):
-        from claudebot import names
+        from atobots import names
         text = (ROOT / "engine" / "lib" / "names.sh").read_text()
         self.assertIn(f'CB_PRODUCT="{names.PRODUCT}"', text)
         self.assertIn(f'CB_UNIT_PREFIX="{names.UNIT_PREFIX}"', text)

@@ -14,6 +14,13 @@ cb_find_home() {
     if [ -z "$home" ] && [ -r "$CB_ENV_FILE" ]; then
         home=$(sed -n "s/^$CB_HOME_VAR=//p" "$CB_ENV_FILE" | sed -n '1p')
     fi
+    # An install made before the rename (0.1.0) has only the old names.
+    if [ -z "$home" ]; then
+        home=$(printenv "$CB_OLD_HOME_VAR" 2>/dev/null || true)
+    fi
+    if [ -z "$home" ] && [ -r "$CB_OLD_ENV_FILE" ]; then
+        home=$(sed -n "s/^$CB_OLD_HOME_VAR=//p" "$CB_OLD_ENV_FILE" | sed -n '1p')
+    fi
     case $home in
         /*) ;;
         *) echo "error: $CB_HOME_VAR is not set to an absolute path" >&2; return 1 ;;

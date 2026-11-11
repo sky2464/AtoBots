@@ -1,5 +1,5 @@
 [Unit]
-Description=ClaudeBot hourly backup
+Description=AtoBots hourly backup
 
 [Timer]
 OnCalendar=hourly

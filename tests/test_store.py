@@ -14,9 +14,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "engine"))
 
-from claudebot import cli, store  # noqa: E402
-from claudebot.config import Config  # noqa: E402
-from claudebot.db import connect, init_db, utcnow  # noqa: E402
+from atobots import cli, store  # noqa: E402
+from atobots.config import Config  # noqa: E402
+from atobots.db import connect, init_db, utcnow  # noqa: E402
 
 VALUE = "s3cr3t-value"
 PRINT_X = ["python3", "-c", "import os; print(os.environ['X'])"]
@@ -229,7 +229,7 @@ class StoreTests(unittest.TestCase):
         store.add(self.cfg, "t", "token", VALUE)
         script = ("import os,sys;print(os.environ['X'][:2]);"
                   "print(os.environ['X'],file=sys.stderr);sys.exit(4)")
-        env = dict(os.environ, CLAUDEBOT_HOME=self.tmp.name,
+        env = dict(os.environ, ATOBOTS_HOME=self.tmp.name,
                    CB_BOT="admin")
         cb = Path(__file__).resolve().parent.parent / "engine" / "bin" / "cb"
         p = subprocess.run([sys.executable, str(cb), "secret", "run",
@@ -247,9 +247,9 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(tuple(row), ("admin", "t"))
 
     def test_cli_add_list_rm_run(self):
-        env = {"CLAUDEBOT_HOME": self.tmp.name}
+        env = {"ATOBOTS_HOME": self.tmp.name}
         with mock.patch.dict("os.environ", env), \
-                mock.patch("claudebot.store.getpass", return_value=VALUE):
+                mock.patch("atobots.store.getpass", return_value=VALUE):
             quiet = io.StringIO()
             with mock.patch("sys.stdout", quiet):
                 self.assertEqual(
@@ -287,7 +287,7 @@ class SecretGateTests(unittest.TestCase):
 
     def cli_cmd(self, *argv, env=None):
         out, err = io.StringIO(), io.StringIO()
-        e = {"CLAUDEBOT_HOME": self.tmp.name}
+        e = {"ATOBOTS_HOME": self.tmp.name}
         e.update(env or {})
         with mock.patch.dict(os.environ, e), redirect_stdout(out), redirect_stderr(err):
             rc = cli.main(list(argv))
@@ -296,8 +296,8 @@ class SecretGateTests(unittest.TestCase):
     def test_replace_and_remove_need_an_owner_session(self):
         self.index()
         worker = {"CB_BOT": "admin", "CB_SESSION_ID": "norm-1"}
-        with mock.patch("claudebot.store.add") as add, \
-                mock.patch("claudebot.store.getpass", return_value="new-value"):
+        with mock.patch("atobots.store.add") as add, \
+                mock.patch("atobots.store.getpass", return_value="new-value"):
             rc, _, err = self.cli_cmd(
                 "secret", "add", "t", "--kind", "token", env=worker)
             self.assertEqual(rc, 1)
@@ -310,8 +310,8 @@ class SecretGateTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("t", json.loads(
             (self.cfg.secrets_dir / "index.json").read_text()))
-        with mock.patch("claudebot.store.add") as add, \
-                mock.patch("claudebot.store.getpass", return_value="new-value"):
+        with mock.patch("atobots.store.add") as add, \
+                mock.patch("atobots.store.getpass", return_value="new-value"):
             rc, _, err = self.cli_cmd(
                 "secret", "add", "t", "--kind", "token",
                 env={"CB_SESSION_ID": "live-1"})
@@ -324,8 +324,8 @@ class SecretGateTests(unittest.TestCase):
             (self.cfg.secrets_dir / "index.json").read_text()))
 
     def test_new_name_is_allowed_from_a_normal_lane(self):
-        with mock.patch("claudebot.store.add") as add, \
-                mock.patch("claudebot.store.getpass", return_value="v"):
+        with mock.patch("atobots.store.add") as add, \
+                mock.patch("atobots.store.getpass", return_value="v"):
             rc, _, err = self.cli_cmd(
                 "secret", "add", "fresh", "--kind", "token",
                 env={"CB_SESSION_ID": "norm-1"})

@@ -12,9 +12,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "engine"))
 
-from claudebot import activity, changes, cli, doctor  # noqa: E402
-from claudebot.config import Config  # noqa: E402
-from claudebot.db import connect, init_db, utcnow  # noqa: E402
+from atobots import activity, changes, cli, doctor  # noqa: E402
+from atobots.config import Config  # noqa: E402
+from atobots.db import connect, init_db, utcnow  # noqa: E402
 
 
 class ChangesTests(unittest.TestCase):
@@ -65,9 +65,9 @@ class ChangesTests(unittest.TestCase):
 
     def test_approve_requires_owner_session(self):
         cid = changes.plan(self.conn, "Restart unit", "steps", touches=["myunit"])
-        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.home)}):
+        with mock.patch.dict(os.environ, {"ATOBOTS_HOME": str(self.home)}):
             # Not an owner session (e.g. backend bot)
-            with mock.patch("claudebot.activity.caller",
+            with mock.patch("atobots.activity.caller",
                             return_value=activity.Caller("backend", "sess-1", "normal", False)):
                 err = io.StringIO()
                 with redirect_stderr(err):
@@ -77,9 +77,9 @@ class ChangesTests(unittest.TestCase):
 
     def test_approve_records_quote_time_session(self):
         cid = changes.plan(self.conn, "Restart unit", "steps", touches=["myunit"])
-        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.home)}):
+        with mock.patch.dict(os.environ, {"ATOBOTS_HOME": str(self.home)}):
             # Admin in chat lane
-            with mock.patch("claudebot.activity.caller",
+            with mock.patch("atobots.activity.caller",
                             return_value=activity.Caller("admin", "owner-sess-1", "chat", True)):
                 out = io.StringIO()
                 with redirect_stdout(out):
@@ -98,7 +98,7 @@ class ChangesTests(unittest.TestCase):
         changes.approve(self.conn, cid, "yes", "sess", "admin")
 
         def fail_verify(cfg):
-            return False, ["claudebot-dispatcher: FAIL"]
+            return False, ["atobots-dispatcher: FAIL"]
 
         with self.assertRaises(RuntimeError) as cm:
             changes.done(self.cfg, self.conn, cid, verify_fn=fail_verify)
@@ -111,7 +111,7 @@ class ChangesTests(unittest.TestCase):
         changes.approve(self.conn, cid, "yes", "sess", "admin")
 
         def ok_verify(cfg):
-            return True, ["claudebot-dispatcher: PASS"]
+            return True, ["atobots-dispatcher: PASS"]
 
         res = changes.done(self.cfg, self.conn, cid, verify_fn=ok_verify)
         self.assertEqual(res, "C-0001")
@@ -134,7 +134,7 @@ class ChangesTests(unittest.TestCase):
         changes.approve(self.conn, cid, "yes", "sess", "admin")
 
         err = io.StringIO()
-        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.home)}), \
+        with mock.patch.dict(os.environ, {"ATOBOTS_HOME": str(self.home)}), \
                 redirect_stderr(err):
             rc = cli.main(["log", "sudo", "--change", cid, "systemctl stop myunit"])
         self.assertEqual(rc, 0)
@@ -146,7 +146,7 @@ class ChangesTests(unittest.TestCase):
 
     def test_log_sudo_without_approved_change_warns_and_records_unplanned(self):
         err = io.StringIO()
-        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.home)}), \
+        with mock.patch.dict(os.environ, {"ATOBOTS_HOME": str(self.home)}), \
                 redirect_stderr(err):
             rc = cli.main(["log", "sudo", "rm -rf /tmp/data"])
         self.assertEqual(rc, 0)
@@ -159,7 +159,7 @@ class ChangesTests(unittest.TestCase):
 
     def test_log_sudo_safe_command_does_not_warn(self):
         err = io.StringIO()
-        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.home)}), \
+        with mock.patch.dict(os.environ, {"ATOBOTS_HOME": str(self.home)}), \
                 redirect_stderr(err):
             rc = cli.main(["log", "sudo", "cat /var/log/syslog"])
         self.assertEqual(rc, 0)

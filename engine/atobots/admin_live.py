@@ -27,7 +27,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import activity, bots, chat, store
+from . import activity, bots, chat, names, store
 from .config import Config
 from .db import connect, utcnow
 
@@ -337,7 +337,7 @@ def _trust_notice(cfg: Config, conn=None, post=None, now_fn=time.time) -> None:
         stamp.write_text(str(int(now_fn())))
         os.utime(stamp, (now_fn(), now_fn()))
         notify_telegram(
-            cfg, "ClaudeBot: Admin is up but waiting on Claude Code's "
+            cfg, "AtoBots: Admin is up but waiting on Claude Code's "
                  "folder-trust question, so it cannot answer here. "
                  + TRUST_FIX, conn=conn, post=post)
     except Exception:  # noqa: BLE001  # never block the caller
@@ -368,7 +368,7 @@ def surface(cfg: Config, text: str, *, key: str = "admin-queue",
     except (OSError, subprocess.CalledProcessError):
         pass
     try:
-        notify_telegram(cfg, f"ClaudeBot: {text}", conn=conn, post=post)
+        notify_telegram(cfg, f"AtoBots: {text}", conn=conn, post=post)
     except Exception:  # noqa: BLE001  # never block the dispatcher
         pass
     return None
@@ -506,7 +506,8 @@ def _start_session(cfg: Config) -> bool:
     env = _env_for_claude(cfg)
     cb = str(chat._engine_cb())
     inner = " ".join(shlex.quote(x) for x in [
-        "env", f"CLAUDEBOT_HOME={cfg.home}", f"PATH={env['PATH']}",
+        "env", *(f"{k}={v}" for k, v in names.home_env(cfg.home).items()),
+        f"PATH={env['PATH']}",
         cb, "admin", "serve"])
     r = _tmux("new-session", "-d", "-s", SESSION, "-x", "200", "-y", "50",
               "-c", str(cfg.bots_dir / chat.BOT), inner)
@@ -567,14 +568,14 @@ def check_pending_update(cfg: Config, notify_fn=None, surface_fn=None,
             # Typing here would answer the trust question. The update job
             # sees the unanswered marker and tells the Owner how to fix it.
             return False
-        text = (f"ClaudeBot updated {old} to {new}. Reply to the Owner that "
+        text = (f"AtoBots updated {old} to {new}. Reply to the Owner that "
                 f"the update finished and you are back, then run: "
                 f"cb admin update-ack")
         try:
             surface_fn(cfg, text)
         except ValueError:
             # A version string with odd characters: use a plain notice.
-            surface_fn(cfg, "ClaudeBot was updated. Reply to the Owner that "
+            surface_fn(cfg, "AtoBots was updated. Reply to the Owner that "
                        "the update finished and you are back, then run: "
                        "cb admin update-ack")
         data["surfaced_at"] = now
@@ -584,7 +585,7 @@ def check_pending_update(cfg: Config, notify_fn=None, surface_fn=None,
         return False
     conn = connect(cfg)
     try:
-        notify_fn(cfg, f"ClaudeBot updated {old} to {new}, but Admin did not "
+        notify_fn(cfg, f"AtoBots updated {old} to {new}, but Admin did not "
                        f"confirm. Check the Admin session.", conn=conn)
     finally:
         conn.close()
@@ -644,25 +645,25 @@ def supervise(cfg: Config, stop: threading.Event, sleep=None,
 
 
 def verify_services(cfg: Config, runner=subprocess.run) -> tuple[bool, list[str]]:
-    """Verify claudebot-dispatcher and (if enabled) claudebot-admin are active."""
+    """Verify atobots-dispatcher and (if enabled) atobots-admin are active."""
     lines = []
     all_ok = True
 
     try:
-        r = runner(["systemctl", "is-active", "--quiet", "claudebot-dispatcher.service"],
+        r = runner(["systemctl", "is-active", "--quiet", "atobots-dispatcher.service"],
                    timeout=10)
         disp_ok = (r.returncode == 0)
     except (OSError, subprocess.TimeoutExpired):
         disp_ok = False
 
     if disp_ok:
-        lines.append("claudebot-dispatcher: PASS")
+        lines.append("atobots-dispatcher: PASS")
     else:
-        lines.append("claudebot-dispatcher: FAIL")
+        lines.append("atobots-dispatcher: FAIL")
         all_ok = False
 
     try:
-        r_en = runner(["systemctl", "is-enabled", "--quiet", "claudebot-admin.service"],
+        r_en = runner(["systemctl", "is-enabled", "--quiet", "atobots-admin.service"],
                       timeout=10)
         admin_enabled = (r_en.returncode == 0)
     except (OSError, subprocess.TimeoutExpired):
@@ -670,19 +671,19 @@ def verify_services(cfg: Config, runner=subprocess.run) -> tuple[bool, list[str]
 
     if admin_enabled:
         try:
-            r_act = runner(["systemctl", "is-active", "--quiet", "claudebot-admin.service"],
+            r_act = runner(["systemctl", "is-active", "--quiet", "atobots-admin.service"],
                            timeout=10)
             admin_ok = (r_act.returncode == 0)
         except (OSError, subprocess.TimeoutExpired):
             admin_ok = False
 
         if admin_ok:
-            lines.append("claudebot-admin: PASS")
+            lines.append("atobots-admin: PASS")
         else:
-            lines.append("claudebot-admin: FAIL")
+            lines.append("atobots-admin: FAIL")
             all_ok = False
     else:
-        lines.append("claudebot-admin: PASS (not enabled)")
+        lines.append("atobots-admin: PASS (not enabled)")
 
     return all_ok, lines
 

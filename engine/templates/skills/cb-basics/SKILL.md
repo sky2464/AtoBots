@@ -40,8 +40,8 @@ command. Everything you do through `cb` is recorded under your name.
 
 ## Setup files
 
-- An MCP server definition is `$CLAUDEBOT_HOME/mcp/NAME.json`; a plugin is the
-  folder `$CLAUDEBOT_HOME/plugins/NAME/`. Name them with `cb bot new` or
+- An MCP server definition is `$ATOBOTS_HOME/mcp/NAME.json`; a plugin is the
+  folder `$ATOBOTS_HOME/plugins/NAME/`. Name them with `cb bot new` or
   `cb bot set` (`--mcp`, `--plugins`).
 - A token an MCP server needs is written in the definition as
   `${secret:NAME}` (the name from `cb secret list`). The value is filled in

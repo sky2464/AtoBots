@@ -11,9 +11,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "engine"))
 
-from claudebot import activity, bots, cli, digest, dispatcher, items, messages, requests, usage
-from claudebot.config import Config
-from claudebot.db import connect, init_db
+from atobots import activity, bots, cli, digest, dispatcher, items, messages, requests, usage
+from atobots.config import Config
+from atobots.db import connect, init_db
 
 T0 = datetime(2026, 11, 10, 8, 0, 0, tzinfo=timezone.utc)
 
@@ -112,7 +112,7 @@ class DigestTests(unittest.TestCase):
 
     def test_cli_digest(self):
         buf = io.StringIO()
-        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.cfg.home)}), \
+        with mock.patch.dict(os.environ, {"ATOBOTS_HOME": str(self.cfg.home)}), \
                 redirect_stdout(buf):
             rc = cli.main(["digest"])
         self.assertEqual(rc, 0)

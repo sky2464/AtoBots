@@ -48,8 +48,8 @@ _NEVER_STOP = 10 ** 9
 _GIT_TIMEOUT = 600
 MAX_FILE_BYTES = 50 * 1024 * 1024
 SECRET_NAMES = (".env*", "*.pem", "*.key", "id_rsa*", "id_ed25519*")
-_EXCLUDE_BEGIN = "# claudebot-unsafe-begin"
-_EXCLUDE_END = "# claudebot-unsafe-end"
+_EXCLUDE_BEGIN = "# atobots-unsafe-begin"
+_EXCLUDE_END = "# atobots-unsafe-end"
 _URL_USERINFO = re.compile(r"(://)[^/@\s]+@")
 # meta keys starting with these are bookkeeping about the backups themselves;
 # they are left out of the dump so that recording a backup is not a change.
@@ -576,8 +576,8 @@ def _push_month(cfg: Config, month: str) -> dict:
             shutil.copyfile(month_dir / rel, dest)
         _git_ok(repo, "add", "-A", "--", month)
         if _git(repo, "diff", "--cached", "--quiet").returncode:
-            _git_ok(repo, "-c", "user.name=claudebot", "-c",
-                    "user.email=claudebot@claudebot.local", "-c",
+            _git_ok(repo, "-c", "user.name=atobots", "-c",
+                    "user.email=atobots@atobots.local", "-c",
                     "commit.gpgsign=false", "commit", "-q", "-m",
                     f"Archive {month}")
         _git_push(repo, "-q", "origin", f"HEAD:refs/heads/{branch}")
@@ -893,8 +893,8 @@ def files_now(cfg: Config, conn: sqlite3.Connection | None = None) -> str:
 
         _git_ok(repo_dir, "add", "-A")
         if _git(repo_dir, "diff", "--cached", "--quiet").returncode:
-            _git_ok(repo_dir, "-c", "user.name=claudebot", "-c",
-                    "user.email=claudebot@claudebot.local", "-c",
+            _git_ok(repo_dir, "-c", "user.name=atobots", "-c",
+                    "user.email=atobots@atobots.local", "-c",
                     "commit.gpgsign=false", "commit", "-q", "-m",
                     "Backup files")
         _git_push(repo_dir, "-q", "origin", f"HEAD:refs/heads/{branch}")
@@ -1044,7 +1044,7 @@ def _cmd_restore(args) -> int:
     except (BackupError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
-    print(f"Restored to {args.target}. Next: CLAUDEBOT_HOME={args.target} cb "
+    print(f"Restored to {args.target}. Next: ATOBOTS_HOME={args.target} cb "
           "archive reindex (rebuild search), then point the dispatcher at it.")
     print(SECRETS_NOTE)
     return 0

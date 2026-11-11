@@ -31,8 +31,8 @@ def ensure_repo(cfg: Config) -> None:
     if not (cfg.home / ".git").exists():
         _git(cfg, "init", "-q", "-b", "main")
     with _locked(cfg):
-        for key, value in (("user.name", "claudebot"),
-                           ("user.email", "claudebot@claudebot.local"),
+        for key, value in (("user.name", "atobots"),
+                           ("user.email", "atobots@atobots.local"),
                            ("commit.gpgsign", "false"),
                            ("gc.auto", "1000")):
             cur = _git(cfg, "config", "--local", key, check=False).stdout.strip()
@@ -67,10 +67,10 @@ def _commit(cfg: Config, who: str, message: str, add: list) -> str | None:
     files = [f for f in files if f]
     if not files:
         return None
-    _git(cfg, "commit", "-q", "--author", f"{who} <{who}@claudebot.local>",
+    _git(cfg, "commit", "-q", "--author", f"{who} <{who}@atobots.local>",
          "-m", message, "--", *files,
          env={"GIT_COMMITTER_NAME": who,
-              "GIT_COMMITTER_EMAIL": f"{who}@claudebot.local"})
+              "GIT_COMMITTER_EMAIL": f"{who}@atobots.local"})
     return _git(cfg, "rev-parse", "HEAD").stdout.strip()
 
 

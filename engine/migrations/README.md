@@ -2,7 +2,7 @@
 
 A release can ship a script here that moves an existing install forward, so
 nobody has to follow a manual recipe. The update's second half
-(`claudebot/update_finish.py`) runs them after `cb init` and before the units
+(`atobots/update_finish.py`) runs them after `cb init` and before the units
 are installed.
 
 ## Naming and order

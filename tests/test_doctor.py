@@ -7,9 +7,9 @@ ENGINE = Path(__file__).resolve().parent.parent / "engine"
 import sys
 sys.path.insert(0, str(ENGINE))
 
-from claudebot import bots, doctor, messages  # noqa: E402
-from claudebot.config import Config  # noqa: E402
-from claudebot.db import connect, init_db  # noqa: E402
+from atobots import bots, doctor, messages  # noqa: E402
+from atobots.config import Config  # noqa: E402
+from atobots.db import connect, init_db  # noqa: E402
 
 
 class Base(unittest.TestCase):
@@ -107,8 +107,8 @@ class OutOfBandTests(Base):
             live_session_fn=lambda: False, token_fn=lambda c: True,
             track=False, now=self.now)
         findings = {f.key: f.text for f in found}
-        self.assertIn("sudo systemctl restart claudebot-dispatcher.service", findings["dispatcher"])
-        self.assertIn("sudo systemctl restart claudebot-admin.service", findings["admin-live"])
+        self.assertIn("sudo systemctl restart atobots-dispatcher.service", findings["dispatcher"])
+        self.assertIn("sudo systemctl restart atobots-admin.service", findings["admin-live"])
 
 
     def test_commands_check_detects_python_and_missing_commands(self):

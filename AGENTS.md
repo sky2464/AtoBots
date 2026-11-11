@@ -1,4 +1,4 @@
-# ClaudeBot
+# AtoBots
 
 Engine for a company of Codex bots on a private VPS. Owner talks to Admin; Admin delegates work.
 
@@ -9,14 +9,14 @@ Engine for a company of Codex bots on a private VPS. Owner talks to Admin; Admin
 - `docs/` — design, plans, acceptance notes, [deploy](docs/deploy.md), [UPDATING.md](UPDATING.md)
 - `vps-bootstrap.sh` — one-time Debian bootstrap (keys from argv / `SSH_PUBKEYS_FILE`, never hard-coded)
 
-Company data lives in `CLAUDEBOT_HOME` (the company home), not in this repo. Secrets stay in `.secrets/` on the server and are never backed up.
+Company data lives in `ATOBOTS_HOME` (the company home), not in this repo. Secrets stay in `.secrets/` on the server and are never backed up.
 
 ## Owner ↔ Admin
 
 - **Terminal:** `cb chat` — interactive Admin in the current SSH session.
-- **Always-on:** `claudebot-admin.service` runs Admin in tmux (`admin-live`); optional Telegram after `cb secret add telegram-bot` and pairing (see install.sh messages).
+- **Always-on:** `atobots-admin.service` runs Admin in tmux (`admin-live`); optional Telegram after `cb secret add telegram-bot` and pairing (see install.sh messages).
 - **New bots:** conversation with Admin; Soul/Persona approved before `cb bot new`.
-- **Models:** new Admin installs default to **`sonnet`** (see `ADMIN_MODEL` in `engine/claudebot/cli.py`). The Admin template documents `cb bot set admin --model …` for opus/haiku.
+- **Models:** new Admin installs default to **`sonnet`** (see `ADMIN_MODEL` in `engine/atobots/cli.py`). The Admin template documents `cb bot set admin --model …` for opus/haiku.
 
 ## Cost-control CLI (v0.0.1+)
 
@@ -26,7 +26,7 @@ Company data lives in `CLAUDEBOT_HOME` (the company home), not in this repo. Sec
 
 ## Deploy and update
 
-- Server keeps a **full Git clone** of this repo under e.g. `~/ClaudeBot`.
+- Server keeps a **full Git clone** of this repo under e.g. `~/AtoBots`.
 - Ship releases with annotated `v*` tags on `main`, then on the server: `cb update --check`, then `cb update` (see [docs/deploy.md](docs/deploy.md), [UPDATING.md](UPDATING.md)).
 - Do **not** rsync with `--delete` into the checkout; that breaks `update.sh` and can remove `.git`.
 - `engine/install.sh` sets up the company home, systemd units, and `cb` on PATH.

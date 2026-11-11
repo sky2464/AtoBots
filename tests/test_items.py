@@ -9,9 +9,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "engine"))
 
-from claudebot import activity, bots, cli, items  # noqa: E402
-from claudebot.config import Config  # noqa: E402
-from claudebot.db import connect, init_db  # noqa: E402
+from atobots import activity, bots, cli, items  # noqa: E402
+from atobots.config import Config  # noqa: E402
+from atobots.db import connect, init_db  # noqa: E402
 
 
 def seed_owner_session(conn, session="s1", lane="chat"):
@@ -152,7 +152,7 @@ class ItemTests(ItemsBase):
 class ItemCliTests(ItemsBase):
     def run_cli(self, *argv):
         buf = io.StringIO()
-        env = {"CLAUDEBOT_HOME": str(self.cfg.home), "CB_BOT": "",
+        env = {"ATOBOTS_HOME": str(self.cfg.home), "CB_BOT": "",
                "CB_SESSION_ID": ""}
         with mock.patch.dict(os.environ, env), redirect_stdout(buf):
             rc = cli.main(list(argv))
@@ -186,7 +186,7 @@ class ItemCliTests(ItemsBase):
 class DecisionGateTests(ItemsBase):
     def cli_cmd(self, *argv, env=None):
         out, err = io.StringIO(), io.StringIO()
-        e = {"CLAUDEBOT_HOME": str(self.cfg.home)}
+        e = {"ATOBOTS_HOME": str(self.cfg.home)}
         e.update(env or {})
         with mock.patch.dict(os.environ, e), redirect_stdout(out), redirect_stderr(err):
             rc = cli.main(list(argv))
@@ -284,7 +284,7 @@ class CallerTests(ItemsBase):
 class ItemAutoLinkTests(ItemsBase):
     def run_cli(self, *argv, env=None):
         buf = io.StringIO()
-        e = {"CLAUDEBOT_HOME": str(self.cfg.home), "CB_BOT": "admin"}
+        e = {"ATOBOTS_HOME": str(self.cfg.home), "CB_BOT": "admin"}
         if env:
             e.update(env)
         with mock.patch.dict(os.environ, e), redirect_stdout(buf):
@@ -293,7 +293,7 @@ class ItemAutoLinkTests(ItemsBase):
 
     def test_item_new_auto_links_unhandled_requests_in_same_session(self):
         seed_owner_session(self.conn, "sess-1")
-        from claudebot import requests as req_mod
+        from atobots import requests as req_mod
         rid1 = req_mod.capture(self.conn, "fix login", "sess-1")
         rid2 = req_mod.capture(self.conn, "fix logout", "sess-1")
         rid_other = req_mod.capture(self.conn, "unrelated", "sess-other")
@@ -313,7 +313,7 @@ class ItemAutoLinkTests(ItemsBase):
 
     def test_item_new_with_explicit_request_flag(self):
         seed_owner_session(self.conn, "sess-1")
-        from claudebot import requests as req_mod
+        from atobots import requests as req_mod
         rid1 = req_mod.capture(self.conn, "first thing", "sess-1")
         rid2 = req_mod.capture(self.conn, "second thing", "sess-1")
 
@@ -331,7 +331,7 @@ class ItemAutoLinkTests(ItemsBase):
 
     def test_item_new_with_no_request_flag(self):
         seed_owner_session(self.conn, "sess-1")
-        from claudebot import requests as req_mod
+        from atobots import requests as req_mod
         rid = req_mod.capture(self.conn, "request", "sess-1")
 
         rc, out = self.run_cli("item", "new", "Unlinked item",

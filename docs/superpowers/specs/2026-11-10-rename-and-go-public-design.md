@@ -1,9 +1,10 @@
 # Rename and go public — design
 
-Status: **FUTURE.** Do not build yet. Starts after
-[smooth updates](2026-11-10-smooth-updates-design.md) ships, because the
-rename must reach existing installs through that updater's migration hook.
-Written now so the decisions and open questions are not lost.
+Status: **Part A (the name) BUILT in 0.1.0**: the project is now AtoBots,
+and the updater moves existing installs. **Part B (going public) is decided
+but not done**: see [the readiness decision](../../public-readiness.md); four
+items wait for the Owner. What follows is the design as it was written before
+the build, under the old name.
 
 ## Why
 

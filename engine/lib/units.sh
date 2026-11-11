@@ -53,6 +53,6 @@ if [ "${CHANGED:-0}" = "1" ] && [ -n "${OLD_REF:-}" ] && [ -z "${CB_UPD_KIND:-}"
     export CB_UPD_BACKUP=${BACKUP:-}
     export CB_UPD_LABEL="tag:${TAG:-unknown}"
     export CB_UPD_FORCE=${FORCE:-0}
-    export CB_UPD_OLD_PREFIX=claudebot
+    export CB_UPD_OLD_PREFIX=$CB_OLD_UNIT_PREFIX
     exec "$(dirname "${BASH_SOURCE[0]}")/update_finish.sh"
 fi

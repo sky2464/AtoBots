@@ -3,6 +3,58 @@
 Each release has a section here. "Manual steps after updating" lists anything
 `engine/update.sh` does not do for you. How to update: [UPDATING.md](UPDATING.md).
 
+Before 0.1.0 the project was called ClaudeBot. Older sections use the names
+of their time.
+
+## 0.1.0 - 2026-11-10
+
+The rename. The project is now **AtoBots**; it was called ClaudeBot. Nothing
+about what the engine does changed in this release.
+
+### What changed
+- The services are `atobots-dispatcher`, `atobots-admin`, `atobots-backup`
+  and `atobots-doctor` (they were `claudebot-*`).
+- The company home variable is `ATOBOTS_HOME` and the env file is
+  `/etc/atobots.env`.
+- The Python package folder is `engine/atobots/`.
+- The release-key setting is `atobots.releaseKey`.
+
+### What did not change
+- The `cb` command and every sub-command.
+- The company home, the database, bots, secrets and backups.
+- The tmux session name `admin-live`.
+- The engine folder on the server keeps whatever name it has.
+
+### Moving an existing install
+- From 0.0.3: `cb update --check`, then `cb update`. The update installs the
+  new services, removes the old ones, enables the same ones as before, writes
+  the new env file, and adds `ATOBOTS_HOME` to `~/.bashrc`. If anything
+  fails, the old services, code and database are put back.
+- From 0.0.2 or 0.0.1: go to 0.0.3 first. An updater from before 0.0.3 that
+  is pointed at this release is refused: the new version puts the old code
+  back, starts the dispatcher again and says what to do.
+- The old names keep working for one release: `CLAUDEBOT_HOME` and
+  `/etc/claudebot.env` are still read, and every bot run gets both
+  variables, so a company script that uses the old one does not break.
+  `cb doctor` reports `old-name` when the old name is the only thing in use,
+  and when old service files are still installed next to the new ones.
+
+### Also new
+- [SECURITY.md](SECURITY.md): what the engine does and does not protect, in
+  plain words, and how to report a problem.
+- [docs/public-readiness.md](docs/public-readiness.md): what still stands
+  between this repository and a public one.
+
+### Manual steps after updating
+- Open a new shell (or `source ~/.bashrc`) so `ATOBOTS_HOME` is set.
+- When convenient, change company scripts and routines that use
+  `$CLAUDEBOT_HOME` to `$ATOBOTS_HOME`. The old name stops working in the
+  release after next.
+
+### Known issues
+- Company Git history written before this release keeps the old author
+  address (`@claudebot.local`); new commits use `@atobots.local`.
+
 ## 0.0.3 - 2026-11-10
 
 The smooth-updates release. Updating is now one job that looks first, tells

@@ -7,6 +7,8 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from . import names
+
 
 # Text settings config.json may override, with the shape each must have.
 _TEXT_KEYS = {
@@ -21,19 +23,43 @@ _TEXT_KEYS = {
     "status_peek": re.compile(r"on|off"),
 }
 
-ENV_FILE = Path("/etc/claudebot.env")  # written by install.sh: CLAUDEBOT_HOME=...
+ENV_FILE = Path(names.ENV_FILE)  # written by install.sh: ATOBOTS_HOME=...
 
 
-def _home_from_file() -> str | None:
-    """Fallback for shells that never read ~/.bashrc (ssh host 'cb ...')."""
+def _from_env_file(path: Path, var: str) -> str | None:
     try:
-        for line in ENV_FILE.read_text().splitlines():
+        for line in path.read_text().splitlines():
             key, _, value = line.partition("=")
-            if key.strip() == "CLAUDEBOT_HOME" and value.strip():
+            if key.strip() == var and value.strip():
                 return value.strip()
     except OSError:
         pass
     return None
+
+
+def _home_from_file() -> str | None:
+    """Fallback for shells that never read ~/.bashrc (ssh host 'cb ...')."""
+    return _from_env_file(ENV_FILE, names.HOME_VAR)
+
+
+def find_home(environ=None) -> tuple:
+    """(company home, name it was found under). The current variable and env
+    file win; the names from before 0.1.0 are still read, and the second
+    value then says which one, so `cb doctor` can ask for the fix."""
+    env = os.environ if environ is None else environ
+    if env.get(names.HOME_VAR):
+        return env[names.HOME_VAR], None
+    found = _home_from_file()
+    if found:
+        return found, None
+    for var in names.OLD_HOME_VARS:
+        if env.get(var):
+            return env[var], var
+    for path, var in zip(names.OLD_ENV_FILES, names.OLD_HOME_VARS):
+        found = _from_env_file(Path(path), var)
+        if found:
+            return found, path
+    return None, None
 
 
 @dataclass
@@ -121,10 +147,11 @@ class Config:
 
     @classmethod
     def load(cls) -> "Config":
-        home = os.environ.get("CLAUDEBOT_HOME") or _home_from_file()
+        home, old_name = find_home()
         if not home:
-            raise RuntimeError(f"CLAUDEBOT_HOME is not set (and {ENV_FILE} has none)")
+            raise RuntimeError(f"{names.HOME_VAR} is not set (and {ENV_FILE} has none)")
         cfg = cls(Path(home))
+        cfg.old_name = old_name  # set when only a pre-0.1.0 name pointed here
         cfg._apply_overrides()
         from . import db  # late: db imports this module
         db.set_zone(cfg.timezone)

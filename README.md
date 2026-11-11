@@ -1,12 +1,12 @@
-# ClaudeBot
+# AtoBots
 
-**ClaudeBot is an engine for running teams of permanent AI employees on a server.**
+**AtoBots is an engine for running teams of permanent AI employees on a server.**
 
 Each employee (a *bot*) has its own identity, memory, and job. Bots sleep when idle and wake when a message arrives, a routine is due, or the owner asks for them. The owner works through **Admin**, the one bot that ships with every install. Admin defines new bots with the owner, creates them, and remembers them.
 
-ClaudeBot is built on [Claude Code](https://claude.com/claude-code). The engine is reusable and knows nothing about any one business. Each company gets its own install and its own company home.
+AtoBots works with [Claude Code](https://claude.com/claude-code), which you install and log in to yourself. AtoBots is an independent project; it is not made, endorsed or supported by Anthropic. The engine is reusable and knows nothing about any one business. Each company gets its own install and its own company home.
 
-> **Status:** early and private. Interfaces may change without notice. Current package version: **0.0.2** (`cb version`).
+> **Status:** early and private. Interfaces may change without notice. Current package version: **0.1.0** (`cb version`). Called ClaudeBot before 0.1.0.
 
 ---
 
@@ -23,7 +23,7 @@ ClaudeBot is built on [Claude Code](https://claude.com/claude-code). The engine 
 ## How it is organized
 
 ```
-ClaudeBot engine (reusable)              Company home (one per install)
+AtoBots engine (reusable)              Company home (one per install)
 ──────────────────────────────           ──────────────────────────────
 Admin and bot creation                   Admin's memory and company knowledge
 Secure store                             Bot list, roles, and org chart
@@ -104,7 +104,7 @@ each release changed.
 ```
 engine/
   bin/cb                 command entry point
-  claudebot/             the engine (Python package)
+  atobots/             the engine (Python package)
   systemd/               service and timer units
   templates/             starting files for Admin and new bots
   install.sh             server installer
@@ -148,8 +148,9 @@ offline, moves the clone to the newest release, applies database changes and
 migration steps, restarts the services and checks them. If that fails it puts
 the old version and the database back by itself and says so.
 
-- **Coming from 0.0.2 or earlier:** go to 0.0.3 first; see "Updating from
-  0.0.2 or earlier" in [UPDATING.md](UPDATING.md).
+- **Coming from ClaudeBot (0.0.3 or earlier):** from 0.0.3 the update moves
+  the install to the new name by itself; older versions go to 0.0.3 first.
+  See "Coming from ClaudeBot" in [UPDATING.md](UPDATING.md).
 - **Engine files were copied to the server (no `.git`):** `cb update --adopt`
   turns the copy into a clone in one job; see "A copied install" in
   [UPDATING.md](UPDATING.md).
@@ -158,9 +159,11 @@ the old version and the database back by itself and says so.
 
 ## Documentation
 
-- [Design specification](docs/superpowers/specs/2026-11-08-claudebot-engine-design.md): intent, roles, bot lifecycle, and safety rules
-- [Cost control](docs/superpowers/specs/2026-11-09-claudebot-cost-control-design.md): wake caps, tiers, and what a run is allowed to spend
+- [Design specification](docs/superpowers/specs/2026-11-08-engine-design.md): intent, roles, bot lifecycle, and safety rules
+- [Cost control](docs/superpowers/specs/2026-11-09-cost-control-design.md): wake caps, tiers, and what a run is allowed to spend
 - [Updating a running install](UPDATING.md)
+- [Security: what the engine does and does not protect](SECURITY.md)
+- [Readiness to be public](docs/public-readiness.md)
 
 ## Safety principles
 

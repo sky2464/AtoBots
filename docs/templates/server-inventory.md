@@ -8,7 +8,7 @@ Copy this outside the engine repo (or fill locally and keep it Owner-only). Do n
 - Hostname:
 - IP / SSH port:
 - OS / size:
-- Company home (`CLAUDEBOT_HOME`):
+- Company home (`ATOBOTS_HOME`):
 - Line of business:
 - Engine checkout path:
 - Backup remote (`backup`):

@@ -13,9 +13,9 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "engine"))
 
-from claudebot import admin_live, chat, cli, peek  # noqa: E402
-from claudebot.config import Config  # noqa: E402
-from claudebot.db import connect, init_db  # noqa: E402
+from atobots import admin_live, chat, cli, peek  # noqa: E402
+from atobots.config import Config  # noqa: E402
+from atobots.db import connect, init_db  # noqa: E402
 
 
 def tool(name, **tool_input):
@@ -304,7 +304,7 @@ class WiringTests(unittest.TestCase):
                      " VALUES ('admin','S1','live','2026-01-01T00:00:00+00:00')")
         conn.commit()
         conn.close()
-        self.env = {"CLAUDEBOT_HOME": str(self.home),
+        self.env = {"ATOBOTS_HOME": str(self.home),
                     "TELEGRAM_STATE_DIR": str(self.tg)}
 
     def hook(self, sub, payload, state=True):
@@ -382,7 +382,7 @@ class WiringTests(unittest.TestCase):
         self.assertEqual(len(ticks), 3)
 
     def test_the_module_makes_no_model_call(self):
-        text = (ROOT / "engine" / "claudebot" / "peek.py").read_text()
+        text = (ROOT / "engine" / "atobots" / "peek.py").read_text()
         for word in ("claude_bin", "subprocess", "anthropic", "import runner"):
             self.assertNotIn(word, text)
 

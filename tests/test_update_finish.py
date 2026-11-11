@@ -15,8 +15,8 @@ sys.path.insert(0, str(ROOT / "engine"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import fakes  # noqa: E402
-from claudebot import admin_live, names, update, update_finish  # noqa: E402
-from claudebot.config import Config  # noqa: E402
+from atobots import admin_live, names, update, update_finish  # noqa: E402
+from atobots.config import Config  # noqa: E402
 
 PREFIX = names.UNIT_PREFIX
 HOME_VAR = names.HOME_VAR
@@ -143,9 +143,9 @@ class FinisherTests(Base):
         wrapper = self.fake.usr_bin / "cb"
         self.assertFalse(wrapper.is_symlink())
         self.assertIn("do not run as root", wrapper.read_text())
-        self.assertEqual((self.fake.etc / "claudebot.env").read_text()
-                         if PREFIX == "claudebot" else "", f"{HOME_VAR}={self.home}\n"
-                         if PREFIX == "claudebot" else "")
+        self.assertEqual((self.fake.etc / "atobots.env").read_text()
+                         if PREFIX == "atobots" else "", f"{HOME_VAR}={self.home}\n"
+                         if PREFIX == "atobots" else "")
         # Admin is not enabled here, so the job itself reports the result.
         self.assertEqual(len(self.notices), 1)
         self.assertIn("0.0.1 ->", self.notices[0])
@@ -326,8 +326,7 @@ class ScriptedRunTests(Base):
         self.upstream = fakes.make_engine_repo(self.tmp / "upstream",
                                                tag="v0.0.2")
         self.install = self.tmp / "install"
-        subprocess.run(["git", "clone", "-q", str(self.upstream),
-                        str(self.install)], check=True)
+        fakes.clone(self.upstream, self.install)
         fakes.git(self.install, "checkout", "-q", "--detach", "v0.0.2")
         self.cb(self.install, "init", "--company", "Test Co")
         self.old_units()

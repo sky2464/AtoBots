@@ -12,8 +12,8 @@ from unittest import mock
 ENGINE = Path(__file__).resolve().parent.parent / "engine"
 sys.path.insert(0, str(ENGINE))
 
-from claudebot import admin_live, cli, doctor, transcribe  # noqa: E402
-from claudebot.config import Config  # noqa: E402
+from atobots import admin_live, cli, doctor, transcribe  # noqa: E402
+from atobots.config import Config  # noqa: E402
 
 
 class TranscribeTests(unittest.TestCase):
@@ -36,7 +36,7 @@ class TranscribeTests(unittest.TestCase):
         audio_file = self.home / "voice.ogg"
         audio_file.write_text("audio content")
         err = io.StringIO()
-        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.home)}), \
+        with mock.patch.dict(os.environ, {"ATOBOTS_HOME": str(self.home)}), \
                 redirect_stderr(err):
             rc = cli.main(["transcribe", str(audio_file)])
         self.assertEqual(rc, 1)
@@ -82,7 +82,7 @@ class TranscribeTests(unittest.TestCase):
             return None
 
         with mock.patch("shutil.which", side_effect=fake_which), \
-                mock.patch("claudebot.chat.Path.is_dir", return_value=True), \
+                mock.patch("atobots.chat.Path.is_dir", return_value=True), \
                 mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": "/run/user/1000"}):
             result = transcribe.transcribe(self.cfg, audio_file, runner=fake_run)
 
@@ -110,7 +110,7 @@ class TranscribeTests(unittest.TestCase):
         (self.home / "config.json").write_text('{"transcribe_cmd": "whisper"}')
 
         out = io.StringIO()
-        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.home)}), \
+        with mock.patch.dict(os.environ, {"ATOBOTS_HOME": str(self.home)}), \
                 mock.patch("shutil.which", return_value="/usr/bin/whisper"), \
                 mock.patch("subprocess.run") as mock_run, \
                 redirect_stdout(out):

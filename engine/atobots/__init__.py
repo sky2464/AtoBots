@@ -1,8 +1,8 @@
-"""ClaudeBot engine."""
+"""AtoBots engine (called ClaudeBot before 0.1.0)."""
 import re
 from pathlib import Path
 
-__version__ = "0.0.3"
+__version__ = "0.1.0"
 
 
 def full_version() -> str:

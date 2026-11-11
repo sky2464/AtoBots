@@ -16,9 +16,9 @@ sys.path.insert(0, str(ROOT / "engine"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import fakes  # noqa: E402
-from claudebot import bots, changes, cli, names, update  # noqa: E402
-from claudebot.config import Config  # noqa: E402
-from claudebot.db import connect, init_db  # noqa: E402
+from atobots import bots, changes, cli, names, update  # noqa: E402
+from atobots.config import Config  # noqa: E402
+from atobots.db import connect, init_db  # noqa: E402
 
 
 def make_zip(path: Path, entries: dict, links: dict | None = None) -> Path:
@@ -242,7 +242,7 @@ class CheckTests(Base):
                          r"^9\.9\.9\+local\.[0-9a-f]{7}$")
         self.assertFalse(report["target"]["verified"])
         self.assertIn("bot templates and rules", report["includes"])
-        self.assertEqual(report["migrations"], ["9.9.9-step.sh"])
+        self.assertIn("9.9.9-step.sh", report["migrations"])
         self.assertTrue(report["needs_adopt"])
         text = update.format_check(report)
         self.assertIn("unverified local build", text)
@@ -258,24 +258,24 @@ class CheckTests(Base):
 
     def test_clone_and_a_newer_tag(self):
         repo = fakes.make_engine_repo(self.tmp / "clone", tag="v0.0.2")
-        fakes.set_version(repo, "0.0.9")
+        fakes.set_version(repo, "99.0.9")
         (repo / "engine" / "systemd" / "extra.service").write_text("[Unit]\n")
         fakes.commit_all(repo, "next")
-        fakes.git(repo, "tag", "v0.0.9")
+        fakes.git(repo, "tag", "v99.0.9")
         fakes.git(repo, "checkout", "-q", "--detach", "v0.0.2")
         report = self.check(repo)
         self.assertTrue(report["is_clone"])
-        self.assertEqual(report["target"]["label"], "tag:v0.0.9")
-        self.assertEqual(report["target"]["version"], "0.0.9")
+        self.assertEqual(report["target"]["label"], "tag:v99.0.9")
+        self.assertEqual(report["target"]["version"], "99.0.9")
         self.assertEqual(report["relation"], "newer")
         self.assertEqual(report["files_changed"], 2)
         self.assertIn("service unit files", report["includes"])
         self.assertTrue(report["ready"])
         text = update.format_check(report, update.start_command(report))
-        self.assertIn("Ready. Start it with: cb update v0.0.9", text)
+        self.assertIn("Ready. Start it with: cb update v99.0.9", text)
         self.assertIn("the dispatcher and the always-on Admin", text)
         # asking for an older tag says so
-        fakes.git(repo, "checkout", "-q", "--detach", "v0.0.9")
+        fakes.git(repo, "checkout", "-q", "--detach", "v99.0.9")
         older = self.check(repo, tag="v0.0.2")
         self.assertEqual(older["relation"], "older")
         self.assertIn("OLDER", update.format_check(older))
@@ -316,7 +316,7 @@ class CheckTests(Base):
     def test_cli_check_is_read_only_and_exits_1_when_blocked(self):
         copy = fakes.copy_engine(self.tmp / "copy")
         out = io.StringIO()
-        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.home)}), \
+        with mock.patch.dict(os.environ, {"ATOBOTS_HOME": str(self.home)}), \
                 mock.patch.object(update, "repo_dir", return_value=copy), \
                 redirect_stdout(out):
             rc = cli.main(["update", "--check"])
@@ -385,9 +385,9 @@ class StartTests(Base):
         self.assertTrue(calls[0][-1].endswith("update.sh"))
 
     def test_cli_update_command(self):
-        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.home)}), \
-                mock.patch("claudebot.update.is_unit_active", return_value=False), \
-                mock.patch("claudebot.update.is_clone", return_value=True), \
+        with mock.patch.dict(os.environ, {"ATOBOTS_HOME": str(self.home)}), \
+                mock.patch("atobots.update.is_unit_active", return_value=False), \
+                mock.patch("atobots.update.is_clone", return_value=True), \
                 mock.patch("subprocess.run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 0)
             out = io.StringIO()
@@ -400,8 +400,8 @@ class StartTests(Base):
 
     def test_cli_update_on_a_copy_points_at_adopt(self):
         err = io.StringIO()
-        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.home)}), \
-                mock.patch("claudebot.update.is_clone", return_value=False), \
+        with mock.patch.dict(os.environ, {"ATOBOTS_HOME": str(self.home)}), \
+                mock.patch("atobots.update.is_clone", return_value=False), \
                 redirect_stderr(err):
             rc = cli.main(["update", "v0.0.5"])
         self.assertEqual(rc, 1)

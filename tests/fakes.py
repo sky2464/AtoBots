@@ -11,6 +11,7 @@ code under test see the same "systemd":
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -72,7 +73,7 @@ class FakeSystemd:
         for d in (self.units, self.etc, self.usr_bin, self.user_bin):
             d.mkdir()
 
-    def env(self, home: Path, var: str = "CLAUDEBOT_HOME") -> dict:
+    def env(self, home: Path, var: str = "ATOBOTS_HOME") -> dict:
         env = dict(os.environ)
         env.update({
             var: str(home),
@@ -122,6 +123,30 @@ _GIT_ENV = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
             "GIT_COMMITTER_EMAIL": "t@example.invalid"}
 
 
+def init_repo(repo: Path) -> None:
+    """`git init` with background housekeeping off: a clone taken while Git
+    repacks the source in the background can fail."""
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "config", "gc.auto", "0")
+    git(repo, "config", "maintenance.auto", "false")
+
+
+def clone(src: Path, dest: Path) -> Path:
+    """A local clone; tried a few times, since the source may be busy."""
+    last = None
+    for _ in range(4):
+        r = subprocess.run(["git", "clone", "-q", str(src), str(dest)],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            git(dest, "config", "gc.auto", "0")
+            git(dest, "config", "maintenance.auto", "false")
+            return Path(dest)
+        last = r.stderr
+        shutil.rmtree(dest, ignore_errors=True)
+        time.sleep(0.5)
+    raise AssertionError(f"git clone failed: {last}")
+
+
 def copy_engine(dest: Path) -> Path:
     """A copy of this repository's engine tree at dest/engine (no Git)."""
     dest = Path(dest)
@@ -143,7 +168,7 @@ def commit_all(repo: Path, message: str) -> str:
 def make_engine_repo(dest: Path, tag: str | None = None) -> Path:
     """A Git repository holding a copy of the engine, with one commit."""
     repo = copy_engine(dest)
-    git(repo, "init", "-q", "-b", "main")
+    init_repo(repo)
     commit_all(repo, "engine")
     if tag:
         git(repo, "tag", tag)

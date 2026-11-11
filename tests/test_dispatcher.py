@@ -12,10 +12,10 @@ from unittest import mock
 ENGINE = Path(__file__).resolve().parent.parent / "engine"
 sys.path.insert(0, str(ENGINE))
 
-from claudebot import bots, cli, dispatcher, items, messages, requests, tasks  # noqa: E402
-from claudebot.config import Config  # noqa: E402
-from claudebot.db import connect, init_db  # noqa: E402
-from claudebot.runner import RunResult  # noqa: E402
+from atobots import bots, cli, dispatcher, items, messages, requests, tasks  # noqa: E402
+from atobots.config import Config  # noqa: E402
+from atobots.db import connect, init_db  # noqa: E402
+from atobots.runner import RunResult  # noqa: E402
 
 T0 = datetime(2026, 11, 9, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -267,7 +267,7 @@ class StartTests(Base):
         self.assertEqual(len(self.kinds("wake.capped")), 1)
 
     def test_wake_cap_is_once_per_hour_and_doctor_flags_the_third(self):
-        from claudebot import doctor
+        from atobots import doctor
         bots.update(self.cfg, self.conn, "backend", "admin", model="opus")
         d = self.make()
         for hour in range(3):
@@ -869,7 +869,7 @@ class ModelMismatchStartTests(Base):
 
 class DoctorModelsTests(Base):
     def test_doctor_lists_mismatch_and_is_quiet_when_ok(self):
-        from claudebot import doctor
+        from atobots import doctor
         self.assertNotIn("models", [f.key for f in doctor.checks(
             self.cfg, self.conn, active_fn=lambda: True,
             mem_fn=lambda: 4000, live_enabled_fn=lambda: False,
@@ -923,8 +923,8 @@ class StatusAndRoutineTests(Base):
 
     def test_cb_status_cli(self):
         import os
-        os.environ["CLAUDEBOT_HOME"] = str(self.cfg.home)
-        self.addCleanup(os.environ.pop, "CLAUDEBOT_HOME", None)
+        os.environ["ATOBOTS_HOME"] = str(self.cfg.home)
+        self.addCleanup(os.environ.pop, "ATOBOTS_HOME", None)
         out = io.StringIO()
         with redirect_stdout(out):
             rc = cli.main(["status"])
@@ -1029,15 +1029,15 @@ class LiveSingleFlightTests(Base):
 
 class ServiceFileTests(unittest.TestCase):
     def test_unit(self):
-        text = (ENGINE / "systemd" / "claudebot-dispatcher.service").read_text()
-        for line in ("User=@USER@", "Environment=CLAUDEBOT_HOME=@HOME@",
+        text = (ENGINE / "systemd" / "atobots-dispatcher.service").read_text()
+        for line in ("User=@USER@", "Environment=ATOBOTS_HOME=@HOME@",
                      "Restart=always", "RestartSec=5",
                      "ExecStart=@ENGINE@/bin/cb "
                      "dispatcher run"):
             self.assertIn(line, text.split("\n"))
 
     def test_admin_unit_has_memorymax(self):
-        text = (ENGINE / "systemd" / "claudebot-admin.service").read_text()
+        text = (ENGINE / "systemd" / "atobots-admin.service").read_text()
         self.assertIn("MemoryMax=@MEMORY_MAX@", text)
         self.assertIn("MemorySwapMax=0", text)
         self.assertIn("admin scrub-token", text)

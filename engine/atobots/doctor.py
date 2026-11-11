@@ -16,12 +16,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from . import activity, backup, bots, dispatcher, messages
+from . import activity, backup, bots, dispatcher, messages, names
 from .config import Config
 from .db import connect, tx, utcnow
 
-DISPATCHER_UNIT = "claudebot-dispatcher.service"
-ADMIN_UNIT = "claudebot-admin.service"
+DISPATCHER_UNIT = "atobots-dispatcher.service"
+ADMIN_UNIT = "atobots-admin.service"
 BACKEND = "backend"
 ADMIN = "admin"
 _NEVER_STOP = 10 ** 9
@@ -36,13 +36,15 @@ WAITING_HOURS = 48      # an item waiting on a bot this long is a finding
 # brief, never sent to a bot (a bot cannot add a remote).
 # "models": the Owner decides a bot's model; nobody is woken to change it.
 NO_WAKE = ("backup-remote", "archive-remote", "admin-live-token", "models",
-           "workers", "rules-new", "timezone-unset", "transcribe-cmd")
+           "workers", "rules-new", "timezone-unset", "transcribe-cmd",
+           "old-name")
 # Every finding key the doctor can raise. `cb item new --finding` accepts only
 # these, so an item can only be tied to a finding that really exists.
 FINDING_KEYS = ("dispatcher", "admin-live", "admin-live-token", "disk",
                 "git-size", "sql-size", "database", "backup-remote",
                 "archive-remote", "backup-push", "backup-snapshot", "memory",
-                "workers", "rules-new", "timezone-unset", "transcribe-cmd")
+                "workers", "rules-new", "timezone-unset", "transcribe-cmd",
+                "old-name")
 FINDING_PREFIXES = ("run:", "waiting:", "stall:", "bots:", "wakecap:",
                     "change:", "commands:")
 CLEAR_RUNS = 2          # clean runs without the finding before its item closes
@@ -92,6 +94,31 @@ def _token_present(cfg: Config) -> bool:
     return admin_live.has_token(cfg)
 
 
+def old_name_findings(cfg: Config, unit_dir: Path | None = None) -> list:
+    """Leftovers of the project's name before 0.1.0. The old names are still
+    read for one release; this says what to change before they stop working,
+    and catches an install that was only half moved."""
+    out = []
+    used = getattr(cfg, "old_name", None)
+    if used:
+        out.append(Finding(
+            "old-name", f"This install is found through the old name "
+            f"({used}). That stops working in a later release. The Owner "
+            f"adds `export {names.HOME_VAR}={cfg.home}` to ~/.bashrc, or "
+            "runs engine/install.sh again."))
+    unit_dir = unit_dir or Path(os.environ.get("CB_SYSTEMD_DIR")
+                                or "/etc/systemd/system")
+    left = sorted(p.name for old in names.OLD_PREFIXES
+                  for p in unit_dir.glob(f"{old}-*.service"))
+    if left and (unit_dir / names.unit("dispatcher.service")).exists():
+        out.append(Finding(
+            "old-name", "Service files from before the rename are still "
+            f"installed ({', '.join(left[:3])}) next to the new ones. Two "
+            "dispatchers must never run. The Owner disables and removes the "
+            f"old ones: sudo systemctl disable --now {' '.join(left)}"))
+    return out[:1]
+
+
 def _memory_mb() -> int | None:
     return dispatcher.available_mb() if Path("/proc/meminfo").exists() else None
 
@@ -130,6 +157,10 @@ def checks(cfg: Config, conn: sqlite3.Connection | None = None,
                            "no telegram-bot secret, so it cannot start. The "
                            "Owner adds it with: cb secret add telegram-bot "
                            "--kind token"))
+    try:
+        out.extend(old_name_findings(cfg))
+    except OSError:
+        pass
     try:
         total, used = disk_usage_fn(cfg.home if cfg.home.exists() else "/")[:2]
         pct = used * 100 / total if total else 0
@@ -606,7 +637,7 @@ def out_of_band_alert(cfg: Config, conn: sqlite3.Connection | None,
         from . import admin_live
         notify = admin_live.notify_telegram
     try:
-        notify(cfg, f"ClaudeBot doctor: {finding.text}", conn)
+        notify(cfg, f"AtoBots doctor: {finding.text}", conn)
     except Exception as e:  # noqa: BLE001
         print(f"doctor: out-of-band notify failed: {e}", file=sys.stderr)
     return path

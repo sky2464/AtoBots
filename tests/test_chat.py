@@ -15,9 +15,9 @@ from unittest import mock
 ENGINE = Path(__file__).resolve().parent.parent / "engine"
 sys.path.insert(0, str(ENGINE))
 
-from claudebot import admin_live, bots, chat, cli, items, requests  # noqa: E402
-from claudebot.config import Config  # noqa: E402
-from claudebot.db import connect, init_db  # noqa: E402
+from atobots import admin_live, bots, chat, cli, items, requests  # noqa: E402
+from atobots.config import Config  # noqa: E402
+from atobots.db import connect, init_db  # noqa: E402
 
 NOW = datetime(2026, 11, 9, 12, 0, 0, tzinfo=timezone.utc)
 CB = ENGINE / "bin" / "cb"
@@ -43,7 +43,7 @@ with open(proj + "/" + sid + ".jsonl", "w") as f:
 with open(d + "/calls/" + str(n) + ".json", "w") as f:
     json.dump({{"argv": a, "prompt": prompt, "settings": settings,
                "cwd": os.getcwd(), "cb_bot": os.environ.get("CB_BOT"),
-               "home": os.environ.get("CLAUDEBOT_HOME")}}, f)
+               "home": os.environ.get("ATOBOTS_HOME")}}, f)
 if n == 0 and os.environ.get("FAKE_ROLLOVER"):
     signal.signal(signal.SIGTERM, lambda *x: sys.exit(143))
     with open(d + "/summary.md", "w") as f:
@@ -77,7 +77,7 @@ class Base(unittest.TestCase):
 
 class BriefTests(Base):
     def test_brief_has_changes_stuck_and_needs_owner(self):
-        from claudebot import db
+        from atobots import db
         db.set_zone("UTC")
         self.addCleanup(db.set_zone, "UTC")
         a = self.item("Approve the logo", owner_waiting=True)
@@ -197,9 +197,9 @@ class MemoryMaxTests(Base):
                 pass
 
         cmd = [self.cfg.claude_bin, "--model", "sonnet"]
-        with mock.patch("claudebot.chat.shutil.which",
+        with mock.patch("atobots.chat.shutil.which",
                         return_value="/usr/bin/systemd-run"), \
-             mock.patch("claudebot.chat.subprocess.Popen", FakePopen), \
+             mock.patch("atobots.chat.subprocess.Popen", FakePopen), \
              mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": "/run/user/1"},
                              clear=False), \
              mock.patch("pathlib.Path.is_dir", return_value=True):
@@ -232,7 +232,7 @@ class LockTests(Base):
 
     def test_lock_is_released_on_a_crash(self):
         code = ("import sys, os; sys.path.insert(0, %r);"
-                "from claudebot import chat; from claudebot.config import Config;"
+                "from atobots import chat; from atobots.config import Config;"
                 "l = chat.acquire_lock(Config(%r)); print('held', flush=True);"
                 "os.kill(os.getpid(), 9)" % (str(ENGINE), str(self.cfg.home)))
         p = subprocess.Popen([sys.executable, "-c", code],
@@ -394,7 +394,7 @@ class RolloverCommandTests(Base):
 
     def test_cli_chat_requires_a_terminal(self):
         err = io.StringIO()
-        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.cfg.home)}), \
+        with mock.patch.dict(os.environ, {"ATOBOTS_HOME": str(self.cfg.home)}), \
                 redirect_stderr(err):
             rc = cli.main(["chat"])
         self.assertEqual(rc, 1)
@@ -404,8 +404,8 @@ class RolloverCommandTests(Base):
         lock = chat.acquire_lock(self.cfg)
         self.addCleanup(lock.close)
         err = io.StringIO()
-        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.cfg.home)}), \
-                mock.patch("claudebot.chat._have_terminal", return_value=True), \
+        with mock.patch.dict(os.environ, {"ATOBOTS_HOME": str(self.cfg.home)}), \
+                mock.patch("atobots.chat._have_terminal", return_value=True), \
                 redirect_stderr(err):
             rc = cli.main(["chat"])
         self.assertEqual(rc, 1)
@@ -420,7 +420,7 @@ class RolloverCommandTests(Base):
         f.write_text("the summary")
         err = io.StringIO()
         with mock.patch.dict(os.environ, {
-                "CLAUDEBOT_HOME": str(self.cfg.home),
+                "ATOBOTS_HOME": str(self.cfg.home),
                 "CB_BOT": "admin", "CB_SESSION_ID": "norm-1"}), \
                 redirect_stderr(err):
             rc = cli.main(["chat-rollover", "--summary-file", str(f)])
@@ -434,7 +434,7 @@ class RolloverCommandTests(Base):
         self.addCleanup(lock.close)
         chat.pid_path(self.cfg).write_text("99999999")
         with mock.patch.dict(os.environ, {
-                "CLAUDEBOT_HOME": str(self.cfg.home),
+                "ATOBOTS_HOME": str(self.cfg.home),
                 "CB_BOT": "backend", "CB_SESSION_ID": "live-1"}):
             rc = cli.main(["chat-rollover", "--summary-file", str(f)])
         self.assertEqual(rc, 0)
@@ -447,7 +447,7 @@ class RolloverCommandTests(Base):
         f = self.root / "s.md"
         f.write_text("")
         err = io.StringIO()
-        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.cfg.home)}), \
+        with mock.patch.dict(os.environ, {"ATOBOTS_HOME": str(self.cfg.home)}), \
                 redirect_stderr(err):
             self.assertEqual(
                 cli.main(["chat-rollover", "--summary-file", str(f)]), 1)

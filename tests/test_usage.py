@@ -11,9 +11,9 @@ from unittest import mock
 ENGINE = Path(__file__).resolve().parent.parent / "engine"
 sys.path.insert(0, str(ENGINE))
 
-from claudebot import activity, bots, runner, usage  # noqa: E402
-from claudebot.config import Config  # noqa: E402
-from claudebot.db import connect, init_db  # noqa: E402
+from atobots import activity, bots, runner, usage  # noqa: E402
+from atobots.config import Config  # noqa: E402
+from atobots.db import connect, init_db  # noqa: E402
 
 from test_runner import RunnerBase  # noqa: E402
 

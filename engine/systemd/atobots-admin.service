@@ -1,10 +1,12 @@
 [Unit]
-Description=ClaudeBot always-on Admin (Telegram), in tmux session admin-live
+Description=AtoBots always-on Admin (Telegram), in tmux session admin-live
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 User=@USER@
+Environment=ATOBOTS_HOME=@HOME@
+# The name before 0.1.0, for company scripts that still use it.
 Environment=CLAUDEBOT_HOME=@HOME@
 # Cap the always-on Admin tree. The value comes from run_memory_max.
 # Interactive claude is also wrapped with systemd-run --pty MemoryMax

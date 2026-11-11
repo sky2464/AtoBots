@@ -191,6 +191,10 @@ def _write_timezone(cfg: Config, zone: str) -> None:
 def _cmd_init(args) -> int:
     try:
         cfg = Config.load()
+        refusal = update.refuse_old_updater(cfg.home)
+        if refusal:
+            print(f"error: {refusal}", file=sys.stderr)
+            return 1
         if args.timezone:
             cfg.home.mkdir(parents=True, exist_ok=True)
             _write_timezone(cfg, args.timezone)
@@ -278,7 +282,7 @@ def build_parser() -> argparse.ArgumentParser:
     ip.add_argument("--company", required=True)
     ip.add_argument("--timezone", help="write timezone into config.json")
     ip.set_defaults(func=_cmd_init)
-    vp = sub.add_parser("version", help="print the ClaudeBot version")
+    vp = sub.add_parser("version", help="print the AtoBots version")
     vp.add_argument("--schema", action="store_true",
                     help="print the engine schema version and, when a company "
                          "home is configured, the database's")

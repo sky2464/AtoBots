@@ -11,10 +11,10 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "engine"))
 
-from claudebot import activity  # noqa: E402
-from claudebot.config import Config  # noqa: E402
-from claudebot import cli  # noqa: E402
-from claudebot.db import (SCHEMA_VERSION, _migrate, connect, ct_display,  # noqa: E402
+from atobots import activity  # noqa: E402
+from atobots.config import Config  # noqa: E402
+from atobots import cli  # noqa: E402
+from atobots.db import (SCHEMA_VERSION, _migrate, connect, ct_display,  # noqa: E402
                           init_db, tx)
 
 TABLES = {"bots", "items", "messages", "owner_requests", "request_items",
@@ -189,7 +189,7 @@ class SchemaVersionTests(unittest.TestCase):
         init_db(self.cfg)
         connect(self.cfg).close()
         buf = io.StringIO()
-        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.cfg.home)}), \
+        with mock.patch.dict(os.environ, {"ATOBOTS_HOME": str(self.cfg.home)}), \
                 redirect_stdout(buf):
             self.assertEqual(cli.main(["version", "--schema"]), 0)
         self.assertEqual(buf.getvalue().split(), [str(SCHEMA_VERSION), str(SCHEMA_VERSION)])
