@@ -1,11 +1,11 @@
-# ClaudeBot engine: cost control and thinker/worker tiers
+# AtoBots engine: cost control and thinker/worker tiers
 
 Date: 2026-11-09. Scope: the engine in `engine/` only. Which company bots exist,
 what they do, and their personas are out of scope.
 
 ## Why
 
-The Owner runs ClaudeBot on a Claude subscription and is burning the usage
+The Owner runs AtoBots on a Claude subscription and is burning the usage
 limit far too fast. Findings so far (read-only, from the VPS and the code):
 
 - The only transcripts with real usage are the two Admin sessions. One ran

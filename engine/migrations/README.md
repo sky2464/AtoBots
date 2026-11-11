@@ -7,7 +7,7 @@ are installed.
 
 ## Naming and order
 
-`<version>-<short-name>.sh`, for example `0.1.0-rename.sh`. During an update
+`<version>-<short-name>.sh`, for example `0.1.0-example.sh`. During an update
 from OLD to NEW, every script with `OLD < version <= NEW` runs, in version
 order. A `+local.<hash>` suffix on a version is ignored when ordering. Each
 script that succeeds is recorded in the company database

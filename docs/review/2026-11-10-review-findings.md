@@ -1,4 +1,4 @@
-# ClaudeBot review findings — 2026-11-10
+# AtoBots review findings — 2026-11-10
 
 Scope: local checkout and the hosted GitHub repository, at `main` = `559d0b4`
 (34 commits after tag `v0.0.1`). Read-only review: nothing here is fixed yet.
@@ -212,7 +212,7 @@ templates and help text say "Central Time" whatever `timezone` is set to
 
 ### L12 — Low — Settings that ignore `config.json`
 `claude_projects_dir` uses the caller's home, not `run_home` (`config.py:88`);
-the Admin unit has `MemoryMax=1200M` fixed (`claudebot-admin.service:12`);
+the Admin unit has `MemoryMax=1200M` fixed (`atobots-admin.service:12`);
 `ADMIN_MODEL` ignores `default_model` (`cli.py:21`); the secret name
 `telegram-bot` is fixed in `install.sh:132`.
 

@@ -65,23 +65,23 @@ happens without a written plan the Owner approved in their own words.
 
 ## Task E1 — An update that cannot kill its caller
 
-Files: `engine/update.sh`, new `engine/claudebot/update.py`, `cli.py`.
+Files: `engine/update.sh`, new `engine/atobots/update.py`, `cli.py`.
 Tests: `tests/test_update.py` (new), text checks in `tests/test_templates.py`.
 
-Problem: `update.sh` stops the dispatcher and restarts `claudebot-admin`.
+Problem: `update.sh` stops the dispatcher and restarts `atobots-admin`.
 When Admin runs it from inside its own service, the restart kills the script
 before it finishes, and a plain `systemctl stop` leaves nothing running.
 
 1. New command `cb update TAG [--force]`. It starts the script as its own
    transient unit and returns at once:
-   `sudo systemd-run --unit=claudebot-update --collect --no-block
-   --setenv=CLAUDEBOT_HOME=... <engine>/update.sh TAG`.
+   `sudo systemd-run --unit=atobots-update --collect --no-block
+   --setenv=ATOBOTS_HOME=... <engine>/update.sh TAG`.
    Output goes to `<home>/logs/update-<UTC time>.log` (a new folder, mode
    700, kept out of the Git backup). The command prints the
    log path and "the update runs on its own; Admin will restart at the end".
-2. `cb update` refuses when a `claudebot-update` unit is already active.
+2. `cb update` refuses when a `atobots-update` unit is already active.
 3. `update.sh` refuses to run inside the Admin service. It reads
-   `/proc/self/cgroup`; if the line names `claudebot-admin.service` it exits 1
+   `/proc/self/cgroup`; if the line names `atobots-admin.service` it exits 1
    with "run `cb update TAG` instead". A person at the server (SSH shell, not
    in that cgroup) may still run the script directly.
 4. `on_error` starts the services again when the update failed before the
@@ -96,7 +96,7 @@ Admin come back by itself and the log file complete.
 
 ## Task E2 — Prove the change worked before saying so
 
-Files: `engine/update.sh`, `engine/claudebot/admin_live.py`. Tests:
+Files: `engine/update.sh`, `engine/atobots/admin_live.py`. Tests:
 `tests/test_admin_live.py`, `tests/test_templates.py`.
 
 1. Before restarting Admin, `update.sh` writes `update-pending.json` in
@@ -104,7 +104,7 @@ Files: `engine/update.sh`, `engine/claudebot/admin_live.py`. Tests:
    the old version, new version and time.
 2. `cb admin run`, once the new claude session is up and the marker exists,
    sends a direct Telegram message (`notify_telegram`, no model call):
-   "ClaudeBot updated OLD to NEW. Admin is back." Then it removes the marker.
+   "AtoBots updated OLD to NEW. Admin is back." Then it removes the marker.
 3. `update.sh` waits up to 180 seconds for both: `systemctl is-active` true
    for the dispatcher and (if enabled) Admin, and the marker gone. It then
    prints one line, PASS or FAIL, per check.
@@ -120,7 +120,7 @@ wants a real model reply as proof, that is a small addition; see Decisions.
 
 ## Task E3 — A written, approved plan for every system change
 
-Files: new `engine/claudebot/changes.py`, `db.py` (table `changes`, schema
+Files: new `engine/atobots/changes.py`, `db.py` (table `changes`, schema
 version +1), `activity.py` (`cb log sudo`). Tests: `tests/test_changes.py`.
 
 1. `cb change plan "TITLE" --steps-file FILE --touches PATH_OR_UNIT...`
@@ -143,7 +143,7 @@ version +1), `activity.py` (`cb log sudo`). Tests: `tests/test_changes.py`.
 
 ## Task E4 — Alerts, not repairs
 
-Files: `engine/claudebot/doctor.py`, `engine/templates/rules.md`,
+Files: `engine/atobots/doctor.py`, `engine/templates/rules.md`,
 `engine/templates/backend/SOUL.md`, `backend/PERSONA.md`,
 `admin/PERSONA.md`, `skills/cb-basics/SKILL.md`. Tests:
 `tests/test_doctor.py`, `tests/test_templates.py`.
@@ -174,7 +174,7 @@ Files: `engine/claudebot/doctor.py`, `engine/templates/rules.md`,
 
 ## Task E5 — Find and prevent the `python: not found` hook
 
-Files: `engine/claudebot/doctor.py`, `tests/test_doctor.py`,
+Files: `engine/atobots/doctor.py`, `tests/test_doctor.py`,
 `tests/test_templates.py`.
 
 The engine has no bare `python` call, so the broken hook was added on the
@@ -212,7 +212,7 @@ worse than today's manual step.
 
 ## Task F1 — A send that is plainly sent or not sent
 
-Files: `engine/claudebot/messages.py`, `cli.py`,
+Files: `engine/atobots/messages.py`, `cli.py`,
 `skills/cb-basics/SKILL.md`. Tests: `tests/test_messages.py`.
 
 1. On success `cb send`, `cb ask` and `cb reply` keep printing the message id
@@ -225,7 +225,7 @@ Files: `engine/claudebot/messages.py`, `cli.py`,
 
 ## Task F2 — A reply to Admin reaches the Owner
 
-Files: `engine/claudebot/dispatcher.py`, `admin_live.py` (`LIVE_PROMPT`,
+Files: `engine/atobots/dispatcher.py`, `admin_live.py` (`LIVE_PROMPT`,
 `surface`), `config.py`. Tests: `tests/test_dispatcher.py`,
 `tests/test_admin_live.py`.
 
@@ -247,7 +247,7 @@ Files: `engine/claudebot/dispatcher.py`, `admin_live.py` (`LIVE_PROMPT`,
 
 ## Task F3 — Requests link themselves when the link is certain
 
-Files: `engine/claudebot/items.py`, `requests.py`, `search.py`,
+Files: `engine/atobots/items.py`, `requests.py`, `search.py`,
 `skills/work-tracking/SKILL.md`. Tests: `tests/test_items.py`,
 `tests/test_requests.py`.
 
@@ -267,7 +267,7 @@ Files: `engine/claudebot/items.py`, `requests.py`, `search.py`,
 
 ## Task F4 — A daily "what changed" message
 
-Files: new `engine/claudebot/digest.py`, `dispatcher.py`, `config.py`,
+Files: new `engine/atobots/digest.py`, `dispatcher.py`, `config.py`,
 `cli.py`. Tests: `tests/test_digest.py`.
 
 1. `cb digest` prints what changed since the last digest, built from the
@@ -286,7 +286,7 @@ Files: new `engine/claudebot/digest.py`, `dispatcher.py`, `config.py`,
 
 ## Task G1 — Voice messages become text
 
-Files: new `engine/claudebot/transcribe.py`, `config.py`, `doctor.py`,
+Files: new `engine/atobots/transcribe.py`, `config.py`, `doctor.py`,
 `admin_live.py` (`LIVE_PROMPT`). Tests: `tests/test_transcribe.py`.
 
 1. `cb transcribe FILE` runs the command in config `transcribe_cmd` with the
@@ -307,7 +307,7 @@ plugin change first and moves out of 0.0.5.
 
 ## Task G2 — Encrypted backup for files
 
-Files: `engine/claudebot/backup.py`, `config.py`. Tests:
+Files: `engine/atobots/backup.py`, `config.py`. Tests:
 `tests/test_backup.py`.
 
 1. `cb backup files add PATH` and `cb backup files list` keep a list of
@@ -330,7 +330,7 @@ gpg is used because it is already on the server, so nothing is installed.
 
 ## Task G3 — A rollover that keeps the thread
 
-Files: `engine/claudebot/rotation.py`, `chat.py`, `admin_live.py`. Tests:
+Files: `engine/atobots/rotation.py`, `chat.py`, `admin_live.py`. Tests:
 `tests/test_rotation.py`.
 
 1. When a session passes the rollover size and is safe to restart, the

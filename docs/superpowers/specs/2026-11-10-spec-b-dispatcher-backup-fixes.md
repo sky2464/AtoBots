@@ -20,7 +20,7 @@ it, and clean up the wake logic around them.
 
 ## Task B1 — A message with no progress uses an attempt (L1)
 
-File: `engine/claudebot/dispatcher.py`. Tests: `tests/test_dispatcher.py`.
+File: `engine/atobots/dispatcher.py`. Tests: `tests/test_dispatcher.py`.
 
 Now: `finish()` calls `self._release(conn, pending, now, usage_limit=True)`
 for messages left without progress after an `ok` run. That flag gives the
@@ -44,7 +44,7 @@ Done when: a new test runs the same question through
 
 ## Task B2 — The dump scan must not block backups on a mention (L2)
 
-File: `engine/claudebot/backup.py`. Tests: `tests/test_backup.py`.
+File: `engine/atobots/backup.py`. Tests: `tests/test_backup.py`.
 
 Now: `_DUMP_SECRET_PATTERNS` matches bare prefixes such as `sk-ant-` and
 `ghp_`, and a hit raises `BackupError`, so one mention in any row stops every
@@ -79,7 +79,7 @@ not a hit, (b) a row with a full-shape fake token is written to the dump as
 
 ## Task B3 — Do not treat waiting items as stalled (L7)
 
-File: `engine/claudebot/dispatcher.py`. Tests: `tests/test_dispatcher.py`.
+File: `engine/atobots/dispatcher.py`. Tests: `tests/test_dispatcher.py`.
 
 In `_stall_doing`, add to the SQL filter:
 `AND (waiting_on IS NULL OR waiting_on='') AND COALESCE(owner_waiting,0)=0`.
@@ -89,7 +89,7 @@ the lease, stays `doing` and records no `item.stall_revert`.
 
 ## Task B4 — Wake-cap bypass and alert (L6, L14)
 
-File: `engine/claudebot/dispatcher.py`. Tests: `tests/test_dispatcher.py`.
+File: `engine/atobots/dispatcher.py`. Tests: `tests/test_dispatcher.py`.
 
 1. `_owner_bypasses_cap`: remove the `from_bot == "owner"` test. The rule is
    now only "Admin's urgent messages bypass the cap". Update the module
@@ -105,7 +105,7 @@ row appears once per hour, and the doctor finding appears at the third hour.
 
 ## Task B5 — Keep the top of Soul and rules when over the cap (L5)
 
-File: `engine/claudebot/bots.py`, `engine/claudebot/config.py`. Tests:
+File: `engine/atobots/bots.py`, `engine/atobots/config.py`. Tests:
 `tests/test_bots.py`, `tests/test_config.py`.
 
 1. `_read_capped(path, cap, keep="tail")`; `identity_prompt` passes
@@ -118,7 +118,7 @@ File: `engine/claudebot/bots.py`, `engine/claudebot/config.py`. Tests:
 
 ## Task B6 — Indexes for the tick queries (L10)
 
-File: `engine/claudebot/db.py`. Tests: `tests/test_db.py`.
+File: `engine/atobots/db.py`. Tests: `tests/test_db.py`.
 
 Add to `SCHEMA` and to `_migrate` (all `CREATE INDEX IF NOT EXISTS`):
 

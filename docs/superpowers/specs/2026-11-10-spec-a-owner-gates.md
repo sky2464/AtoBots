@@ -36,7 +36,7 @@ bypasses that need only one ordinary `cb` command.
 
 ## Task A1 — One function that says who is calling
 
-File: `engine/claudebot/activity.py`. Tests: `tests/test_items.py` (new class
+File: `engine/atobots/activity.py`. Tests: `tests/test_items.py` (new class
 `CallerTests`).
 
 Add:
@@ -105,7 +105,7 @@ bot caller in a `normal` lane run is refused.
 
 ## Task A3 — The prompt hook only accepts live sessions
 
-File: `engine/claudebot/requests.py`. Tests: `tests/test_requests.py`.
+File: `engine/atobots/requests.py`. Tests: `tests/test_requests.py`.
 
 In `_cmd_hook_prompt`, after parsing the JSON:
 
@@ -122,7 +122,7 @@ session id of a `normal` lane run, store nothing.
 
 ## Task A4 — Stop typing bot text into the Owner's terminal
 
-Files: `engine/claudebot/dispatcher.py`, `engine/claudebot/admin_live.py`,
+Files: `engine/atobots/dispatcher.py`, `engine/atobots/admin_live.py`,
 `engine/templates/admin/PERSONA.md`. Tests: `tests/test_dispatcher.py`,
 `tests/test_admin_live.py`.
 
@@ -138,7 +138,7 @@ word "Owner", and asserts the surfaced text is the fixed sentence.
 
 ## Task A5 — Secret masking note and store wording
 
-Files: `engine/claudebot/store.py` (docstring only), `README.md`,
+Files: `engine/atobots/store.py` (docstring only), `README.md`,
 `engine/templates/rules.md`.
 
 No behaviour change. State plainly, in all three places: masking hides the

@@ -20,7 +20,6 @@ ignored, so the contract can grow):
   CB_UPD_LABEL        where the new code came from: tag:v0.0.3, local:<sha>
   CB_UPD_OLD_PREFIX   unit-name prefix of the old version
   CB_UPD_STOPPED_AT   when the dispatcher was stopped (epoch seconds)
-  CB_UPD_LEGACY       1 when an updater from before 0.0.3 handed over
   CB_UPDATE_LOG       the job's log file
 
 Every module this file needs is imported at the top on purpose: a rollback
@@ -72,7 +71,6 @@ class State:
     label: str = ""
     old_prefix: str = ""
     stopped_at: float | None = None
-    legacy: bool = False
     log: str = ""
 
     @classmethod
@@ -95,7 +93,6 @@ class State:
                    label=env.get("CB_UPD_LABEL") or "",
                    old_prefix=env.get("CB_UPD_OLD_PREFIX") or "",
                    stopped_at=stopped,
-                   legacy=env.get("CB_UPD_LEGACY") == "1",
                    log=env.get("CB_UPDATE_LOG") or "")
 
 
@@ -165,7 +162,7 @@ class Finisher:
         # for the home variable; everything started from here gets all.
         self.env.update(names.home_env(cfg.home))
         self.new_prefix = names.UNIT_PREFIX
-        self.old_prefix = st.old_prefix or self._guess_prefix()
+        self.old_prefix = st.old_prefix or names.UNIT_PREFIX
         self.new_version = full_version()
         self.started = clock()
         self.token = None
@@ -181,13 +178,6 @@ class Finisher:
 
     def say(self, text: str) -> None:
         self._out(text)
-
-    def _guess_prefix(self) -> str:
-        for prefix in names.KNOWN_PREFIXES:
-            if (self.sys.unit_dir / names.unit("dispatcher.service",
-                                               prefix)).exists():
-                return prefix
-        return names.UNIT_PREFIX
 
     def old(self, role: str) -> str:
         return names.unit(role, self.old_prefix)
@@ -316,10 +306,6 @@ class Finisher:
         self.say(f'Applying the update to company "{company}" ...')
         self.must("init", "--company", company)
         self._fetch_token()
-        if self.st.legacy:
-            self.notify(update.start_notice(
-                self.cfg, self.st.old_version or "the old version",
-                self.new_version))
         self.run_migrations()
         self.say("Refreshing engine-owned templates and skill links ...")
         self.must("templates", "refresh")

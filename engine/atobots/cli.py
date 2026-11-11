@@ -191,10 +191,6 @@ def _write_timezone(cfg: Config, zone: str) -> None:
 def _cmd_init(args) -> int:
     try:
         cfg = Config.load()
-        refusal = update.refuse_old_updater(cfg.home)
-        if refusal:
-            print(f"error: {refusal}", file=sys.stderr)
-            return 1
         if args.timezone:
             cfg.home.mkdir(parents=True, exist_ok=True)
             _write_timezone(cfg, args.timezone)

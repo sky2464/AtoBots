@@ -5,8 +5,6 @@ After=network.target
 [Service]
 User=@USER@
 Environment=ATOBOTS_HOME=@HOME@
-# The name before 0.1.0, for company scripts that still use it.
-Environment=CLAUDEBOT_HOME=@HOME@
 ExecStart=@ENGINE@/bin/cb dispatcher run
 Restart=always
 RestartSec=5
