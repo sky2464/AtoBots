@@ -3,7 +3,7 @@
 Each release has a section here. "Manual steps after updating" lists anything
 `engine/update.sh` does not do for you. How to update: [UPDATING.md](UPDATING.md).
 
-## Unreleased
+## 0.2.2 - 2026-11-11
 
 Updating an old install works again, in one command.
 
@@ -18,6 +18,25 @@ Updating an old install works again, in one command.
   directly. `cb update --check` says "go through v0.1.0 first" for an install
   below it, and an update that is started anyway stops before changing
   anything and rolls back with the same message.
+
+### Fixed
+- When more than a few bots wrote to Admin at once, the notice for the live
+  Admin session grew past its length limit and was never shown. It now names
+  up to three senders and says how many more, and shows any sender that is
+  not a plain bot name as "another sender".
+- If `cb doctor` itself failed, the daily digest left out the health section
+  without a word. It now says the check failed and sends the digest even on
+  an otherwise quiet day.
+- A failed session-length check for the always-on Admin is now written to
+  its log instead of being dropped.
+
+### Releasing
+- The `Release` workflow refuses a newly pushed tag that is not signed
+  (`git tag -s`). Servers with `atobots.releaseKey` set already refuse
+  unsigned tags, so an unsigned release could not have reached them.
+
+### Docs
+- README: what it costs to run, and how to uninstall.
 
 ### Manual steps after updating
 - None.

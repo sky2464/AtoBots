@@ -7,8 +7,10 @@ The `Release` workflow creates the GitHub Release when a version tag is pushed.
    add a `## X.Y.Z - date` section to `CHANGELOG.md` (what changed, and any
    manual steps after updating). The section becomes the Release notes, and
    the workflow refuses to run without one. Merge it once CI is green.
-2. Tag the merge commit on `main` and push the tag. Maintainers sign it
-   (`git tag -s`, see [UPDATING.md](UPDATING.md)):
+2. Tag the merge commit on `main` and push the tag. The tag must be signed
+   (`git tag -s`, GPG or SSH); the workflow refuses an unsigned one. Servers
+   check the signature once `atobots.releaseKey` is set (see
+   [UPDATING.md](../UPDATING.md), "Verifying releases"):
 
    ```bash
    git switch main && git pull --ff-only

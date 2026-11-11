@@ -104,6 +104,16 @@ class DigestTests(unittest.TestCase):
         self.assertIn("Usage", text)
         self.assertIn("call(s)", text)
 
+    def test_digest_reports_a_failed_health_check(self):
+        from unittest import mock
+        from atobots import doctor
+        with mock.patch.object(doctor, "checks", side_effect=RuntimeError("boom")):
+            text, _ = digest.build_digest(
+                self.cfg, self.conn, since=(T0 - timedelta(days=1)).isoformat(timespec="seconds"),
+                now=T0.isoformat(timespec="seconds"))
+        self.assertIn("health check itself failed", text)
+        self.assertIn("boom", text)
+
     def test_digest_max_length_cut(self):
         long_text = "x" * 4000
         cut = digest.format_for_telegram(long_text)

@@ -28,6 +28,7 @@ jobs:
       - name: Check the tag
         env:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
           if ! [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -41,6 +42,15 @@ jobs:
           fi
           if ! git merge-base --is-ancestor "$commit" HEAD; then
               echo "error: $TAG is not on the default branch" >&2
+              exit 1
+          fi
+          # New tags must be signed: servers that set a release key refuse
+          # unsigned ones. A manual run may publish an older unsigned tag.
+          tag_obj=$(git cat-file -p "refs/tags/$TAG")
+          if [ "$EVENT" = "push" ] && ! grep -Eq -- \
+                  '^-----BEGIN (PGP|SSH) SIGNATURE-----$' <<<"$tag_obj"; then
+              echo "error: $TAG is not a signed tag. Delete it and tag again with" \
+                   "git tag -s (see docs/releasing.md)" >&2
               exit 1
           fi
           echo "TAG=$TAG" >> "$GITHUB_ENV"
