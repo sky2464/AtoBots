@@ -161,6 +161,9 @@ class Finisher:
         self._notify = notify
         self._out = out or (lambda s: print(s, flush=True))
         self.env = dict(os.environ if env is None else env)
+        # The first half may be a version that knows only an earlier name
+        # for the home variable; everything started from here gets all.
+        self.env.update(names.home_env(cfg.home))
         self.new_prefix = names.UNIT_PREFIX
         self.old_prefix = st.old_prefix or self._guess_prefix()
         self.new_version = full_version()

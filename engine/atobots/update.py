@@ -14,7 +14,6 @@ import argparse
 import hashlib
 import json
 import os
-import posixpath
 import re
 import shutil
 import sqlite3
@@ -275,13 +274,10 @@ def validate_zip(path) -> None:
             if ".." in parts:
                 raise UpdateError(f"the zip has a '..' path: {name!r}")
             if stat.S_ISLNK(info.external_attr >> 16):
-                target = zf.read(info).decode("utf-8", "replace")
-                joined = posixpath.normpath(
-                    posixpath.join(posixpath.dirname(name), target))
-                if (target.startswith("/") or joined == ".."
-                        or joined.startswith("../")):
-                    raise UpdateError(
-                        f"the zip has a link that points outside: {name!r}")
+                # Every link is refused, not only ones that point outside:
+                # two links that each look harmless can lead out together,
+                # and an engine tree has none.
+                raise UpdateError(f"the zip has a link: {name!r}")
             names_seen.add(name.rstrip("/"))
         if _zip_prefix(names_seen) is None:
             raise UpdateError("the zip is not an engine build: it has no "
@@ -315,9 +311,6 @@ def extract_zip(path, dest) -> Path:
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
             mode = info.external_attr >> 16
-            if stat.S_ISLNK(mode):
-                os.symlink(zf.read(info).decode("utf-8", "replace"), target)
-                continue
             with zf.open(info) as src, open(target, "wb") as out:
                 shutil.copyfileobj(src, out)
             target.chmod(0o755 if mode & 0o111 else 0o644)
@@ -352,6 +345,22 @@ def validate_tree(root) -> None:
                     raise UpdateError(
                         f"{p} is a link that points outside the build"
                     ) from None
+
+
+def clean_tree(root) -> None:
+    """Drop caches a build may carry. They would be committed with it, change
+    at the first run, and make the clone look edited at the next update."""
+    for base, dirs, files in os.walk(root):
+        for name in list(dirs):
+            if name in ("__pycache__", ".git"):
+                shutil.rmtree(Path(base) / name, ignore_errors=True)
+                dirs.remove(name)
+        for name in files:
+            if name.endswith(".pyc") or name in SKIP_FILES:
+                try:
+                    os.unlink(Path(base) / name)
+                except OSError:
+                    pass
 
 
 def fix_modes(root) -> None:
@@ -427,6 +436,7 @@ class Unpacked:
                     ignore=shutil.ignore_patterns(*SKIP_DIRS, "*.pyc"))
                 self.sha = source_sha(src, self.root)
             validate_tree(self.root)
+            clean_tree(self.root)
             fix_modes(self.root)
             self.name = _SAFE_NAME.sub("_", src.name)[:60] or "build"
         except BaseException:
@@ -465,8 +475,10 @@ def import_local(repo, root, sha: str, name: str) -> str:
                GIT_COMMITTER_NAME="local build",
                GIT_COMMITTER_EMAIL="local-build@localhost")
     try:
-        git(repo, "add", "-A", env=env, cwd=root)
-        git(repo, "add", "-f", LOCAL_MARKER, env=env, cwd=root)
+        # -f: the server's own ignore lists (a global gitignore, the clone's
+        # info/exclude) must not silently drop a file of the build.
+        git(repo, "add", "-A", "-f", env=env, cwd=root)
+        _ignore_caches(Path(git_dir))
         tree = git(repo, "write-tree", env=env, cwd=root)
         ref = f"refs/heads/{LOCAL_BRANCH}"
         tip = git(repo, "rev-parse", "-q", "--verify", ref, check=False)
@@ -486,6 +498,19 @@ def import_local(repo, root, sha: str, name: str) -> str:
             os.unlink(index)
         except OSError:
             pass
+
+
+def _ignore_caches(git_dir: Path) -> None:
+    """A build made without the repository's .gitignore would otherwise show
+    Python's caches as local edits and block the next update."""
+    path = git_dir / "info" / "exclude"
+    try:
+        text = path.read_text() if path.exists() else ""
+        if "__pycache__/" not in text:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text.rstrip("\n") + "\n__pycache__/\n*.pyc\n")
+    except OSError:
+        pass
 
 
 # ---- what is running ----

@@ -39,6 +39,14 @@ about what the engine does changed in this release.
   `cb doctor` reports `old-name` when the old name is the only thing in use,
   and when old service files are still installed next to the new ones.
 
+### Fixed
+- A zip with links inside is refused outright. Before, a link that stayed
+  inside the build was allowed, and two such links could lead out together.
+- Installing a local build no longer loses files that the server's own Git
+  ignore lists match, and no longer commits Python cache files.
+- Admin's folder-trust question is recognised by its own wording only; the
+  words "do you trust" in an ordinary conversation no longer count.
+
 ### Also new
 - [SECURITY.md](SECURITY.md): what the engine does and does not protect, in
   plain words, and how to report a problem.

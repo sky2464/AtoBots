@@ -280,7 +280,7 @@ cb update --zip build.zip --change C-0007
 
 - The zip is unpacked by the installed version, in a temporary folder under
   the company home. It is refused if it holds an absolute path, a `..` path,
-  a link that points outside, or no `engine/update.sh`.
+  a link of any kind, or no `engine/update.sh`.
 - It is committed to a `local-builds` branch of the clone and installed like
   a tag, with the same backup and rollback.
 - `cb version` then prints `<version>+local.<hash>`, so a local build is

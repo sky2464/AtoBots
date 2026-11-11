@@ -300,6 +300,8 @@ class RealUpdateAcrossTheRenameTests(unittest.TestCase):
         self.assertIn(f"export {OLD_VAR}={self.home}", text)   # kept
         self.assertIn(f"export ATOBOTS_HOME={self.home}", text)
         self.assertIn(f"{names.PRODUCT} updated: 0.0.3 ->", out)
+        # the job's own doctor run does not complain about the old name
+        self.assertNotIn("found through the old name", out)
         calls = self.fake.calls()
         self.assertLess(calls.index(f"stop {OLD}-dispatcher.service"),
                         calls.index(f"start {names.unit('dispatcher.service')}"))

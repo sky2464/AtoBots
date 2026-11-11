@@ -53,8 +53,7 @@ STOP_WAIT = 30              # how long `cb admin run` waits for the session
 # Claude Code's folder-trust question, as it appears on the screen. While it
 # is up nobody can reach Admin by Telegram, and it is answered at the
 # terminal only.
-TRUST_HINTS = ("trust this folder", "trust the files in this folder",
-               "do you trust")
+TRUST_HINTS = ("trust this folder", "trust the files in this folder")
 TRUST_NOTICE_FILE = "trust-notice"
 TRUST_NOTICE_EVERY = 3600   # s between two notices about the same question
 TRUST_FIX = ("On the server run: tmux attach -t admin-live, then choose "

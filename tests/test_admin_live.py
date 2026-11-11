@@ -166,6 +166,9 @@ class SurfaceTests(Base):
                   " 1. Yes, I trust this folder\n 2. No, exit\n")
         self.assertTrue(admin_live.waiting_on_trust(screen))
         self.assertFalse(admin_live.waiting_on_trust("> ready for input"))
+        # words from an ordinary conversation are not the question
+        self.assertFalse(admin_live.waiting_on_trust(
+            "Owner: do you trust this vendor?"))
         self.assertFalse(admin_live.waiting_on_trust(""))
         posted, cmds = [], []
         (self.tg / "access.json").write_text(json.dumps({"allowFrom": [42]}))

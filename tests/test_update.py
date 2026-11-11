@@ -109,11 +109,13 @@ class ZipTests(Base):
     def test_refuses_dot_dot(self):
         self.refuse(dict(GOOD, **{"engine/../../x": "x"}), needle="'..'")
 
-    def test_refuses_a_link_that_points_outside(self):
-        self.refuse(GOOD, {"engine/out": "../../etc/passwd"},
-                    needle="points outside")
-        self.refuse(GOOD, {"engine/abs": "/etc/passwd"},
-                    needle="points outside")
+    def test_refuses_every_link(self):
+        """Two links that each stay inside can lead out together, so a zip
+        may hold none."""
+        self.refuse(GOOD, {"engine/out": "../../etc/passwd"}, needle="link")
+        self.refuse(GOOD, {"engine/abs": "/etc/passwd"}, needle="link")
+        self.refuse(GOOD, {"engine/inside": "bin/cb"}, needle="link")
+        self.refuse(GOOD, {"d/l1": "..", "d/l1/l2": ".."}, needle="link")
 
     def test_refuses_a_zip_without_the_updater(self):
         self.refuse({"engine/bin/cb": "x"}, needle="no engine/update.sh")
@@ -126,16 +128,14 @@ class ZipTests(Base):
         with self.assertRaises(update.UpdateError):
             update.validate_zip(bad)
 
-    def test_accepts_a_tree_wrapped_in_one_folder_and_keeps_inside_links(self):
+    def test_accepts_a_tree_wrapped_in_one_folder(self):
         z = make_zip(self.tmp / "ok.zip",
                      {"repo-main/engine/update.sh": "#!/bin/sh\n",
                       "repo-main/engine/bin/cb": "#!/bin/sh\n",
-                      "repo-main/README.md": "hi"},
-                     {"repo-main/engine/link": "bin/cb"})
+                      "repo-main/README.md": "hi"})
         root = update.extract_zip(z, self.tmp / "out")
         self.assertEqual(root.name, "repo-main")
         self.assertTrue(os.access(root / "engine" / "update.sh", os.X_OK))
-        self.assertTrue((root / "engine" / "link").is_symlink())
         update.validate_tree(root)
 
     def test_a_folder_build_may_not_link_outside(self):
@@ -190,6 +190,32 @@ class LocalBuildTests(Base):
             f"+local.{sha[:7]}"))
         # the source folder itself is not modified
         self.assertFalse((src / "engine" / "LOCAL_BUILD").exists())
+
+    def test_import_ignores_the_servers_ignore_lists_and_drops_caches(self):
+        """A global gitignore on the server must not drop a file of the
+        build, and Python caches inside it must not be committed."""
+        src = fakes.copy_engine(self.tmp / "newer")
+        (src / ".gitignore").unlink()
+        (src / "engine" / "bin" / "notes.log").write_text("keep me\n")
+        cache = src / "engine" / "atobots" / "__pycache__"
+        cache.mkdir()
+        (cache / "x.cpython-313.pyc").write_bytes(b"\0")
+        ignore = self.tmp / "global-ignore"
+        ignore.write_text("*.log\nbin\n")
+        fakes.git(self.repo, "config", "core.excludesFile", str(ignore))
+        z = zip_tree(src, self.tmp / "b.zip")
+        with zipfile.ZipFile(z, "a") as zf:
+            zf.writestr("engine/atobots/__pycache__/y.pyc", b"\0")
+        with update.Unpacked(self.home, zip_path=z) as build:
+            commit = update.import_local(self.repo, build.root, build.sha,
+                                         build.name)
+        files = fakes.git(self.repo, "ls-tree", "-r", "--name-only", commit)
+        self.assertIn("engine/bin/cb", files)
+        self.assertIn("engine/bin/notes.log", files)
+        self.assertNotIn("__pycache__", files)
+        self.assertNotIn(".pyc", files)
+        exclude = (self.repo / ".git" / "info" / "exclude").read_text()
+        self.assertIn("__pycache__/", exclude)
 
     def test_a_release_tree_never_carries_the_local_marker(self):
         tracked = subprocess.check_output(["git", "ls-files"], cwd=ROOT,
