@@ -412,8 +412,55 @@ class TemplatesTest(unittest.TestCase):
         self.assertIn("claudebot.releaseKey", update)
         self.assertIn('note: release tags are not verified (see UPDATING.md, "Verifying releases")', update)
         self.assertIn("git tag -s", (ROOT / "UPDATING.md").read_text())
-        self.assertIn("cb: do not run as root", install)
+        wrapper_lib = (ROOT / "engine" / "lib" / "cb_wrapper.sh").read_text()
+        self.assertIn("cb: do not run as root", wrapper_lib)
+        self.assertIn("lib/cb_wrapper.sh", install)
+        self.assertNotIn("tee /usr/local/bin/cb", install)
         self.assertNotIn('ln -sfn "$ENGINE_DIR/bin/cb" /usr/local/bin/cb', install)
+
+    def _run_wrapper_install(self, prefix, engine):
+        lib = ROOT / "engine" / "lib" / "cb_wrapper.sh"
+        script = f'source "{lib}"; install_cb_wrapper "{engine}" "{prefix}/cb"'
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                              env={**os.environ, "CB_NO_SUDO": "1"})
+
+    def test_cb_wrapper_install_does_not_write_through_a_symlink(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            engine = root / "engine"
+            (engine / "bin").mkdir(parents=True)
+            real = engine / "bin" / "cb"
+            real.write_text("#!/bin/sh\necho real cb\n")
+            real.chmod(0o755)
+            prefix = root / "usr-local-bin"
+            prefix.mkdir()
+            (prefix / "cb").symlink_to(real)  # the old install's layout
+            before = real.read_text()
+
+            r = self._run_wrapper_install(prefix, engine)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(real.read_text(), before)  # the clone's file is untouched
+            target = prefix / "cb"
+            self.assertFalse(target.is_symlink())
+            self.assertTrue(os.access(target, os.X_OK))
+            text = target.read_text()
+            self.assertIn("cb: do not run as root", text)
+            self.assertIn(f'exec {engine}/bin/cb "$@"', text)
+
+            # A second run is a no-op in effect: same content, still a plain file.
+            r = self._run_wrapper_install(prefix, engine)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(target.read_text(), text)
+            self.assertEqual(real.read_text(), before)
+
+    def test_cb_wrapper_install_works_when_nothing_exists_yet(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            prefix = root / "bin"
+            prefix.mkdir()
+            r = self._run_wrapper_install(prefix, root / "engine")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(os.access(prefix / "cb", os.X_OK))
 
     def test_ci_workflow_is_locked_down(self):
         text = (ROOT / ".github" / "workflows" / "ci.yml").read_text()

@@ -88,12 +88,10 @@ echo "Linked $BIN_DIR/cb"
 # never reads ~/.bashrc.
 # A root-owned wrapper, not a symlink into this clone: if root ever runs cb
 # it must refuse, and it must not execute a file the bots can edit.
-sudo tee /usr/local/bin/cb > /dev/null <<EOF
-#!/bin/sh
-[ "\$(id -u)" -ne 0 ] || { echo "cb: do not run as root" >&2; exit 1; }
-exec $ENGINE_DIR/bin/cb "\$@"
-EOF
-sudo chmod 755 /usr/local/bin/cb
+# It replaces any old file or symlink at that path; it never writes through one.
+# shellcheck source=lib/cb_wrapper.sh
+source "$ENGINE_DIR/lib/cb_wrapper.sh"
+install_cb_wrapper "$ENGINE_DIR"
 echo "CLAUDEBOT_HOME=$HOME_DIR" | sudo tee /etc/claudebot.env > /dev/null
 echo "Installed /usr/local/bin/cb and wrote /etc/claudebot.env"
 # shellcheck source=lib/python_alias.sh
