@@ -159,6 +159,54 @@ class SurfaceTests(Base):
         self.assertEqual({c for _, c, _ in posted}, {42, "99"})
         self.assertTrue(all(t == "T" for t, _, _ in posted))
 
+    def test_nothing_is_typed_into_the_trust_question(self):
+        """A `[system]` line plus Enter would answer Claude Code's
+        folder-trust question for the Owner. They are told once instead."""
+        screen = ("Do you trust the files in this folder?\n"
+                  " 1. Yes, I trust this folder\n 2. No, exit\n")
+        self.assertTrue(admin_live.waiting_on_trust(screen))
+        self.assertFalse(admin_live.waiting_on_trust("> ready for input"))
+        self.assertFalse(admin_live.waiting_on_trust(""))
+        posted, cmds = [], []
+        (self.tg / "access.json").write_text(json.dumps({"allowFrom": [42]}))
+
+        def fake_run(cmd, **kwargs):
+            cmds.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout=screen)
+
+        with mock.patch("claudebot.admin_live.subprocess.run",
+                        side_effect=fake_run), \
+                mock.patch("claudebot.admin_live.has_token",
+                           return_value=True), \
+                mock.patch("claudebot.admin_live.store.use_env",
+                           return_value={admin_live.TOKEN_VAR: "T"}):
+            for _ in range(3):
+                admin_live.surface(self.cfg, "two replies waiting",
+                                   conn=self.conn,
+                                   post=lambda *a: posted.append(a))
+        self.assertFalse(any("send-keys" in c for c in cmds))
+        self.assertEqual(len(posted), 1)            # once, not on every notice
+        self.assertIn("folder-trust", posted[0][2])
+        self.assertIn("tmux attach -t admin-live", posted[0][2])
+
+    def test_update_confirmation_waits_while_the_trust_question_is_up(self):
+        sd = admin_live.state_dir(self.cfg)
+        sd.mkdir(parents=True, exist_ok=True)
+        marker = sd / admin_live.UPDATE_PENDING_FILE
+        marker.write_text(json.dumps({"old_version": "1", "new_version": "2",
+                                      "seen_at": 0}))
+        surfaced = []
+        done = admin_live.check_pending_update(
+            self.cfg, surface_fn=lambda *a, **k: surfaced.append(a),
+            now_fn=lambda: 100, trust_fn=lambda: True)
+        self.assertFalse(done)
+        self.assertEqual(surfaced, [])
+        self.assertTrue(marker.exists())
+        admin_live.check_pending_update(
+            self.cfg, surface_fn=lambda *a, **k: surfaced.append(a),
+            now_fn=lambda: 100, trust_fn=lambda: False)
+        self.assertEqual(len(surfaced), 1)
+
     def test_is_running_tracks_serve_lock(self):
         self.assertFalse(admin_live.is_running(self.cfg))
         sd = admin_live.state_dir(self.cfg)

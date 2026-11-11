@@ -42,7 +42,6 @@ if ! [[ $ENGINE_DIR =~ ^/[A-Za-z0-9._/-]+$ ]]; then
     exit 2
 fi
 UNIT_SRC=$ENGINE_DIR/systemd
-BIN_DIR=$HOME/.local/bin
 BASHRC=$HOME/.bashrc
 
 # Units to install and enable (started only with --start). Each timer needs a
@@ -80,20 +79,15 @@ if [ ! -e "$HOME_DIR/company.db" ]; then
 fi
 CLAUDEBOT_HOME=$HOME_DIR "$ENGINE_DIR/bin/cb" init --company "$COMPANY" "${INIT_TZ[@]}"
 
-# 2. The cb command.
-mkdir -p "$BIN_DIR"
-ln -sfn "$ENGINE_DIR/bin/cb" "$BIN_DIR/cb"
-echo "Linked $BIN_DIR/cb"
-# Also on the default PATH and in an env file, for `ssh host 'cb ...'`, which
-# never reads ~/.bashrc.
-# A root-owned wrapper, not a symlink into this clone: if root ever runs cb
-# it must refuse, and it must not execute a file the bots can edit.
-# It replaces any old file or symlink at that path; it never writes through one.
+# 2. The cb command: a link for this account, and for every other shell
+# (`ssh host 'cb ...'` never reads ~/.bashrc) a root-owned wrapper on the
+# default PATH plus an env file (/etc/claudebot.env). The wrapper is not a
+# symlink into this clone: if root ever runs cb it must refuse, and it must
+# not execute a file the bots can edit. Whatever is at those paths now (a
+# file or a symlink) is replaced, never written through.
 # shellcheck source=lib/cb_wrapper.sh
 source "$ENGINE_DIR/lib/cb_wrapper.sh"
-install_cb_wrapper "$ENGINE_DIR"
-echo "CLAUDEBOT_HOME=$HOME_DIR" | sudo tee /etc/claudebot.env > /dev/null
-echo "Installed /usr/local/bin/cb and wrote /etc/claudebot.env"
+install_links "$ENGINE_DIR" "$HOME_DIR"
 # shellcheck source=lib/python_alias.sh
 source "$ENGINE_DIR/lib/python_alias.sh"
 ensure_python_alias

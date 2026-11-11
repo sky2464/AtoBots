@@ -366,50 +366,68 @@ class TemplatesTest(unittest.TestCase):
 
     def test_update_script_holds_the_queue_before_checkout(self):
         path = ROOT / "engine" / "update.sh"
-        r = subprocess.run(["bash", "-n", str(path)], capture_output=True, text=True)
-        self.assertEqual(r.returncode, 0, r.stderr)
         text = path.read_text()
-        self.assertIn("set -euo pipefail", text)
-        self.assertIn("this version cannot hold the queue; continuing as before", text)
-        self.assertLess(text.index("dispatcher hold"), text.index("checkout --quiet --detach"))
-        stop = text.index("sudo systemctl stop claudebot-dispatcher.service")
-        self.assertLess(text.index("dispatcher idle"), stop)
-        self.assertLess(stop, text.index("checkout --quiet --detach"))
-        self.assertIn('"$CB" dispatcher release', text)
+        common = (ROOT / "engine" / "lib" / "update_common.sh").read_text()
+        for script in (path, ROOT / "engine" / "adopt.sh"):
+            r = subprocess.run(["bash", "-n", str(script)], capture_output=True,
+                               text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            body = script.read_text()
+            self.assertIn("set -euo pipefail", body)
+            # The whole script is parsed before the checkout replaces it.
+            self.assertTrue(body.rstrip().endswith('main "$@"'), script.name)
+            self.assertIn("trap 'on_exit $?' EXIT", body)
+            self.assertIn("lib/update_finish.sh", body)
+            for forbidden in ("sshd", "ufw", "sudoers"):
+                self.assertNotIn(forbidden, body)
+        checkout = text.index("checkout --quiet --detach")
+        self.assertLess(text.index("cb_backup_db"), text.index("dispatcher hold"))
+        self.assertLess(text.index("update-notice"), text.index("dispatcher hold"))
+        self.assertLess(text.index("dispatcher hold"), checkout)
+        stop = text.index('cb_systemctl_priv stop "$DISPATCHER"')
+        self.assertLess(text.index("cb_wait_idle"), stop)
+        self.assertLess(stop, checkout)
+        self.assertLess(checkout, text.index('"$ENGINE_DIR/lib/update_finish.sh"'))
+        self.assertIn("dispatcher release", text)
         self.assertIn("--force", text)
         self.assertIn("/proc/self/cgroup", text)
-        self.assertIn("claudebot-admin.service", text)
         self.assertIn("run cb update", text)
-        self.assertIn("sudo systemctl restart claudebot-admin.service", text)
-        self.assertNotIn("sudo systemctl stop claudebot-admin.service", text)
-        self.assertIn("sudo systemctl start claudebot-dispatcher.service", text)
-        self.assertIn("update-pending.json", text)
-        self.assertIn("update-pending marker", text)
-        self.assertIn("Verifying services", text)
+        self.assertIn("cb update --adopt", text)
+        # The first half never stops Admin: the chat stays up until the end.
+        self.assertNotIn('stop "$ADMIN"', text)
+        # A hung `cb` must end the wait, not wedge the job.
+        self.assertIn("cb_timeout 60", common)
+        self.assertIn("dispatcher idle", common)
+        finish = (ROOT / "engine" / "claudebot" / "update_finish.py").read_text()
+        self.assertIn("update-pending", (ROOT / "engine" / "claudebot"
+                                         / "admin_live.py").read_text())
+        self.assertIn("Verifying services", finish)
 
     def test_units_are_rendered_in_one_place(self):
         lib = ROOT / "engine" / "lib" / "units.sh"
         install = (ROOT / "engine" / "install.sh").read_text()
         update = (ROOT / "engine" / "update.sh").read_text()
+        finish = (ROOT / "engine" / "claudebot" / "update_finish.py").read_text()
         admin = (ROOT / "engine" / "systemd" / "claudebot-admin.service").read_text()
-        for path in (lib, ROOT / "engine" / "install.sh", ROOT / "engine" / "update.sh"):
+        for path in sorted((ROOT / "engine").glob("*.sh")) \
+                + sorted((ROOT / "engine" / "lib").glob("*.sh")) \
+                + sorted((ROOT / "engine" / "migrations").glob("*.sh")):
             r = subprocess.run(["bash", "-n", str(path)], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("install_units", lib.read_text())
         self.assertIn("lib/units.sh", install)
-        self.assertIn("lib/units.sh", update)
+        self.assertIn("lib/units.sh", finish)
+        self.assertIn("install_units", finish)
         self.assertNotIn("render_unit()", install)
         self.assertNotIn("2 GB", admin)
         self.assertIn("MemoryMax=@MEMORY_MAX@", admin)
-        self.assertIn("The conversation will restart.", update)
         self.assertIn("config get run_memory_max", install)
-        self.assertIn("config get run_memory_max", update)
+        self.assertIn("run_memory_max", finish)
         self.assertIn("--timezone", install)
         self.assertIn("admin has-token", install)
-        self.assertIn("pre-update-*.db", update)
-        self.assertIn("Deleted", update)
-        self.assertIn("-gt 5", update)
-        self.assertIn("claudebot.releaseKey", update)
+        self.assertIn("pre-update-*.db", finish)
+        self.assertIn("KEEP_BACKUPS = 5", finish)
+        self.assertIn(".releaseKey", update)
         self.assertIn('note: release tags are not verified (see UPDATING.md, "Verifying releases")', update)
         self.assertIn("git tag -s", (ROOT / "UPDATING.md").read_text())
         wrapper_lib = (ROOT / "engine" / "lib" / "cb_wrapper.sh").read_text()
@@ -417,6 +435,37 @@ class TemplatesTest(unittest.TestCase):
         self.assertIn("lib/cb_wrapper.sh", install)
         self.assertNotIn("tee /usr/local/bin/cb", install)
         self.assertNotIn('ln -sfn "$ENGINE_DIR/bin/cb" /usr/local/bin/cb', install)
+
+    def test_nothing_is_written_through_tee_as_root(self):
+        """`sudo tee PATH` follows a symlink at PATH. Root-owned files go
+        through install_root_file, which removes the old path first."""
+        for path in sorted((ROOT / "engine").rglob("*.sh")):
+            text = path.read_text()
+            self.assertNotRegex(text, r"sudo tee|cb_priv tee", path.name)
+        sysfiles = (ROOT / "engine" / "lib" / "sysfiles.sh").read_text()
+        self.assertLess(sysfiles.index('rm -f -- "$target"'),
+                        sysfiles.index('install -m "$mode"'))
+
+    def test_shell_and_python_names_agree(self):
+        from claudebot import names
+        text = (ROOT / "engine" / "lib" / "names.sh").read_text()
+        self.assertIn(f'CB_PRODUCT="{names.PRODUCT}"', text)
+        self.assertIn(f'CB_UNIT_PREFIX="{names.UNIT_PREFIX}"', text)
+        self.assertIn(f'CB_HOME_VAR="{names.HOME_VAR}"', text)
+        self.assertIn(Path(names.ENV_FILE).name, text)
+        for role in names.UNIT_ROLES:
+            self.assertTrue((ROOT / "engine" / "systemd"
+                             / names.unit(role)).is_file(), role)
+
+    def test_migration_scripts_follow_the_rules(self):
+        folder = ROOT / "engine" / "migrations"
+        self.assertTrue((folder / "README.md").is_file())
+        for path in folder.glob("*.sh"):
+            self.assertRegex(path.name, r"^\d+\.\d+\.\d+-[a-z0-9-]+\.sh$")
+            text = path.read_text()
+            self.assertIn("set -euo pipefail", text)
+            for forbidden in ("sshd", "ufw", "sudoers", "systemctl"):
+                self.assertNotIn(forbidden, text, path.name)
 
     def _run_wrapper_install(self, prefix, engine):
         lib = ROOT / "engine" / "lib" / "cb_wrapper.sh"
@@ -470,6 +519,7 @@ class TemplatesTest(unittest.TestCase):
         self.assertIn("actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4", text)
         self.assertIn("actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5", text)
         self.assertIn("shellcheck engine/*.sh engine/lib/*.sh", text)
+        self.assertIn("engine/migrations/*.sh", text)
         self.assertIn("CB_BANNED_TERMS: ${{ secrets.CB_BANNED_TERMS }}", text)
 
 

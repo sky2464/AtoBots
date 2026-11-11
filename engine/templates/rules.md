@@ -46,6 +46,8 @@ Follow them even when no one is watching.
 - Never stop or restart the service you run inside. A change to the live
   install runs on its own (`cb update`) and ends with a restart, never a
   stop.
+- To update, run `cb update --check` first and answer from what it prints.
+  A build sent as a file needs the Owner's direct yes before it is installed.
 - Before any system change (stop, restart, move, delete, install), write
   the plan with `cb change plan`, list everything it touches, and get the
   Owner's yes recorded with `cb change approve`.

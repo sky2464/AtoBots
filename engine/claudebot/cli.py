@@ -12,7 +12,7 @@ from pathlib import Path
 from . import (activity, admin_live, archive, backup, bots, changes, chat,
                digest, dispatcher, doctor, gitlog, items, messages, requests,
                routines, search, store, tasks, transcribe, update, usage)
-from . import __version__
+from . import full_version
 from .config import Config
 from .db import SCHEMA_VERSION, connect, init_db
 
@@ -25,11 +25,13 @@ TEMPLATES = Path(__file__).resolve().parent.parent / "templates"
 ADMIN_SKILLS = ("cb-basics", "work-tracking", "create-bot")
 BACKEND_SKILLS = ("cb-basics",)
 RULES_SHA_KEY = "templates.rules_sha"
-# Templates shipped in 0.0.1 and 0.0.2. A company file with one of these
+# Templates shipped up to 0.0.2. A company file with one of these
 # hashes was never edited, even though that install recorded no hash.
 KNOWN_RULES_SHA = (
     "5a427531b1f2c4c2d119c7ba0554aea9b8fa5fad6d030a2603fbb64a734a0d56",
     "a526bf6e4a43f2816a9e685be0be90e48d4621ea870788a0f7188b193e080f6d",
+    # main between 0.0.2 and 0.0.3 (installs made from a commit, not a tag)
+    "2828afff9e565183fb7db11c134f289e48d43e177f7b4c51952bbe589680cd11",
 )
 
 
@@ -207,7 +209,7 @@ def _cmd_init(args) -> int:
 
 def _cmd_version(args) -> int:
     if not args.schema:
-        print(__version__)
+        print(full_version())
         return 0
     print(SCHEMA_VERSION)
     try:

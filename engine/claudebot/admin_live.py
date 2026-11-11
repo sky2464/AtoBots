@@ -50,6 +50,15 @@ RESTART_DELAY = 10          # seconds before claude is started again
 MAX_DELAY = 300             # longest back-off
 QUICK_SECONDS = 60          # a session shorter than this counts as a failure
 STOP_WAIT = 30              # how long `cb admin run` waits for the session
+# Claude Code's folder-trust question, as it appears on the screen. While it
+# is up nobody can reach Admin by Telegram, and it is answered at the
+# terminal only.
+TRUST_HINTS = ("trust this folder", "trust the files in this folder",
+               "do you trust")
+TRUST_NOTICE_FILE = "trust-notice"
+TRUST_NOTICE_EVERY = 3600   # s between two notices about the same question
+TRUST_FIX = ("On the server run: tmux attach -t admin-live, then choose "
+             "\"Yes, I trust this folder\".")
 
 LIVE_PROMPT = """# This session: always-on Admin with Telegram
 
@@ -280,12 +289,61 @@ def _telegram_post(token: str, chat_id, text: str) -> None:
         resp.read()
 
 
+def screen_text() -> str | None:
+    """What the always-on Admin's terminal shows now, or None."""
+    try:
+        r = subprocess.run(["tmux", "capture-pane", "-p", "-t", SESSION],
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def waiting_on_trust(text: str | None = None) -> bool:
+    """True when the screen shows Claude Code's folder-trust question."""
+    if text is None:
+        text = screen_text()
+    if not text:
+        return False
+    folded = " ".join(text.casefold().split())
+    return any(hint in folded for hint in TRUST_HINTS)
+
+
+def _trust_notice(cfg: Config, conn=None, post=None, now_fn=time.time) -> None:
+    """Tell the Owner, at most once an hour, that Admin is waiting on the
+    trust question. Best effort."""
+    stamp = state_dir(cfg) / TRUST_NOTICE_FILE
+    try:
+        if now_fn() - stamp.stat().st_mtime < TRUST_NOTICE_EVERY:
+            return
+    except OSError:
+        pass
+    try:
+        stamp.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        stamp.write_text(str(int(now_fn())))
+        os.utime(stamp, (now_fn(), now_fn()))
+        notify_telegram(
+            cfg, "ClaudeBot: Admin is up but waiting on Claude Code's "
+                 "folder-trust question, so it cannot answer here. "
+                 + TRUST_FIX, conn=conn, post=post)
+    except Exception:  # noqa: BLE001  # never block the caller
+        pass
+
+
 def surface(cfg: Config, text: str, *, key: str = "admin-queue",
-            conn=None, now: str | None = None, post=None) -> None:
+            conn=None, now: str | None = None, post=None,
+            trust_fn=None) -> None:
     """Type a one-line `[system]` notice into always-on Admin's tmux session.
-    Fall back to Telegram only when tmux is unavailable."""
+    Fall back to Telegram only when tmux is unavailable.
+
+    Nothing is typed while the folder-trust question is on the screen: the
+    line and its Enter would answer that question for the Owner. They are
+    told once instead."""
     if not isinstance(text, str) or not _SURFACE_TEXT.fullmatch(text):
         raise ValueError("surface text is not a plain notice")
+    if (trust_fn or waiting_on_trust)():
+        _trust_notice(cfg, conn=conn, post=post)
+        return None
     line = "[system] " + text
     try:
         subprocess.run(["tmux", "send-keys", "-t", SESSION, "-l", line],
@@ -456,7 +514,7 @@ def _write_marker(marker: Path, data: dict) -> None:
 
 
 def check_pending_update(cfg: Config, notify_fn=None, surface_fn=None,
-                         now_fn=time.time) -> bool:
+                         now_fn=time.time, trust_fn=None) -> bool:
     """Handle update-pending.json: ask Admin itself to confirm to the Owner.
 
     The Owner chose a real Admin reply as proof of an update (a model reply
@@ -490,6 +548,10 @@ def check_pending_update(cfg: Config, notify_fn=None, surface_fn=None,
     surfaced = data.get("surfaced_at")
     if not isinstance(surfaced, (int, float)):
         if now - seen < UPDATE_SETTLE:
+            return False
+        if (trust_fn or waiting_on_trust)():
+            # Typing here would answer the trust question. The update job
+            # sees the unanswered marker and tells the Owner how to fix it.
             return False
         text = (f"ClaudeBot updated {old} to {new}. Reply to the Owner that "
                 f"the update finished and you are back, then run: "

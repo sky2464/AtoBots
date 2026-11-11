@@ -27,7 +27,7 @@ Company data lives in `CLAUDEBOT_HOME` (the company home), not in this repo. Sec
 ## Deploy and update
 
 - Server keeps a **full Git clone** of this repo under e.g. `~/ClaudeBot`.
-- Ship releases with annotated `v*` tags on `main`, then on the server: `engine/update.sh` (see [docs/deploy.md](docs/deploy.md), [UPDATING.md](UPDATING.md)).
+- Ship releases with annotated `v*` tags on `main`, then on the server: `cb update --check`, then `cb update` (see [docs/deploy.md](docs/deploy.md), [UPDATING.md](UPDATING.md)).
 - Do **not** rsync with `--delete` into the checkout; that breaks `update.sh` and can remove `.git`.
 - `engine/install.sh` sets up the company home, systemd units, and `cb` on PATH.
 

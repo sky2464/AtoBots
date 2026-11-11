@@ -107,7 +107,9 @@ engine/
   systemd/               service and timer units
   templates/             starting files for Admin and new bots
   install.sh             server installer
-  update.sh              moves a running install to a release tag
+  update.sh              first half of an update (cb update starts it)
+  adopt.sh               turns a copied install into a Git clone
+  migrations/            steps a release runs on existing installs
 tests/                   unit tests (run with unittest discover)
 docs/                    design specs and updating notes
 .github/workflows/       CI (unittest discover on push and pull requests)
@@ -129,28 +131,29 @@ push and pull request.
 ## Updating a running install
 
 The server holds a Git clone of this repository; releases are `v*` tags.
+Ask Admin to update, or run:
 
 ```bash
-cb version
+cb update --check
 ```
 
 ```bash
-engine/update.sh
+cb update
 ```
 
-The script backs up the company database, moves the clone to the newest
-release, applies database changes, restarts the services and runs `cb doctor`.
-If it fails it prints how to go back.
+The first command changes nothing and says what the update would do. The
+second backs up the company database, tells the Owner before the chat goes
+offline, moves the clone to the newest release, applies database changes and
+migration steps, restarts the services and checks them. If that fails it puts
+the old version and the database back by itself and says so.
 
-- **Coming from 0.0.1:** a few steps are done by hand after the script. Follow
-  "Updating from 0.0.1 to 0.0.2" in [UPDATING.md](UPDATING.md).
-- **Engine files were copied to the server (no `.git`):** move to a clone once;
-  see "Moving a copied install to a clone" in [UPDATING.md](UPDATING.md).
-- Read the release's "Manual steps after updating" and "Known issues" in
+- **Coming from 0.0.2 or earlier:** go to 0.0.3 first; see "Updating from
+  0.0.2 or earlier" in [UPDATING.md](UPDATING.md).
+- **Engine files were copied to the server (no `.git`):** `cb update --adopt`
+  turns the copy into a clone in one job; see "A copied install" in
+  [UPDATING.md](UPDATING.md).
+- Read the release's "Manual steps after updating" in
   [CHANGELOG.md](CHANGELOG.md) first. Do not rsync into the clone.
-
-Install and update a running company from a Git clone.
-The steps are in [UPDATING.md](UPDATING.md).
 
 ## Documentation
 

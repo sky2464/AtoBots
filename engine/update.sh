@@ -1,420 +1,314 @@
 #!/usr/bin/env bash
-# Update ClaudeBot on this server to a release tag. Requires a full Git clone
-# (do not deploy with rsync --delete into this tree). Run by hand as the bots'
-# account, from the clone that engine/install.sh was run from:
-#   engine/update.sh                 # the newest v* tag
-#   engine/update.sh --tag v0.0.1    # a specific tag
-# Run as the bots' account (not root), from the clone that install.sh used.
-# It backs up the company database, moves the checkout to the tag, applies
-# schema changes with `cb init` (safe to repeat), restarts the services and runs
-# `cb doctor`. If something fails after the first change, it prints how to go
-# back and exits non-zero. It does not touch SSH, the firewall, sudo rules,
-# secrets or company files, except for writing the backup file.
+# Update the engine on this server: to a release tag, or to a local build
+# that `cb update --zip` has already imported into the clone.
+#
+#   engine/update.sh                  # the newest v* tag
+#   engine/update.sh --tag v0.0.3     # a specific tag
+#   engine/update.sh --ref COMMIT --label local:SHA   # used by `cb update --zip`
+#
+# Normally started by `cb update`, in its own systemd unit, so it survives the
+# restart of whoever asked for it. Run as the bots' account (not root), from
+# the clone that install.sh used.
+#
+# This is the FIRST half of an update, done by the version installed now: it
+# checks, backs up the database, tells the Owner, holds the queue, waits for
+# bot runs, stops the dispatcher and moves the checkout. Then it runs
+# engine/lib/update_finish.sh from the NEW version, which applies the schema
+# and migrations, installs the units, restarts and verifies the services, and
+# rolls everything back by itself if that fails.
+#
+# It does not touch SSH, the firewall, sudo rules, secrets or company files,
+# except for writing the backup file.
 set -euo pipefail
 
 usage() {
-    echo "usage: $0 [--tag vX.Y.Z] [--force]" >&2
+    echo "usage: $0 [--tag vX.Y.Z | --ref COMMIT --label LABEL] [--force]" >&2
     exit 2
 }
 
-TAG=""
-EXPLICIT_TAG=0
-FORCE=0
-while [ "$#" -gt 0 ]; do
-    case $1 in
-        --tag)
-            [ "$#" -ge 2 ] || usage
-            TAG=$2
-            EXPLICIT_TAG=1
-            shift 2
-            ;;
-        --force)
-            FORCE=1
-            shift
-            ;;
-        -*)
-            usage
-            ;;
-        *)
-            if [ -z "$TAG" ]; then
-                TAG=$1
+# The whole script is one function, called on the last line: bash has then
+# read all of it before the checkout replaces this file on disk.
+main() {
+    TAG=""
+    REF=""
+    LABEL=""
+    EXPLICIT_TAG=0
+    FORCE=0
+    while [ "$#" -gt 0 ]; do
+        case $1 in
+            --tag)
+                [ "$#" -ge 2 ] || usage
+                TAG=$2
                 EXPLICIT_TAG=1
+                shift 2
+                ;;
+            --ref)
+                [ "$#" -ge 2 ] || usage
+                REF=$2
+                shift 2
+                ;;
+            --label)
+                [ "$#" -ge 2 ] || usage
+                LABEL=$2
+                shift 2
+                ;;
+            --force)
+                FORCE=1
                 shift
-            else
+                ;;
+            -*)
                 usage
+                ;;
+            *)
+                if [ -z "$TAG" ]; then
+                    TAG=$1
+                    EXPLICIT_TAG=1
+                    shift
+                else
+                    usage
+                fi
+                ;;
+        esac
+    done
+    if [ -n "$TAG" ] && ! [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "error: --tag must look like v0.0.1" >&2
+        exit 2
+    fi
+    if [ -n "$REF" ]; then
+        if [ -n "$TAG" ] || ! [[ $REF =~ ^[0-9a-f]{7,64}$ ]] || ! [[ $LABEL =~ ^local:[0-9a-f]{7,64}$ ]]; then
+            usage
+        fi
+    fi
+
+    if [ "$(id -u)" -eq 0 ]; then
+        echo "error: run this as the bots' account, not root" >&2
+        exit 2
+    fi
+
+    ENGINE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+    if ! [[ $ENGINE_DIR =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+        echo "error: the engine path may only use letters, digits, . _ - and /" >&2
+        exit 2
+    fi
+    # shellcheck source=lib/update_common.sh
+    source "$ENGINE_DIR/lib/update_common.sh"
+    DISPATCHER=$CB_UNIT_PREFIX-dispatcher.service
+    ADMIN=$CB_UNIT_PREFIX-admin.service
+
+    if [ -f /proc/self/cgroup ] && grep -F -q "$ADMIN" /proc/self/cgroup; then
+        echo "run cb update ${TAG:-TAG} instead" >&2
+        exit 1
+    fi
+
+    REPO_DIR=$(cd "$ENGINE_DIR/.." && pwd -P)
+    CB=$ENGINE_DIR/bin/cb
+    [ -x "$CB" ] || { echo "error: $CB is missing" >&2; exit 1; }
+    if [ "$(git -C "$REPO_DIR" rev-parse --show-toplevel 2>/dev/null)" != "$REPO_DIR" ]; then
+        echo "error: this install is a copy with no Git history, so it cannot be updated in place." >&2
+        echo "Turn it into a clone once with: cb update --adopt --repo URL   (or --zip FILE)" >&2
+        echo "See UPDATING.md, \"A copied install\"." >&2
+        exit 1
+    fi
+
+    HOME_DIR=$(cb_find_home)
+    export "$CB_HOME_VAR=$HOME_DIR"
+    DB=$HOME_DIR/company.db
+    [ -f "$DB" ] || { echo "error: no database at $DB; run engine/install.sh first" >&2; exit 1; }
+
+    if [ -z "${CB_NO_SUDO:-}" ] && ! sudo -n true 2>/dev/null; then
+        echo "error: this user needs passwordless sudo (sudo -n true failed)" >&2
+        exit 1
+    fi
+
+    # Set once the first change is made. Until then a failure changes nothing.
+    # One handler runs when this script ends for any reason (a failed command
+    # or an explicit exit) and cleans up according to these.
+    CHANGED=0
+    HELD=0
+    STOPPED=0
+    FINISHED=0
+    OLD_VERSION=""
+    OLD_REF=""
+    BACKUP=""
+    TARGET_NAME=""
+    trap 'on_exit $?' EXIT
+
+    # 1. Refuse on a dirty tree: local edits would be lost or mixed in.
+    if [ -n "$(git -C "$REPO_DIR" status --porcelain)" ]; then
+        echo "error: the engine checkout has local changes. Commit or discard them, then run this again:" >&2
+        git -C "$REPO_DIR" status --short >&2
+        exit 1
+    fi
+
+    # 2. Where we are now.
+    OLD_VERSION=$("$CB" version)
+    if ! [[ $OLD_VERSION =~ ^[0-9A-Za-z._+-]+$ ]]; then
+        echo "error: cb version printed something unexpected: $OLD_VERSION" >&2
+        exit 1
+    fi
+    OLD_REF=$(git -C "$REPO_DIR" describe --tags --exact-match 2>/dev/null || git -C "$REPO_DIR" rev-parse HEAD)
+    echo "Current $CB_PRODUCT version: $OLD_VERSION (checkout: $OLD_REF)"
+
+    # 3. The target. Nothing is changed yet.
+    if [ -n "$REF" ]; then
+        if ! git -C "$REPO_DIR" rev-parse -q --verify "$REF^{commit}" >/dev/null; then
+            echo "error: there is no commit $REF in this clone" >&2
+            exit 1
+        fi
+        TARGET_COMMIT=$(git -C "$REPO_DIR" rev-parse "$REF^{commit}")
+        if ! git -C "$REPO_DIR" merge-base --is-ancestor "$TARGET_COMMIT" refs/heads/local-builds 2>/dev/null; then
+            echo "error: $REF is not a local build imported by cb update" >&2
+            exit 1
+        fi
+        TARGET_NAME="a local build ($LABEL, unverified)"
+        echo "note: this is an unverified local build: nothing proves who made it"
+    else
+        echo "Fetching release tags ..."
+        cb_timeout 300 git -C "$REPO_DIR" fetch --tags origin
+        if [ -z "$TAG" ]; then
+            TAG=$(git -C "$REPO_DIR" tag --list 'v*' --sort=-v:refname | sed -n '1p')
+            if [ -z "$TAG" ]; then
+                echo "error: no v* release tags were found on origin" >&2
+                exit 1
             fi
-            ;;
+        fi
+        if ! git -C "$REPO_DIR" rev-parse -q --verify "refs/tags/$TAG^{commit}" >/dev/null; then
+            echo "error: there is no tag $TAG. List the releases with: git -C $REPO_DIR tag --list 'v*'" >&2
+            exit 1
+        fi
+        RELEASE_KEY=$(git -C "$REPO_DIR" config --get "$CB_UNIT_PREFIX.releaseKey" || true)
+        if [ -n "$RELEASE_KEY" ]; then
+            verify_out=$(git -C "$REPO_DIR" verify-tag "$TAG" 2>&1 || true)
+            if ! printf '%s\n' "$verify_out" | grep -F -q -- "$RELEASE_KEY"; then
+                echo "error: tag $TAG is not signed by the configured release key" >&2
+                exit 1
+            fi
+        else
+            echo 'note: release tags are not verified (see UPDATING.md, "Verifying releases")'
+        fi
+        TARGET_COMMIT=$(git -C "$REPO_DIR" rev-parse "refs/tags/$TAG^{commit}")
+        LABEL=tag:$TAG
+        TARGET_NAME=$TAG
+        # Downgrade guard: the checkout is newer than the target tag. Refuse
+        # unless the tag was named (an explicit rollback).
+        if [ "$EXPLICIT_TAG" -eq 0 ] && [ "$(git -C "$REPO_DIR" rev-parse HEAD)" != "$TARGET_COMMIT" ] \
+                && git -C "$REPO_DIR" merge-base --is-ancestor "$TARGET_COMMIT" HEAD; then
+            echo "error: this checkout ($OLD_VERSION) is newer than the newest release, $TAG." >&2
+            echo "Refusing to go back. To roll back on purpose, run: cb update $TAG" >&2
+            exit 1
+        fi
+    fi
+    if [ "$(git -C "$REPO_DIR" rev-parse HEAD)" = "$TARGET_COMMIT" ]; then
+        echo "Already on $TARGET_NAME ($CB_PRODUCT $OLD_VERSION). Nothing to do."
+        exit 0
+    fi
+    if ! git -C "$REPO_DIR" cat-file -e "$TARGET_COMMIT:engine/lib/update_finish.sh" 2>/dev/null; then
+        echo "error: $TARGET_NAME is from before 0.0.3 and cannot finish its own update." >&2
+        echo "See UPDATING.md, \"Roll back on purpose\"." >&2
+        exit 1
+    fi
+    echo "Updating to $TARGET_NAME ..."
+
+    # 4. The company name is needed after the checkout; fail early without it.
+    COMPANY=$(cb_company_name "$DB")
+    if [ -z "$COMPANY" ]; then
+        echo "error: the database has no company name in its meta table" >&2
+        exit 1
+    fi
+
+    # 5. Back up the database before anything changes.
+    umask 077
+    BACKUP_DIR=$HOME_DIR/backups
+    BACKUP=$BACKUP_DIR/pre-update-$OLD_VERSION-$(date -u +%Y-%m-%d-%H%M%S).db
+    cb_backup_db "$DB" "$BACKUP"
+    echo "Backed up the database to $BACKUP"
+
+    # 6. Tell the Owner before the chat goes offline. Best effort.
+    cb_timeout 90 "$CB" update-notice --old "$OLD_VERSION" --new "$TARGET_NAME" || true
+
+    # 7. Hold the queue, wait for the current runs, stop the dispatcher.
+    HELD=1
+    cb_timeout 60 "$CB" dispatcher hold --minutes 45 --reason update
+    cb_wait_idle "$CB" "$FORCE" || exit 1
+    cb_systemctl_priv stop "$DISPATCHER"
+    STOPPED=1
+    STOPPED_AT=$(date +%s)
+
+    # 8. Move the checkout. From here on a failure means going back.
+    CHANGED=1
+    git -C "$REPO_DIR" checkout --quiet --detach "$TARGET_COMMIT"
+
+    # 9. The new version finishes its own update.
+    export CB_UPD_KIND=git
+    export CB_UPD_OLD_VERSION=$OLD_VERSION
+    export CB_UPD_OLD_REF=$OLD_REF
+    export CB_UPD_BACKUP=$BACKUP
+    export CB_UPD_LABEL=$LABEL
+    export CB_UPD_OLD_PREFIX=$CB_UNIT_PREFIX
+    export CB_UPD_STOPPED_AT=$STOPPED_AT
+    status=0
+    "$ENGINE_DIR/lib/update_finish.sh" || status=$?
+    result=0
+    cb_finish_status "$status" || result=$?
+    case $result in
+        0) FINISHED=1; exit 0 ;;
+        10) FINISHED=1; exit 1 ;;
+        11) FINISHED=1; exit 2 ;;
+        *) exit "$status" ;;   # on_exit puts the old version back
     esac
-done
-if [ -n "$TAG" ] && ! [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo "error: --tag must look like v0.0.1" >&2
-    exit 2
-fi
+}
 
-if [ -f /proc/self/cgroup ] && grep -F -q "claudebot-admin.service" /proc/self/cgroup; then
-    echo "run cb update ${TAG:-TAG} instead" >&2
-    exit 1
-fi
-
-if [ "$(id -u)" -eq 0 ]; then
-    echo "error: run this as the bots' account, not root" >&2
-    exit 2
-fi
-
-ENGINE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
-if ! [[ $ENGINE_DIR =~ ^/[A-Za-z0-9._/-]+$ ]]; then
-    echo "error: the engine path may only use letters, digits, . _ - and /" >&2
-    exit 2
-fi
-REPO_DIR=$(cd "$ENGINE_DIR/.." && pwd -P)
-CB=$ENGINE_DIR/bin/cb
-[ -x "$CB" ] || { echo "error: $CB is missing" >&2; exit 1; }
-if [ "$(git -C "$REPO_DIR" rev-parse --show-toplevel 2>/dev/null)" != "$REPO_DIR" ]; then
-    echo "error: $REPO_DIR is not a Git clone of ClaudeBot" >&2
-    exit 1
-fi
-
-HOME_DIR=${CLAUDEBOT_HOME:-}
-if [ -z "$HOME_DIR" ] && [ -r /etc/claudebot.env ]; then
-    HOME_DIR=$(sed -n 's/^CLAUDEBOT_HOME=//p' /etc/claudebot.env | sed -n '1p')
-fi
-case $HOME_DIR in
-    /*) ;;
-    *) echo "error: CLAUDEBOT_HOME is not set to an absolute path" >&2; exit 1 ;;
-esac
-if ! [[ $HOME_DIR =~ ^/[A-Za-z0-9._/-]+$ ]]; then
-    echo "error: the company home may only use letters, digits, . _ - and /" >&2
-    exit 1
-fi
-export CLAUDEBOT_HOME=$HOME_DIR
-DB=$HOME_DIR/company.db
-[ -f "$DB" ] || { echo "error: no database at $DB; run engine/install.sh first" >&2; exit 1; }
-
-if ! sudo -n true 2>/dev/null; then
-    echo "error: this user needs passwordless sudo (sudo -n true failed)" >&2
-    exit 1
-fi
-
-# Set once the first change is made. Until then a failure changes nothing.
-CHANGED=0
-OLD_VERSION=""
-OLD_REF=""
-BACKUP=""
-
-on_error() {
+# shellcheck disable=SC2329  # called by the EXIT trap
+on_exit() {
     local status=$1
-    "$CB" dispatcher release >/dev/null 2>&1 || true
+    trap - EXIT
+    if [ "$status" -eq 0 ] || [ "$FINISHED" -eq 1 ]; then
+        exit "$status"
+    fi
     echo "" >&2
     if [ "$CHANGED" -eq 0 ]; then
-        sudo systemctl start claudebot-dispatcher.service 2>/dev/null || true
-        if systemctl is-enabled --quiet claudebot-admin.service 2>/dev/null; then
-            sudo systemctl start claudebot-admin.service 2>/dev/null || true
+        if [ "$HELD" -eq 1 ]; then
+            cb_timeout 60 "$CB" dispatcher release >/dev/null 2>&1 || true
+        fi
+        if [ "$STOPPED" -eq 1 ]; then
+            cb_systemctl_priv start "$DISPATCHER" 2>/dev/null || true
         fi
         echo "The update stopped (exit $status). Nothing was changed." >&2
-        return
+        exit "$status"
     fi
-    local err_log=${CB_UPDATE_LOG:-}
-    if [ -z "$err_log" ]; then
-        # shellcheck disable=SC2012
-        err_log=$(ls -1t "$HOME_DIR/logs"/update-*.log 2>/dev/null | head -n 1 || true)
-    fi
-    "$CB" admin notify "ClaudeBot update FAILED (exit $status). Log: ${err_log:-unknown}" >/dev/null 2>&1 || true
-    cat >&2 <<EOF
-The update FAILED (exit $status). To go back to ClaudeBot $OLD_VERSION:
-  1. Stop the services:
-       sudo systemctl stop claudebot-dispatcher
-       sudo systemctl stop claudebot-admin   (only if it is enabled)
-  2. Put the old code back:
-       git -C "$REPO_DIR" checkout $OLD_REF
-  3. Restore the database from the backup taken before the update:
-       rm -f "$DB-wal" "$DB-shm"
-       cp "$BACKUP" "$DB"
-     Backup file: $BACKUP
-  4. Start the services again:
-       sudo systemctl start claudebot-dispatcher
-       sudo systemctl start claudebot-admin   (only if it is enabled)
-  5. Check the install: "$CB" doctor
-EOF
+    put_old_version_back "$status"
 }
-trap 'on_error $?' ERR
 
-# 1. Refuse on a dirty tree: local edits would be lost or mixed in.
-if [ -n "$(git -C "$REPO_DIR" status --porcelain)" ]; then
-    echo "error: the ClaudeBot checkout has local changes. Commit or discard them, then run this again:" >&2
-    git -C "$REPO_DIR" status --short >&2
-    exit 1
-fi
-
-# 2. Where we are now.
-OLD_VERSION=$("$CB" version)
-if ! [[ $OLD_VERSION =~ ^[0-9A-Za-z._+-]+$ ]]; then
-    echo "error: cb version printed something unexpected: $OLD_VERSION" >&2
-    exit 1
-fi
-OLD_REF=$(git -C "$REPO_DIR" describe --tags --exact-match 2>/dev/null || git -C "$REPO_DIR" rev-parse HEAD)
-echo "Current ClaudeBot version: $OLD_VERSION (checkout: $OLD_REF)"
-
-# 3. Fetch release tags. This only adds tags and objects; the checkout is not
-# touched yet.
-echo "Fetching release tags ..."
-git -C "$REPO_DIR" fetch --tags origin
-
-if [ -z "$TAG" ]; then
-    TAG=$(git -C "$REPO_DIR" tag --list 'v*' --sort=-v:refname | sed -n '1p')
-    if [ -z "$TAG" ]; then
-        echo "error: no v* release tags were found on origin" >&2
+# The new version could not run its own second half at all (a broken build).
+# Nothing but the checkout should have changed; the database is restored
+# anyway so the two always match.
+# shellcheck disable=SC2329  # reached from on_exit
+put_old_version_back() {
+    local status=$1 ok=1
+    set +e
+    echo "The new version could not finish the update (exit $status). Going back to $OLD_VERSION ..." >&2
+    git -C "$REPO_DIR" checkout --quiet --force --detach "$OLD_REF" || ok=0
+    cb_restore_db "$BACKUP" "$DB" || ok=0
+    cb_systemctl_priv start "$DISPATCHER" || ok=0
+    cb_timeout 60 "$CB" dispatcher release >/dev/null 2>&1
+    if cb_systemctl is-enabled --quiet "$ADMIN" 2>/dev/null; then
+        cb_systemctl_priv restart "$ADMIN"
+    fi
+    if [ "$ok" -eq 1 ]; then
+        cb_timeout 90 "$CB" admin notify "$CB_PRODUCT update to $TARGET_NAME failed before the new version could start (exit $status). It was undone: $OLD_VERSION is running again with the database from just before the update. Log: ${CB_UPDATE_LOG:-unknown}" >/dev/null 2>&1
+        echo "The old version is running again. Nothing else was changed." >&2
         exit 1
     fi
-fi
-if ! git -C "$REPO_DIR" rev-parse -q --verify "refs/tags/$TAG^{commit}" >/dev/null; then
-    echo "error: there is no tag $TAG. List the releases with: git -C $REPO_DIR tag --list 'v*'" >&2
-    exit 1
-fi
-RELEASE_KEY=$(git -C "$REPO_DIR" config --get claudebot.releaseKey || true)
-if [ -n "$RELEASE_KEY" ]; then
-    verify_out=$(git -C "$REPO_DIR" verify-tag "$TAG" 2>&1 || true)
-    if ! printf '%s\n' "$verify_out" | grep -F -q -- "$RELEASE_KEY"; then
-        echo "error: tag $TAG is not signed by the configured release key" >&2
-        exit 1
-    fi
-else
-    echo 'note: release tags are not verified (see UPDATING.md, "Verifying releases")'
-fi
-TARGET_COMMIT=$(git -C "$REPO_DIR" rev-parse "refs/tags/$TAG^{commit}")
-if [ "$(git -C "$REPO_DIR" rev-parse HEAD)" = "$TARGET_COMMIT" ]; then
-    echo "Already on $TAG (ClaudeBot $OLD_VERSION). Nothing to do."
-    exit 0
-fi
-# Downgrade guard: the checkout is newer than the target tag. Refuse unless the
-# user named the tag with --tag (an explicit rollback).
-if [ "$EXPLICIT_TAG" -eq 0 ] && git -C "$REPO_DIR" merge-base --is-ancestor "$TARGET_COMMIT" HEAD; then
-    echo "error: this checkout ($OLD_VERSION) is newer than the newest release, $TAG." >&2
-    echo "Refusing to go back. To roll back on purpose, run: engine/update.sh --tag $TAG" >&2
-    exit 1
-fi
-echo "Updating to $TAG ..."
+    cb_timeout 90 "$CB" admin notify "$CB_PRODUCT update to $TARGET_NAME FAILED and could not be undone automatically. The services may be down. Log: ${CB_UPDATE_LOG:-unknown}" >/dev/null 2>&1
+    cat >&2 <<STEPS
+The update FAILED and could not be undone automatically. To go back to $OLD_VERSION by hand:
+  1. sudo systemctl stop $DISPATCHER
+  2. git -C "$REPO_DIR" checkout --force --detach $OLD_REF
+  3. rm -f "$DB-wal" "$DB-shm" && cp "$BACKUP" "$DB"
+  4. sudo systemctl start $DISPATCHER   (and $ADMIN if it is enabled)
+  5. "$CB" doctor
+STEPS
+    exit 2
+}
 
-# 4. The company name is needed to run `cb init` after the checkout.
-COMPANY=$(python3 -I -c '
-import sqlite3, sys
-conn = sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True)
-row = conn.execute("SELECT value FROM meta WHERE key = ?", ("company",)).fetchone()
-print(row[0] if row else "")
-' "$DB")
-if [ -z "$COMPANY" ]; then
-    echo "error: the database has no company name in its meta table" >&2
-    exit 1
-fi
-
-# 5. Back up the database before anything changes. The database runs in WAL
-# mode, so a plain copy could miss recent writes; SQLite's own backup is used.
-BACKUP_DIR=$HOME_DIR/backups
-DATE=$(date -u +%Y-%m-%d)
-umask 077
-mkdir -p "$BACKUP_DIR"
-chmod 700 "$BACKUP_DIR"
-BACKUP=$BACKUP_DIR/pre-update-$OLD_VERSION-$DATE.db
-if [ -e "$BACKUP" ]; then
-    BACKUP=$BACKUP_DIR/pre-update-$OLD_VERSION-$DATE-$(date -u +%H%M%S).db
-fi
-if command -v sqlite3 >/dev/null 2>&1; then
-    sqlite3 "$DB" ".backup '$BACKUP'"
-else
-    python3 -I -c '
-import sqlite3, sys
-src = sqlite3.connect(sys.argv[1])
-dst = sqlite3.connect(sys.argv[2])
-src.backup(dst)
-dst.close()
-src.close()
-' "$DB" "$BACKUP"
-fi
-chmod 600 "$BACKUP"
-[ -s "$BACKUP" ] || { echo "error: the backup at $BACKUP is empty" >&2; exit 1; }
-echo "Backed up the database to $BACKUP"
-
-# 6. Hold the queue with the code that is running now, then wait until the
-# current runs finish. An engine older than this release has no hold command.
-set +e
-"$CB" dispatcher hold --minutes 45 --reason update
-hold_status=$?
-set -e
-if [ "$hold_status" -eq 2 ]; then
-    echo "this version cannot hold the queue; continuing as before"
-elif [ "$hold_status" -ne 0 ]; then
-    exit "$hold_status"
-fi
-echo "Waiting for bot runs to finish (up to 30 minutes) ..."
-IDLE_DEADLINE=$((SECONDS + 1800))
-while [ "$SECONDS" -lt "$IDLE_DEADLINE" ]; do
-    if "$CB" dispatcher idle; then
-        break
-    fi
-    sleep 10
-done
-if ! "$CB" dispatcher idle; then
-    echo "A bot run is still active:" >&2
-    "$CB" status >&2 || true
-    if [ "$FORCE" -eq 0 ]; then
-        "$CB" dispatcher release >/dev/null 2>&1 || true
-        exit 1
-    fi
-    echo "warning: continuing because --force was given" >&2
-fi
-sudo systemctl stop claudebot-dispatcher.service
-
-# 7. Move the checkout to the tag. From here on, a failure needs the rollback
-# steps printed by on_error.
-CHANGED=1
-git -C "$REPO_DIR" checkout --quiet --detach "refs/tags/$TAG"
-
-NEW_VERSION=$("$CB" version)
-if [ "v$NEW_VERSION" != "$TAG" ]; then
-    echo "warning: tag $TAG reports ClaudeBot version $NEW_VERSION" >&2
-fi
-
-# 7. Apply schema changes. Safe to repeat: it creates nothing that exists.
-echo "Applying the update to company \"$COMPANY\" ..."
-"$CB" init --company "$COMPANY"
-echo "Refreshing engine-owned templates ..."
-"$CB" templates refresh
-
-# 8. Re-render every unit, then start the services on the new code.
-# shellcheck source=lib/units.sh
-source "$ENGINE_DIR/lib/units.sh"
-# shellcheck source=lib/python_alias.sh
-source "$ENGINE_DIR/lib/python_alias.sh"
-ensure_python_alias
-MEMORY_MAX=$("$CB" config get run_memory_max)
-ADMIN_UNIT=/etc/systemd/system/claudebot-admin.service
-ADMIN_RENDERED=$(sed -e "s|@HOME@|$HOME_DIR|g" -e "s|@ENGINE@|$ENGINE_DIR|g" \
-    -e "s|@USER@|$(id -un)|g" -e "s|@MEMORY_MAX@|$MEMORY_MAX|g" \
-    "$ENGINE_DIR/systemd/claudebot-admin.service")
-ADMIN_INSTALLED=""
-if [ -f "$ADMIN_UNIT" ]; then
-    ADMIN_INSTALLED=$(cat "$ADMIN_UNIT")
-fi
-install_units "$HOME_DIR" "$ENGINE_DIR" "$(id -un)" "$MEMORY_MAX"
-sudo systemctl daemon-reload
-echo "Starting services ..."
-sudo systemctl start claudebot-dispatcher.service
-"$CB" dispatcher release
-MARKER=""
-if systemctl is-enabled --quiet claudebot-admin.service 2>/dev/null; then
-    ADMIN_STATE_DIR=$HOME_DIR/.admin-live
-    mkdir -p "$ADMIN_STATE_DIR"
-    chmod 700 "$ADMIN_STATE_DIR" 2>/dev/null || true
-    MARKER=$ADMIN_STATE_DIR/update-pending.json
-    NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    cat > "$MARKER" <<EOF
-{"old_version": "$OLD_VERSION", "new_version": "$NEW_VERSION", "time": "$NOW_ISO"}
-EOF
-    chmod 600 "$MARKER" 2>/dev/null || true
-    if [ "$ADMIN_RENDERED" != "$ADMIN_INSTALLED" ] || [ "$OLD_VERSION" != "$NEW_VERSION" ]; then
-        sudo systemctl restart claudebot-admin.service
-        echo "Restarted claudebot-admin. The conversation will restart."
-    else
-        echo "claudebot-admin is unchanged, so the conversation was left running."
-    fi
-else
-    echo "claudebot-admin is not enabled, so it was not restarted."
-fi
-
-# 9. Verify services and marker removal
-echo ""
-echo "Verifying services ..."
-LOG_PATH=${CB_UPDATE_LOG:-}
-if [ -z "$LOG_PATH" ]; then
-    # shellcheck disable=SC2012
-    LOG_PATH=$(ls -1t "$HOME_DIR/logs"/update-*.log 2>/dev/null | head -n 1 || true)
-fi
-
-DEADLINE=$((SECONDS + 180))
-DISP_PASS=0
-ADMIN_PASS=0
-MARKER_PASS=0
-
-ADMIN_ENABLED=0
-if systemctl is-enabled --quiet claudebot-admin.service 2>/dev/null; then
-    ADMIN_ENABLED=1
-else
-    ADMIN_PASS=1
-    MARKER_PASS=1
-fi
-
-while [ "$SECONDS" -lt "$DEADLINE" ]; do
-    if [ "$DISP_PASS" -eq 0 ] && systemctl is-active --quiet claudebot-dispatcher.service 2>/dev/null; then
-        DISP_PASS=1
-    fi
-    if [ "$ADMIN_ENABLED" -eq 1 ]; then
-        if [ "$ADMIN_PASS" -eq 0 ] && systemctl is-active --quiet claudebot-admin.service 2>/dev/null; then
-            ADMIN_PASS=1
-        fi
-        if [ "$MARKER_PASS" -eq 0 ] && [ ! -f "$MARKER" ]; then
-            MARKER_PASS=1
-        fi
-    fi
-    if [ "$DISP_PASS" -eq 1 ] && [ "$ADMIN_PASS" -eq 1 ] && [ "$MARKER_PASS" -eq 1 ]; then
-        break
-    fi
-    sleep 2
-done
-
-FAILED_CHECKS=()
-if [ "$DISP_PASS" -eq 1 ]; then
-    echo "claudebot-dispatcher: PASS"
-else
-    echo "claudebot-dispatcher: FAIL"
-    FAILED_CHECKS+=("claudebot-dispatcher")
-fi
-
-if [ "$ADMIN_ENABLED" -eq 1 ]; then
-    if [ "$ADMIN_PASS" -eq 1 ]; then
-        echo "claudebot-admin: PASS"
-    else
-        echo "claudebot-admin: FAIL"
-        FAILED_CHECKS+=("claudebot-admin")
-    fi
-    if [ "$MARKER_PASS" -eq 1 ]; then
-        echo "update-pending marker: PASS"
-    else
-        echo "update-pending marker: FAIL"
-        FAILED_CHECKS+=("update-pending marker")
-    fi
-else
-    echo "claudebot-admin: PASS (not enabled)"
-fi
-
-if [ "${#FAILED_CHECKS[@]}" -gt 0 ]; then
-    FAIL_STR=$(IFS=", "; echo "${FAILED_CHECKS[*]}")
-    FAIL_MSG="ClaudeBot update verification failed ($FAIL_STR). Log: ${LOG_PATH:-unknown}"
-    echo "error: $FAIL_MSG" >&2
-    "$CB" admin notify "$FAIL_MSG" >/dev/null 2>&1 || true
-    exit 1
-fi
-
-# 9. Health check. Findings are reported, not treated as a failed update: a
-# finding (for example, no backup remote yet) is not caused by the update.
-echo ""
-echo "Running cb doctor ..."
-DOCTOR_STATUS=0
-"$CB" doctor || DOCTOR_STATUS=$?
-
-echo ""
-echo "ClaudeBot updated: $OLD_VERSION -> $NEW_VERSION ($TAG)."
-echo "Database backup from before the update: $BACKUP"
-if [ "$DOCTOR_STATUS" -ne 0 ]; then
-    echo "cb doctor reported problems (listed above). The update itself finished and"
-    echo "nothing was rolled back. See UPDATING.md, \"If cb doctor reports problems\"."
-fi
-
-# Keep the five newest pre-update database copies and delete the older ones.
-kept=0
-while IFS= read -r old_copy; do
-    [ -n "$old_copy" ] || continue
-    kept=$((kept + 1))
-    if [ "$kept" -gt 5 ]; then
-        rm -f -- "$old_copy"
-        echo "Deleted $(basename "$old_copy")"
-    fi
-done < <(ls -1t "$BACKUP_DIR"/pre-update-*.db 2>/dev/null || true)
+main "$@"

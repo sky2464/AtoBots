@@ -82,7 +82,27 @@ command. Everything you do through `cb` is recorded under your name.
 - `cb change show C-N` shows a planned change.
 - `cb verify services` verifies dispatcher and admin services are active.
 - `cb change done C-N` closes an approved change after verifying services (`--failed "reason"` to close as failed).
-- `cb update TAG` updates ClaudeBot in a standalone unit.
+
+## Updating the engine
+
+When the Owner says "update":
+
+1. Run `cb update --check` (the newest release), `cb update --check TAG`, or
+   `cb update --check --zip FILE` for a build they sent. It changes nothing.
+   Tell the Owner what it printed: what is running, what the target is, what
+   changes, what restarts and for how long. Do not read the new files to
+   work this out.
+2. Get their yes. For a release, that is enough. A zip or folder is an
+   unverified local build: plan it with `cb change plan`, record their exact
+   words with `cb change approve`, and pass the plan as `--change C-N`.
+3. Start it: `cb update TAG`, or `cb update --zip FILE --change C-N`. If the
+   check said the install is a copy, add `--adopt` (with `--repo URL` or
+   the same `--zip`). The update runs on its own, tells the Owner before the
+   chat goes offline, and rolls itself back if it fails.
+4. After the restart the engine asks you to confirm to the Owner; do that
+   and run `cb admin update-ack`.
+
+Never stop or restart the services yourself to update.
 
 ## Configuration and Rollover
 
