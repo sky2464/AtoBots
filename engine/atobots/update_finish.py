@@ -279,6 +279,21 @@ class Finisher:
         self.snapshot_dir = d
         self.say(f"Saved the unit files to {d}")
 
+    def check_path(self) -> None:
+        """An install older than this release's floor cannot be moved here in
+        one step (the compatibility code was removed). Say what to do, and
+        let the normal rollback put everything back."""
+        floor = update.floor_version()
+        old = self.st.old_version
+        if not floor or not old:
+            return
+        try:
+            too_old = update.version_key(old) < update.version_key(floor)
+        except update.UpdateError:
+            return
+        if too_old:
+            raise Failed(update.too_old_message(old, floor))
+
     def quiesce(self, prefix: str | None = None) -> None:
         """Stop the timers, then give a backup or health check that is
         already running time to finish. Nothing may start a `cb` job while
@@ -665,6 +680,7 @@ class Finisher:
     def run(self) -> int:
         try:
             self.snapshot()
+            self.check_path()
             self.quiesce()
             self.apply()
             self.switch_units()

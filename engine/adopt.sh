@@ -10,7 +10,13 @@
 # Normally started by `cb update --adopt ...` in its own systemd unit. An
 # install too old to have that command is adopted by hand: get the new
 # version onto the server (clone it, or unpack a zip) and run ITS
-# engine/adopt.sh as the bots' account.
+# engine/adopt.sh as the bots' account. Add --detach to run it as its own
+# systemd job, which keeps going when Admin (the chat) is stopped.
+#
+# An install older than engine/MIN_UPDATE_FROM cannot go straight to this
+# version. With --repo, this script does it in two steps by itself: it adopts
+# the install into release v<MIN_UPDATE_FROM> first, then updates that to the
+# release asked for. Both steps keep their own backup and rollback.
 #
 # What it does, as one job: back up the database, tell the Owner, hold the
 # queue, wait for bot runs, stop the services, move the old engine folder to
@@ -24,11 +30,75 @@
 set -euo pipefail
 
 usage() {
-    echo "usage: $0 [--old-engine PATH] [--repo URL [--tag vX.Y.Z] | --source FOLDER] [--force]" >&2
+    echo "usage: $0 [--old-engine PATH] [--repo URL [--tag vX.Y.Z] | --source FOLDER] [--force] [--detach]" >&2
     exit 2
 }
 
+# version_lt A B   True when version A is older than B. Anything that is not
+# x.y.z (an "unknown" version) is not older.
+version_lt() {
+    python3 -I -c '
+import sys
+def key(text):
+    return tuple(int(n) for n in text.split("+")[0].split("."))
+try:
+    sys.exit(0 if key(sys.argv[1]) < key(sys.argv[2]) else 1)
+except ValueError:
+    sys.exit(1)
+' "$1" "$2"
+}
+
+# detach ARGS...   Run this script again as its own systemd job and return.
+detach() {
+    local log=${CB_ADOPT_LOG:-$HOME/atobots-adopt-$(date -u +%Y%m%dT%H%M%SZ).log}
+    sudo systemd-run --unit=atobots-adopt --collect --no-block \
+        --uid="$(id -un)" -p "StandardOutput=file:$log" \
+        -p "StandardError=file:$log" bash "${BASH_SOURCE[0]}" "$@"
+    echo "Started as its own job. Log: $log"
+    echo "Watch it with: tail -f $log"
+}
+
+# bridge_through_stepping_stone
+# An install older than the floor goes to release v<floor> first, using that
+# release's own adopt script (it still knows the older layout), then to the
+# release asked for.
+bridge_through_stepping_stone() {
+    local step=v$FLOOR bridge final
+    if [ -z "$REPO_URL" ]; then
+        echo "error: this install is $OLD_VERSION, older than $FLOOR, which this version cannot adopt directly." >&2
+        echo "Run this script again with --repo URL so the steps in between can be fetched." >&2
+        exit 2
+    fi
+    bridge=$(mktemp -d "${TMPDIR:-/tmp}/atobots-bridge.XXXXXX")
+    # shellcheck disable=SC2064
+    trap "rm -rf -- '$bridge'" EXIT
+    echo "This install is $OLD_VERSION. This release needs $FLOOR or later, so it goes in two steps: $step first, then the release asked for."
+    git clone --quiet "$REPO_URL" "$bridge"
+    if ! git -C "$bridge" rev-parse -q --verify "refs/tags/$step^{commit}" >/dev/null; then
+        echo "error: the repository has no release $step to go through" >&2
+        exit 1
+    fi
+    final=$TAG
+    if [ -z "$final" ]; then
+        final=$(git -C "$bridge" tag --list 'v*' --sort=-v:refname | sed -n '1p')
+    fi
+    git -C "$bridge" checkout --quiet --detach "$step"
+    echo "Step 1: adopting into $step ..."
+    local -a step_args=(--old-engine "$OLD_ENGINE" --source "$bridge")
+    [ "$FORCE" -eq 1 ] && step_args+=(--force)
+    bash "$bridge/engine/adopt.sh" "${step_args[@]}"
+    if [ "$final" = "$step" ]; then
+        return 0
+    fi
+    echo "Step 2: updating to $final ..."
+    local -a up_args=("$final")
+    [ "$FORCE" -eq 1 ] && up_args+=(--force)
+    "$OLD_REPO/engine/update.sh" "${up_args[@]}"
+}
+
 main() {
+    ORIG_ARGS=("$@")
+    DETACH=0
     OLD_ENGINE=""
     SOURCE=""
     REPO_URL=""
@@ -43,6 +113,7 @@ main() {
             --tag) [ "$#" -ge 2 ] || usage; TAG=$2; shift 2 ;;
             --cleanup) [ "$#" -ge 2 ] || usage; CLEANUP=$2; shift 2 ;;
             --force) FORCE=1; shift ;;
+            --detach) DETACH=1; shift ;;
             *) usage ;;
         esac
     done
@@ -60,6 +131,16 @@ main() {
     if [ "$(id -u)" -eq 0 ]; then
         echo "error: run this as the bots' account, not root" >&2
         exit 2
+    fi
+
+    if [ "$DETACH" -eq 1 ]; then
+        local -a again=()
+        local arg
+        for arg in "${ORIG_ARGS[@]}"; do
+            [ "$arg" = "--detach" ] || again+=("$arg")
+        done
+        detach "${again[@]}"
+        exit 0
     fi
 
     ENGINE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
@@ -96,6 +177,14 @@ main() {
     fi
     OLD_CB=$OLD_ENGINE/bin/cb
 
+    OLD_VERSION=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$OLD_ENGINE"/*/__init__.py 2>/dev/null | sed -n '1p')
+    OLD_VERSION=${OLD_VERSION:-unknown}
+    FLOOR=$(tr -d '[:space:]' < "$ENGINE_DIR/MIN_UPDATE_FROM" 2>/dev/null || true)
+    if [ -n "$FLOOR" ] && version_lt "$OLD_VERSION" "$FLOOR"; then
+        bridge_through_stepping_stone
+        exit 0
+    fi
+
     HOME_DIR=$(cb_find_home)
     export "$CB_HOME_VAR=$HOME_DIR"
     DB=$HOME_DIR/company.db
@@ -113,9 +202,6 @@ main() {
     OLD_PREFIX=$CB_UNIT_PREFIX
     DISPATCHER=$OLD_PREFIX-dispatcher.service
     ADMIN=$OLD_PREFIX-admin.service
-
-    OLD_VERSION=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$OLD_ENGINE"/*/__init__.py 2>/dev/null | sed -n '1p')
-    OLD_VERSION=${OLD_VERSION:-unknown}
 
     # One handler runs when this script ends for any reason and cleans up
     # according to these.

@@ -3,6 +3,25 @@
 Each release has a section here. "Manual steps after updating" lists anything
 `engine/update.sh` does not do for you. How to update: [UPDATING.md](UPDATING.md).
 
+## Unreleased
+
+Updating an old install works again, in one command.
+
+### What changed
+- `engine/adopt.sh --repo URL` now takes an install older than 0.1.0 to the
+  newest release by itself: it adopts into v0.1.0 first, then updates to the
+  release asked for. Each step keeps its own backup and rollback. This replaces
+  the 0.2.1 advice to reinstall fresh and re-enter every secret.
+- `engine/adopt.sh --detach` runs the job as its own systemd unit, so it
+  survives Admin being stopped.
+- `engine/MIN_UPDATE_FROM` names the oldest version a release updates from
+  directly. `cb update --check` says "go through v0.1.0 first" for an install
+  below it, and an update that is started anyway stops before changing
+  anything and rolls back with the same message.
+
+### Manual steps after updating
+- None.
+
 ## 0.2.1 - 2026-11-11
 
 Housekeeping: the compatibility code for installs older than 0.1.0 is gone,

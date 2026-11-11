@@ -32,6 +32,7 @@ UNIT_NAME = names.unit("update")
 TAG_PATTERN = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
 LOCAL_BRANCH = "local-builds"
 LOCAL_MARKER = "engine/LOCAL_BUILD"
+FLOOR_FILE = "engine/MIN_UPDATE_FROM"   # oldest version this release updates from
 SOURCE_KEY = "engine_source"            # meta: tag:v0.0.3 or local:<sha>
 OFFLINE_KEY = "update.last_offline_seconds"
 DEFAULT_OFFLINE_SECONDS = 120
@@ -64,6 +65,33 @@ def version_key(text: str) -> tuple:
     if not m:
         raise UpdateError(f"not a version: {text!r}")
     return int(m.group(1)), int(m.group(2)), int(m.group(3))
+
+
+def parse_floor(data) -> str | None:
+    """The version in a MIN_UPDATE_FROM file, or None if it is missing/odd."""
+    if isinstance(data, bytes):
+        data = data.decode("utf-8", "replace")
+    text = (data or "").strip()
+    try:
+        return base_version(text) if text else None
+    except UpdateError:
+        return None
+
+
+def floor_version() -> str | None:
+    """The oldest version the RUNNING code can update from directly."""
+    try:
+        return parse_floor((engine_dir() / "MIN_UPDATE_FROM").read_text())
+    except OSError:
+        return None
+
+
+def too_old_message(current: str, floor: str) -> str:
+    return (f"this install is on {current}, older than {floor}, the oldest "
+            "version this release can update from directly. Update to "
+            f"v{floor} first (cb update v{floor}), then to this release. "
+            "See UPDATING.md, \"Installs older than "
+            f"{floor}\"")
 
 
 def is_local(text: str) -> bool:
@@ -688,6 +716,13 @@ def check(cfg: Config, tag: str | None = None, zip_path=None, dir_path=None,
                 report["migrations"] = migrations_between(
                     scripts, current, version, applied)
             except (UpdateError, ValueError):
+                pass
+        floor = parse_floor(tree.read(FLOOR_FILE))
+        if floor:
+            try:
+                if version_key(current) < version_key(floor):
+                    report["blockers"].append(too_old_message(current, floor))
+            except UpdateError:
                 pass
         if report["relation"] == "older":
             report["notes"].append(
