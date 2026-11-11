@@ -91,8 +91,9 @@ Run `cb --help` or `cb <command> --help` for the full reference. Top-level comma
 
 Limits and a few text settings can be overridden in `config.json` in the
 company home. Text settings: `run_user`, `run_home`, `claude_bin`,
-`run_memory_max`, `default_model` and `timezone` (schedules and displayed
-times; `UTC` by default). A company that already has routines or decisions
+`run_memory_max`, `default_model`, `timezone` (schedules and displayed
+times; `UTC` by default) and `status_peek` (`on` by default; `off` stops the
+live status line in Telegram). A company that already has routines or decisions
 and no timezone key keeps `America/Chicago` until the key is added. Unknown
 keys are ignored, and a bad value
 stops `cb` with a clear message. See [CHANGELOG.md](CHANGELOG.md) for what

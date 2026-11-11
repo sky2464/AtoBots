@@ -301,13 +301,14 @@ def context_tokens(transcript_path) -> int:
 
 # ---- settings and hooks ----
 
-def settings_for_chat(cfg: Config) -> dict:
+def hook_entry(sub: str) -> list:
     cb = shlex.quote(str(_engine_cb()))
+    return [{"hooks": [{"type": "command", "command": f"{cb} hook {sub}",
+                        "timeout": 30}]}]
 
-    def hook(sub):
-        return [{"hooks": [{"type": "command", "command": f"{cb} hook {sub}",
-                            "timeout": 30}]}]
-    return {"hooks": {"UserPromptSubmit": hook("prompt")}}
+
+def settings_for_chat(cfg: Config) -> dict:
+    return {"hooks": {"UserPromptSubmit": hook_entry("prompt")}}
 
 
 # ---- rollover ----
@@ -445,7 +446,7 @@ def _launch(cmd, cwd, env, cfg: Config | None = None):
         raise
 
 
-def _wait(proc, cfg, token=None, stop=None, watcher=None) -> int:
+def _wait(proc, cfg, token=None, stop=None, watcher=None, peek=None) -> int:
     """Wait for claude. Ctrl-C belongs to claude, not to us. If a rollover
     was requested (or `stop` is set) and claude ignores SIGTERM, kill it after
     a grace period."""
@@ -456,6 +457,8 @@ def _wait(proc, cfg, token=None, stop=None, watcher=None) -> int:
         except subprocess.TimeoutExpired:
             if watcher is not None:
                 watcher.tick()  # may request a rollover; never raises
+            if peek is not None:
+                peek.tick()  # Telegram status line; never raises
             if stop is not None and stop.is_set():
                 if not termed:
                     termed = True
@@ -492,7 +495,7 @@ def _one_session(cfg, conn, summary, token, first: bool, live=None) -> str:
             " VALUES (?,?,?,?)", (BOT, session_id, lane, utcnow())).lastrowid
         activity.record(conn, BOT, f"{prefix}.start" if live else "chat.start",
                         f"{prefix} session {session_id}", str(run_id))
-    temp, code, reason = [], None, "error"
+    temp, code, reason, status = [], None, "error", None
     try:
         try:
             since = last_check(conn, live.check_key if live
@@ -542,8 +545,12 @@ def _one_session(cfg, conn, summary, token, first: bool, live=None) -> str:
         # The marker stays until this session ends well; the summary file is
         # never deleted.
         _write_private(pid_path(cfg), f"{proc.pid}\n")
+        if live:
+            from . import peek as peek_mod
+            peek_mod.note_turn_ended(chat_dir(cfg))  # none carries over
+            status = live.peek(cfg, session_id)
         code = _wait(proc, cfg, token, live.stop if live else None,
-                     rotation.Watcher(cfg, conn, session_id))
+                     rotation.Watcher(cfg, conn, session_id), status)
         now_token = _read_token(cfg)
         if live and live.stop.is_set():
             reason = "stopped"
@@ -554,6 +561,8 @@ def _one_session(cfg, conn, summary, token, first: bool, live=None) -> str:
             if reason == "ok" and token is not None:
                 _unlink(marker_path(cfg))  # the summary did its job
     finally:
+        if status is not None:
+            status.close()  # before the token file goes
         if live:
             live.cleanup()
         _unlink(pid_path(cfg))

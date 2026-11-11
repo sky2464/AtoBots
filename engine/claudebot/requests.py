@@ -266,11 +266,22 @@ def _open_owner_session(conn, session: str) -> bool:
         " AND lane IN ('chat','live')", (session,)).fetchone() is not None
 
 
+def _peek_dir():
+    """The always-on Admin's state folder, or None in any other session."""
+    return os.environ.get("CB_STATE_DIR") or None
+
+
 def _cmd_hook_stop(_args) -> int:
-    """Kept for sessions started by an older engine; does nothing."""
+    """Stop hook of the always-on Admin: the turn ended, so the status peek
+    in Telegram goes away. Silent, always exits 0, and does nothing in any
+    other session."""
     try:
         sys.stdin.buffer.read()
-    except Exception:
+        state = _peek_dir()
+        if state:
+            from . import peek
+            peek.note_turn_ended(state)
+    except Exception:  # noqa: BLE001
         pass
     return 0
 
@@ -329,6 +340,16 @@ def _cmd_hook_prompt(args) -> int:
                 rid = capture(conn, inner, str(session), source)
                 activity.record(conn, "hook", "request.channel",
                                 f"request arrived through {source}", str(rid))
+            if wrapped and _peek_dir():
+                # The Owner asked for something by Telegram: the status peek
+                # starts. A failure here must not lose the request.
+                try:
+                    from . import peek
+                    peek.note_turn_started(
+                        _peek_dir(), [a.get("chat_id") or "" for _, _, a
+                                      in wrapped])
+                except Exception:  # noqa: BLE001
+                    pass
             close_questions(conn)  # they spoke: whatever was asked is answered
         finally:
             conn.close()

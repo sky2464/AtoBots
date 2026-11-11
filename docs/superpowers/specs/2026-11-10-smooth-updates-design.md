@@ -1,7 +1,8 @@
 # Smooth updates — design
 
-Status: **ACTIVE** (project 1 of 3). Projects 2 and 3 are written down but
-wait for this one:
+Status: **BUILT in 0.0.3.** What follows is the design as it was written
+before the build. How to use the result: [UPDATING.md](../../../UPDATING.md).
+The two projects that waited for this one:
 [rename and go public](2026-11-10-rename-and-go-public-design.md),
 [Telegram status peek](2026-11-10-telegram-status-peek-design.md).
 

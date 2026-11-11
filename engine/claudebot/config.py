@@ -18,6 +18,7 @@ _TEXT_KEYS = {
     "timezone": re.compile(r"[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+){0,2}"),
     "digest_time": re.compile(r"([01][0-9]|2[0-3]):[0-5][0-9]|^$"),
     "transcribe_cmd": re.compile(r".+"),
+    "status_peek": re.compile(r"on|off"),
 }
 
 ENV_FILE = Path("/etc/claudebot.env")  # written by install.sh: CLAUDEBOT_HOME=...
@@ -84,6 +85,9 @@ class Config:
     timezone: str = "UTC"
     digest_time: str = ""
     transcribe_cmd: str = ""
+    # A live "what Admin is doing" line in Telegram while it works. No model
+    # tokens are used for it. "off" restores a silent wait.
+    status_peek: str = "on"
     claude_projects_dir: Path | None = None
 
     def __post_init__(self):

@@ -3,6 +3,92 @@
 Each release has a section here. "Manual steps after updating" lists anything
 `engine/update.sh` does not do for you. How to update: [UPDATING.md](UPDATING.md).
 
+## 0.0.3 - 2026-11-10
+
+The smooth-updates release. Updating is now one job that looks first, tells
+the Owner, and puts everything back by itself if it fails. Admin also shows a
+live status line in Telegram while it works.
+
+### Updating
+- `cb update --check` says what an update would do and changes nothing: what
+  is running and where it came from, the target and whether it is newer, how
+  many files differ, whether templates, unit files, the database or a
+  migration step are involved, what restarts and for how long.
+- `cb update` (the newest release) or `cb update TAG` runs the update in its
+  own job. The Owner gets a Telegram message before the chat goes offline.
+- **Automatic rollback.** If a step fails after the code was switched, or the
+  services do not come back and stay up, the job restores the old code, the
+  database copy taken before the update and the old unit files, starts the
+  services and says so in Telegram. The rollback is tried once; if it fails
+  too, the job stops and reports that, with the manual steps in the log.
+- `cb update --adopt --repo URL` turns a copied install (no `.git`) into a
+  Git clone in one job, keeps the old folder as `<folder>.old`, and goes back
+  to it if the adoption fails. `engine/adopt.sh` does the same from a
+  terminal for installs too old to have the command.
+- A zip or folder can be installed as a local build (`cb update --zip FILE`).
+  It is checked before unpacking, marked as unverified, reports its version
+  as `<version>+local.<hash>`, and needs an approved change plan when a bot
+  starts it. This is for maintainers.
+- A release can ship migration scripts in `engine/migrations/`; the update
+  runs the ones between the old and the new version.
+- Each version finishes its own update: the installed version does the first
+  half, then starts `engine/lib/update_finish.sh` from the new one.
+- The backup and health-check timers are stopped during the switch, and every
+  step that could hang has a time limit.
+
+### Fixed
+- The installer could overwrite the engine's own `cb` script: where
+  `/usr/local/bin/cb` was an old symlink into the clone, writing the wrapper
+  went through the link. Files under `/usr/local/bin`, `/etc` and the systemd
+  folder are now replaced, never written through.
+- After a restart Admin could sit on Claude Code's folder-trust question with
+  Telegram silent. The update's finish message now says so and gives the fix,
+  and the engine no longer types its `[system]` notices into that question
+  (the line and its Enter would have answered it).
+- An error handler in the updater could run inside a sub-command and release
+  the queue hold early.
+- The update's scratch files could be swept into the company's Git history.
+- `cb doctor` findings that were there before an update are reported apart
+  from the update's own result.
+
+### Telegram status
+- While the always-on Admin works on a Telegram message from the Owner, the
+  chat shows "typing", then one silent message such as
+  "Reading files · 2 min · 1 more waiting". It is edited as the work moves on
+  and removed when the turn ends, so the reply arrives as a normal message.
+- The labels are fixed words chosen from the kind of step. No file name,
+  command or message text is ever shown, and no model tokens are used.
+- Set `"status_peek": "off"` in `config.json` to turn it off.
+
+### Also in this release (built since 0.0.2)
+- System changes need a written plan and the Owner's recorded yes
+  (`cb change plan`, `cb change approve`, `cb change done`);
+  `cb verify services` checks the services afterwards.
+- The health check alerts and never restarts a service.
+- Sent messages are confirmed, requests are linked to items automatically,
+  and `cb digest` gives a daily "what changed".
+- `cb transcribe` turns a voice message into text; `cb backup files` makes an
+  encrypted backup of files.
+- A long session writes a handoff before it is restarted.
+- `python` is made to resolve to `python3`, and `cb doctor` reports hook
+  commands that cannot run.
+
+### Manual steps after updating
+- **Coming from 0.0.2 or 0.0.1:** update to this release with the old
+  updater and name the tag: `engine/update.sh --tag v0.0.3`. Then follow
+  "Updating from 0.0.2 or earlier" in [UPDATING.md](UPDATING.md).
+- Admin's starting persona and the rules gained one line about
+  `cb update --check`. An edited `rules.md` is left alone (`rules.md.new` is
+  written beside it); a persona is changed only with the Owner's agreement.
+
+### Known issues
+- The status line covers the always-on Admin only. Work a bot does after
+  Admin handed it over is not shown.
+- The status line depends on the format of Claude Code's session file. If
+  that changes, the line falls back to "Working" with the elapsed time.
+- Pre-answering the folder-trust question was left out on purpose: it would
+  mean editing Claude Code's own settings file. The update reports it instead.
+
 ## 0.0.2 - 2026-11-10
 
 The review-fixes release: tighter working rules around who may do what, fewer

@@ -178,7 +178,21 @@ class Live:
         d["skipDangerousModePermissionPrompt"] = True
         # Enabled for this session only: regular Admin runs do not load it.
         d["enabledPlugins"] = {CHANNEL.removeprefix("plugin:"): True}
+        # The end of a turn takes the Telegram status peek away.
+        d["hooks"]["Stop"] = chat.hook_entry("stop")
         return d
+
+    def peek(self, cfg, session_id: str):
+        """The status peek for this session, or None when it is switched
+        off (`status_peek` in config.json)."""
+        if getattr(cfg, "status_peek", "on") != "on":
+            return None
+        from . import archive, peek
+        return peek.Peek(
+            state_dir(cfg),
+            token_fn=lambda: peek.read_token(token_file()),
+            transcript_fn=lambda: archive.find_transcript(cfg, session_id),
+            chats_fn=access_allow_from)
 
 
 def token_file() -> Path:

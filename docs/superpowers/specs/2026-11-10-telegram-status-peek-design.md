@@ -1,8 +1,10 @@
 # Telegram status peek — design
 
-Status: **FUTURE.** Do not build yet. It is small and independent, but it
-reaches the live install through the new update flow, so it waits for
-[smooth updates](2026-11-10-smooth-updates-design.md) to ship.
+Status: **BUILT in 0.0.3**, phases 1 and 2 (the always-on Admin). Phase 3
+(bot runs through the streaming output format) is not built. Decisions taken
+in the build: the status message is silent, it is deleted when the turn ends,
+and the labels are the fixed vocabulary below. What follows is the design as
+it was written before the build.
 
 ## Why
 
