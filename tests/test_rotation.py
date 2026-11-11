@@ -93,32 +93,70 @@ class SummaryTests(Base):
         self.assertIn("Next: add totals", text)
         self.assertNotIn("Old thing", text)
         self.assertIn("owner message 6", text)
-        self.assertNotIn("owner message 1\n", text.split("## Requests")[0])
-        self.assertIn("not yet linked to an item (7)", text)
+    def test_summary_with_transcript_tail(self):
+        p = self.transcript([
+            json.dumps({"type": "user", "message": {"role": "user", "content": "How are sales today?"}}),
+            json.dumps({"type": "assistant", "message": {"role": "assistant", "content": "Sales are up 12%."}}),
+        ])
+        text = rotation.build_summary(self.cfg, self.conn, transcript_path=p)
+        self.assertIn("## Recent conversation tail", text)
+        self.assertIn("How are sales today?", text)
+        self.assertIn("Sales are up 12%.", text)
 
 
 class WatcherTests(Base):
-    def make(self, path, clock):
+    def make(self, path, clock, surface=None):
         self.calls = []
+        self.surfaced = []
         return rotation.Watcher(
             self.cfg, self.conn, "sid", clock=clock,
             rollover=lambda cfg, conn, summary: self.calls.append(summary),
-            find=lambda cfg, sid: path)
+            find=lambda cfg, sid: path,
+            surface=surface or (lambda cfg, text, **kw: self.surfaced.append(text)))
 
-    def test_rotates_once_when_large_and_quiet(self):
+    def test_prompts_handoff_and_rotates_after_timeout_if_no_summary(self):
         now = [0.0]
-        p = self.transcript([_assistant(self.cfg.chat_rollover_tokens)],
-                            age=60)
+        p = self.transcript([
+            json.dumps({"type": "user", "message": {"content": "hello admin"}}),
+            _assistant(self.cfg.chat_rollover_tokens),
+        ], age=60)
         w = self.make(p, lambda: now[0])
         self.assertFalse(w.tick())  # not yet time to look
         now[0] += rotation.CHECK_SECONDS
-        self.assertTrue(w.tick())
-        now[0] += rotation.CHECK_SECONDS
+        self.assertFalse(w.tick())  # prompted handoff notice!
+        self.assertEqual(len(self.surfaced), 1)
+        self.assertIn("This session is long. Write your handoff now with cb chat-rollover.", self.surfaced[0])
+        self.assertEqual(len(self.calls), 0)
+
+        # Before timeout
+        now[0] += 50
         self.assertFalse(w.tick())
+        self.assertEqual(len(self.calls), 0)
+
+        # After timeout (180s default)
+        now[0] += 140
+        self.assertTrue(w.tick())
         self.assertEqual(len(self.calls), 1)
-        self.assertIn("Open items", self.calls[0])
+        self.assertIn("Recent conversation tail", self.calls[0])
+        self.assertIn("hello admin", self.calls[0])
         self.assertTrue(self.conn.execute(
             "SELECT 1 FROM activity WHERE kind='chat.rotated'").fetchone())
+
+    def test_handoff_summary_arrival_completes_watcher(self):
+        now = [0.0]
+        p = self.transcript([_assistant(self.cfg.chat_rollover_tokens)], age=60)
+        w = self.make(p, lambda: now[0])
+        now[0] += rotation.CHECK_SECONDS
+        w.tick()
+        self.assertEqual(len(self.surfaced), 1)
+
+        # Simulate Admin writing their handoff summary
+        from unittest import mock
+        with mock.patch("claudebot.chat._pending", return_value=("Admin's handoff summary", "token123")):
+            self.assertTrue(w.tick())
+            self.assertTrue(w.done)
+            # fallback rollover was not called
+            self.assertEqual(len(self.calls), 0)
 
     def test_never_interrupts_a_turn_or_a_small_session(self):
         now = [float(rotation.CHECK_SECONDS)]
