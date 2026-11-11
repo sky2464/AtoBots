@@ -432,6 +432,10 @@ class TemplatesTest(unittest.TestCase):
         for p in (ROOT / "engine").rglob("*"):
             if not p.is_file() or "__pycache__" in p.parts:
                 continue
+            # The alias helper is the one place that must name bare python:
+            # it checks for it and links it to python3.
+            if p.name == "python_alias.sh":
+                continue
             # Check scripts (.sh, .py, etc.), unit files (.service, .timer), and templates
             if p.suffix in (".sh", ".py", ".service", ".timer", ".md", ".json") or p.parent.name in ("bin", "systemd", "templates"):
                 targets.append(p)

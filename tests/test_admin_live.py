@@ -217,25 +217,60 @@ class UpdatePendingTests(Base):
             self.cfg, notify_fn=lambda *a, **k: called.append(a)))
         self.assertEqual(called, [])
 
-    def test_check_pending_update_sends_notification_and_deletes_marker(self):
+    def _marker(self, **extra):
         sd = admin_live.state_dir(self.cfg)
         sd.mkdir(parents=True, exist_ok=True)
         marker = sd / admin_live.UPDATE_PENDING_FILE
-        marker.write_text(json.dumps({
-            "old_version": "v0.0.1",
-            "new_version": "v0.0.2",
-            "time": "2026-11-10T12:00:00Z",
-        }))
+        data = {"old_version": "v0.0.1", "new_version": "v0.0.2",
+                "time": "2026-11-10T12:00:00Z"}
+        data.update(extra)
+        marker.write_text(json.dumps(data))
+        return marker
+
+    def test_first_sighting_only_starts_the_clock(self):
+        marker = self._marker()
+        surfaced, sent = [], []
+        done = admin_live.check_pending_update(
+            self.cfg, notify_fn=lambda *a, **k: sent.append(a),
+            surface_fn=lambda cfg, t: surfaced.append(t), now_fn=lambda: 100.0)
+        self.assertFalse(done)
+        self.assertEqual((surfaced, sent), ([], []))
+        self.assertEqual(json.loads(marker.read_text())["seen_at"], 100.0)
+
+    def test_asks_admin_to_reply_once_after_settle(self):
+        marker = self._marker(seen_at=100.0)
+        surfaced = []
+        for t in (110.0, 125.0, 130.0):
+            admin_live.check_pending_update(
+                self.cfg, notify_fn=lambda *a, **k: None,
+                surface_fn=lambda cfg, text: surfaced.append(text),
+                now_fn=lambda t=t: t)
+        self.assertEqual(len(surfaced), 1)
+        self.assertIn("v0.0.1 to v0.0.2", surfaced[0])
+        self.assertIn("cb admin update-ack", surfaced[0])
+        self.assertRegex(surfaced[0], admin_live._SURFACE_TEXT)
+        self.assertTrue(marker.exists())  # stays until Admin acks
+
+    def test_no_ack_sends_direct_notice_and_clears_marker(self):
+        marker = self._marker(seen_at=100.0, surfaced_at=125.0)
         messages = []
 
         def fake_notify(cfg, text, conn=None):
             messages.append(text)
             return True
 
-        self.assertTrue(admin_live.check_pending_update(self.cfg, notify_fn=fake_notify))
-        self.assertEqual(len(messages), 1)
-        self.assertEqual(messages[0], "ClaudeBot updated v0.0.1 to v0.0.2. Admin is back.")
+        self.assertTrue(admin_live.check_pending_update(
+            self.cfg, notify_fn=fake_notify,
+            surface_fn=lambda *a: self.fail("must not ask twice"),
+            now_fn=lambda: 125.0 + admin_live.UPDATE_ACK_WAIT))
+        self.assertIn("did not confirm", messages[0])
         self.assertFalse(marker.exists())
+
+    def test_update_ack_clears_marker(self):
+        marker = self._marker(seen_at=1.0, surfaced_at=2.0)
+        self.assertTrue(admin_live.ack_update(self.cfg))
+        self.assertFalse(marker.exists())
+        self.assertFalse(admin_live.ack_update(self.cfg))
 
     def test_supervise_triggers_check_pending_update(self):
         sd = admin_live.state_dir(self.cfg)

@@ -44,6 +44,8 @@ TOKEN_SECRET = "telegram-bot"  # name in the secure store (cb secret add)
 CHECK_KEY = "admin_live.last_check"
 STATE_DIRNAME = ".admin-live"
 UPDATE_PENDING_FILE = "update-pending.json"
+UPDATE_SETTLE = 20      # s the new session is left alone before the notice
+UPDATE_ACK_WAIT = 600   # s Admin has to run `cb admin update-ack`
 RESTART_DELAY = 10          # seconds before claude is started again
 MAX_DELAY = 300             # longest back-off
 QUICK_SECONDS = 60          # a session shorter than this counts as a failure
@@ -446,28 +448,84 @@ def kill_session() -> None:
         pass
 
 
-def check_pending_update(cfg: Config, notify_fn=None) -> bool:
-    """When update-pending.json exists, send Telegram confirmation and remove it."""
+def _write_marker(marker: Path, data: dict) -> None:
+    tmp = marker.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data))
+    os.chmod(tmp, 0o600)
+    tmp.replace(marker)
+
+
+def check_pending_update(cfg: Config, notify_fn=None, surface_fn=None,
+                         now_fn=time.time) -> bool:
+    """Handle update-pending.json: ask Admin itself to confirm to the Owner.
+
+    The Owner chose a real Admin reply as proof of an update (a model reply
+    proves the whole chain works, at the cost of a little usage). Once the new
+    session has been up for SETTLE seconds, type a `[system]` notice into it
+    telling Admin to reply to the Owner and then run `cb admin update-ack`,
+    which removes the marker. The marker is the proof update.sh waits for, so
+    an Admin that never answers makes the update report FAIL. If no ack comes
+    within ACK_WAIT, send a direct Telegram notice and drop the marker so it
+    does not linger. Returns True only when the marker was cleared here.
+    """
     notify_fn = notify_fn or notify_telegram
+    surface_fn = surface_fn or surface
     marker = state_dir(cfg) / UPDATE_PENDING_FILE
     if not marker.exists():
         return False
     try:
         data = json.loads(marker.read_text())
+        if not isinstance(data, dict):
+            data = {}
     except (OSError, ValueError, TypeError):
         data = {}
     old = data.get("old_version", "unknown")
     new = data.get("new_version", "unknown")
-    msg = f"ClaudeBot updated {old} to {new}. Admin is back."
+    now = now_fn()
+    seen = data.get("seen_at")
+    if not isinstance(seen, (int, float)):
+        data["seen_at"] = now
+        _write_marker(marker, data)
+        return False
+    surfaced = data.get("surfaced_at")
+    if not isinstance(surfaced, (int, float)):
+        if now - seen < UPDATE_SETTLE:
+            return False
+        text = (f"ClaudeBot updated {old} to {new}. Reply to the Owner that "
+                f"the update finished and you are back, then run: "
+                f"cb admin update-ack")
+        try:
+            surface_fn(cfg, text)
+        except ValueError:
+            # A version string with odd characters: use a plain notice.
+            surface_fn(cfg, "ClaudeBot was updated. Reply to the Owner that "
+                       "the update finished and you are back, then run: "
+                       "cb admin update-ack")
+        data["surfaced_at"] = now
+        _write_marker(marker, data)
+        return False
+    if now - surfaced < UPDATE_ACK_WAIT:
+        return False
     conn = connect(cfg)
     try:
-        notify_fn(cfg, msg, conn=conn)
+        notify_fn(cfg, f"ClaudeBot updated {old} to {new}, but Admin did not "
+                       f"confirm. Check the Admin session.", conn=conn)
     finally:
         conn.close()
     try:
         marker.unlink()
     except OSError:
         pass
+    return True
+
+
+def ack_update(cfg: Config) -> bool:
+    """Admin's confirmation that it told the Owner; removes the marker."""
+    marker = state_dir(cfg) / UPDATE_PENDING_FILE
+    try:
+        marker.unlink()
+    except FileNotFoundError:
+        return False
     return True
 
 
@@ -571,6 +629,15 @@ def _cmd_notify(args) -> int:
     return 0 if ok else 1
 
 
+def _cmd_update_ack(_args) -> int:
+    cfg = Config.load()
+    if ack_update(cfg):
+        print("update confirmed")
+        return 0
+    print("no update is waiting for confirmation")
+    return 0
+
+
 def _cmd_run(args) -> int:
     cfg = Config.load()
     stop = threading.Event()
@@ -610,6 +677,9 @@ def register(subparsers) -> None:
     np = sub.add_parser("notify", help="send a direct Telegram notice to the Owner")
     np.add_argument("text", help="message text")
     np.set_defaults(func=_cmd_notify)
+    sub.add_parser("update-ack", help="Admin: confirm you told the Owner the "
+                   "update finished (clears the update marker)"
+                   ).set_defaults(func=_cmd_update_ack)
 
     vp = subparsers.add_parser("verify", help="verify system status")
     vsub = vp.add_subparsers(dest="verify_cmd", required=True)

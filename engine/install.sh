@@ -96,6 +96,9 @@ EOF
 sudo chmod 755 /usr/local/bin/cb
 echo "CLAUDEBOT_HOME=$HOME_DIR" | sudo tee /etc/claudebot.env > /dev/null
 echo "Installed /usr/local/bin/cb and wrote /etc/claudebot.env"
+# shellcheck source=lib/python_alias.sh
+source "$ENGINE_DIR/lib/python_alias.sh"
+ensure_python_alias
 
 # 3. Shell settings, added only if absent.
 touch "$BASHRC"

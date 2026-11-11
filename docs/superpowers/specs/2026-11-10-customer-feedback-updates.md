@@ -347,16 +347,28 @@ Files: `engine/claudebot/rotation.py`, `chat.py`, `admin_live.py`. Tests:
 
 ## Decisions for the Owner
 
-1. **Proof after a change (E2).** The spec uses an engine-sent Telegram
-   message as proof. It costs nothing and works even if the model is down. A
-   real reply written by Admin proves more but spends usage on every update.
-   Recommended: engine message.
-2. **How strict the change plan is (E3).** The spec warns and records when a
-   risky sudo command has no approved plan. Blocking instead is possible, but
-   a bot with sudo can go around `cb`, so it would only look stronger.
-   Recommended: warn and record.
-3. **The `python` hook (E5).** Fix the one hook to say `python3`
-   (recommended), or install the system alias so `python` works everywhere.
+Answered 2026-11-10:
+
+1. **Proof after a change (E2): a real Admin reply.** After an update, the
+   engine types a `[system]` notice into Admin's session; Admin writes to the
+   Owner and runs `cb admin update-ack`, which clears `update-pending.json`.
+   No ack means `update.sh` reports FAIL. After 10 minutes a direct Telegram
+   notice says Admin did not confirm. This spends a little usage per update.
+2. **Change plan strictness (E3): warn and record, never block.** The Owner
+   wants sudo and dangerous-permission runs available for server upkeep. Any
+   rule on them should be instructions to bots, not a hard limit, and at most
+   the main bots (Admin) should be trusted with them, not every bot. Nothing
+   blocks; narrowing sudo stays with finding S1.
+3. **The `python` hook (E5): an alias.** `install.sh` and `update.sh` link
+   `/usr/local/bin/python` to the newest python3 already installed
+   (`engine/lib/python_alias.sh`). It never installs, replaces or downgrades
+   Python, and leaves an existing `python` alone. The doctor check stays.
+6. **Daily digest (F4): stays off.** The Owner will turn it on once it is
+   understood. It is a once-a-day Telegram summary built from records, with
+   no model call.
+
+Still open:
+
 4. **Speech-to-text (G1).** A local tool keeps audio on the server but needs
    about 1 GB of memory while it runs and an install the Owner approves. Which
    languages must it handle?
@@ -364,7 +376,6 @@ Files: `engine/claudebot/rotation.py`, `chat.py`, `admin_live.py`. Tests:
    the backup already keeps files over 50 MB out. If the private files are
    large, the `files` remote should be storage reached with rsync instead.
    How big is the folder today?
-6. **Daily digest time (F4).** Off by default. What time should it arrive?
 
 ## Not doing
 

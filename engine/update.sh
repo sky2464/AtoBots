@@ -282,6 +282,9 @@ echo "Refreshing engine-owned templates ..."
 # 8. Re-render every unit, then start the services on the new code.
 # shellcheck source=lib/units.sh
 source "$ENGINE_DIR/lib/units.sh"
+# shellcheck source=lib/python_alias.sh
+source "$ENGINE_DIR/lib/python_alias.sh"
+ensure_python_alias
 MEMORY_MAX=$("$CB" config get run_memory_max)
 ADMIN_UNIT=/etc/systemd/system/claudebot-admin.service
 ADMIN_RENDERED=$(sed -e "s|@HOME@|$HOME_DIR|g" -e "s|@ENGINE@|$ENGINE_DIR|g" \
