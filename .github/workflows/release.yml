@@ -1,0 +1,68 @@
+name: Release
+
+# Creates the GitHub Release (the Releases page) for a version tag. A pushed
+# tag alone does not make one. Run it by hand to create the Release for a tag
+# that already exists.
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish, for example v0.2.1"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      # The default branch, not the tag: the notes come from its CHANGELOG.md.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+      - name: Check the tag
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if ! [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "error: the tag must look like v0.2.1" >&2
+              exit 1
+          fi
+          git fetch --force --tags origin
+          if ! commit=$(git rev-parse -q --verify "refs/tags/$TAG^{commit}"); then
+              echo "error: there is no tag $TAG" >&2
+              exit 1
+          fi
+          if ! git merge-base --is-ancestor "$commit" HEAD; then
+              echo "error: $TAG is not on the default branch" >&2
+              exit 1
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+      - name: Write the release notes
+        run: python3 .github/scripts/release_notes.py "$VERSION" > "$RUNNER_TEMP/notes.md"
+      - name: Create or update the Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          latest=()
+          # A manual run is for older tags; it must not take "latest" away
+          # from the newest version.
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+              latest=(--latest=false)
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+              gh release edit "$TAG" --title "AtoBots $VERSION" \
+                  --notes-file "$RUNNER_TEMP/notes.md" "${latest[@]}"
+          else
+              gh release create "$TAG" --verify-tag --title "AtoBots $VERSION" \
+                  --notes-file "$RUNNER_TEMP/notes.md" "${latest[@]}"
+          fi
