@@ -37,6 +37,10 @@ from .db import connect, utcnow
 
 BACKUP_REMOTE = "backup"
 ARCHIVE_REMOTE = "archive"
+FILES_REMOTE = "files"
+FILES_LIST_FILE = ".secrets/backup-files.json"
+FILES_WARNING = ("Keep the backup passphrase somewhere off this server. "
+                 "Without it these backups cannot be read.")
 SQL_REL = "backup/company.sql"
 MARKER = "OFFSITE"
 _MONTH_RE = re.compile(r"\d{4}-\d{2}")
@@ -768,13 +772,230 @@ def fetch_offsite(cfg: Config, path: Path) -> Path | None:
     return path
 
 
+# ---- files backup ----
+
+def _files_list_path(cfg: Config) -> Path:
+    return cfg.home / FILES_LIST_FILE
+
+
+def files_list(cfg: Config) -> list[str]:
+    """Return the sorted list of folder paths to be backed up."""
+    p = _files_list_path(cfg)
+    if not p.is_file():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return sorted(set(str(x) for x in data))
+    except (OSError, ValueError):
+        pass
+    return []
+
+
+def files_add(cfg: Config, folder_path: str | Path) -> tuple[bool, bool]:
+    """Add a folder path to the backup list.
+
+    Returns (added, is_first). If is_first is True, the first-time warning
+    should be displayed.
+    """
+    p = Path(folder_path).expanduser().resolve()
+    current = files_list(cfg)
+    is_first = len(current) == 0
+    resolved_str = str(p)
+    if resolved_str in current:
+        return False, False
+    current.append(resolved_str)
+    current.sort()
+    lp = _files_list_path(cfg)
+    lp.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        os.chmod(lp.parent, 0o700)
+    except OSError:
+        pass
+    fd, tmp = tempfile.mkstemp(dir=lp.parent, prefix=".files-")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(current, f, indent=1)
+            f.write("\n")
+        os.replace(tmp, lp)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+    return True, is_first
+
+
+def _backup_passphrase(cfg: Config) -> str:
+    from . import store
+    try:
+        raw = store._reveal(cfg, "backup-passphrase")
+        return raw.decode("utf-8").strip()
+    except Exception as e:
+        raise BackupError(f"backup-passphrase store secret missing or unreadable: {e}") from None
+
+
+def files_now(cfg: Config, conn: sqlite3.Connection | None = None) -> str:
+    """Tar each folder in files_list, encrypt with gpg, and push to remote `files`.
+
+    The plain tar is never written outside a private temporary folder (mode 0700)
+    and is removed on every exit path.
+    """
+    folders = files_list(cfg)
+    if not folders:
+        return "no-folders"
+    if FILES_REMOTE not in remotes(cfg):
+        raise BackupError(f"no '{FILES_REMOTE}' remote configured")
+    passphrase = _backup_passphrase(cfg)
+    if not passphrase:
+        raise BackupError("backup-passphrase is empty")
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="cb-files-tmp-"))
+    try:
+        os.chmod(tmp_dir, 0o700)
+        repo_dir = tmp_dir / "repo"
+        url = _git_ok(cfg.home, "remote", "get-url", FILES_REMOTE).strip()
+        args = ["clone", "-q", "--depth", "1"]
+        _git_ok(tmp_dir, *args, "--", url, str(repo_dir))
+        if _git(repo_dir, "rev-parse", "--verify", "-q", "HEAD").returncode:
+            branch = "main"
+            _git_ok(repo_dir, "checkout", "-q", "-B", branch)
+        else:
+            branch = _git_ok(repo_dir, "symbolic-ref", "--short", "HEAD").strip()
+
+        # Archive each folder
+        for folder_str in folders:
+            folder = Path(folder_str)
+            if not folder.is_dir():
+                continue
+            name = folder.name or "root"
+            tar_path = tmp_dir / f"{name}.tar"
+            gpg_path = repo_dir / f"{name}.tar.gpg"
+            # Tar folder
+            r_tar = subprocess.run(
+                ["tar", "-cf", str(tar_path), "-C", str(folder.parent), folder.name],
+                capture_output=True, text=True
+            )
+            if r_tar.returncode != 0:
+                raise BackupError(f"tar failed for {folder}: {clean(r_tar.stderr)}")
+            try:
+                # Encrypt with gpg
+                r_gpg = subprocess.run(
+                    ["gpg", "--symmetric", "--cipher-algo", "AES256", "--batch",
+                     "--yes", "--passphrase-fd", "0", "-o", str(gpg_path), str(tar_path)],
+                    input=passphrase, capture_output=True, text=True
+                )
+                if r_gpg.returncode != 0:
+                    raise BackupError(f"gpg encryption failed for {name}: {clean(r_gpg.stderr)}")
+            finally:
+                if tar_path.exists():
+                    tar_path.unlink()
+
+        _git_ok(repo_dir, "add", "-A")
+        if _git(repo_dir, "diff", "--cached", "--quiet").returncode:
+            _git_ok(repo_dir, "-c", "user.name=claudebot", "-c",
+                    "user.email=claudebot@claudebot.local", "-c",
+                    "commit.gpgsign=false", "commit", "-q", "-m",
+                    "Backup files")
+        _git_push(repo_dir, "-q", "origin", f"HEAD:refs/heads/{branch}")
+        if conn is not None:
+            meta_set(conn, "backup.files_last_push_ok", utcnow())
+        return "pushed"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def files_verify(cfg: Config) -> str:
+    """Fetch the newest copy from remote `files` and decrypt to null to verify."""
+    folders = files_list(cfg)
+    if not folders:
+        return "no-folders"
+    if FILES_REMOTE not in remotes(cfg):
+        raise BackupError(f"no '{FILES_REMOTE}' remote configured")
+    passphrase = _backup_passphrase(cfg)
+    if not passphrase:
+        raise BackupError("backup-passphrase is empty")
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="cb-files-verify-"))
+    try:
+        os.chmod(tmp_dir, 0o700)
+        repo_dir = tmp_dir / "repo"
+        url = _git_ok(cfg.home, "remote", "get-url", FILES_REMOTE).strip()
+        args = ["clone", "-q", "--depth", "1"]
+        _git_ok(tmp_dir, *args, "--", url, str(repo_dir))
+
+        for folder_str in folders:
+            folder = Path(folder_str)
+            name = folder.name or "root"
+            gpg_path = repo_dir / f"{name}.tar.gpg"
+            if not gpg_path.is_file():
+                continue
+            r_gpg = subprocess.run(
+                ["gpg", "--decrypt", "--batch", "--yes", "--passphrase-fd", "0",
+                 "-o", os.devnull, str(gpg_path)],
+                input=passphrase, capture_output=True, text=True
+            )
+            if r_gpg.returncode != 0:
+                raise BackupError(f"gpg verification failed for {name}: {clean(r_gpg.stderr)}")
+        return "ok"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def restore_files(cfg: Config, source: str, target: str | Path) -> int:
+    """Fetch from source repo/dir, decrypt with passphrase, and untar into target."""
+    target_path = Path(target).expanduser().resolve()
+    target_path.mkdir(parents=True, exist_ok=True)
+    passphrase = _backup_passphrase(cfg)
+    if not passphrase:
+        raise BackupError("backup-passphrase is empty")
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="cb-files-restore-"))
+    n_restored = 0
+    try:
+        os.chmod(tmp_dir, 0o700)
+        repo_dir = tmp_dir / "repo"
+        src_path = Path(source).expanduser()
+        if src_path.is_dir() and (src_path / ".git").exists():
+            _git_ok(tmp_dir, "clone", "-q", "--depth", "1", "--", str(src_path), str(repo_dir))
+        elif src_path.is_dir() and any(src_path.glob("*.tar.gpg")):
+            repo_dir = src_path
+        else:
+            _git_ok(tmp_dir, "clone", "-q", "--depth", "1", "--", str(source), str(repo_dir))
+
+        for gpg_file in sorted(repo_dir.glob("*.tar.gpg")):
+            tar_path = tmp_dir / gpg_file.stem  # e.g. folder.tar
+            try:
+                r_gpg = subprocess.run(
+                    ["gpg", "--decrypt", "--batch", "--yes", "--passphrase-fd", "0",
+                     "-o", str(tar_path), str(gpg_file)],
+                    input=passphrase, capture_output=True, text=True
+                )
+                if r_gpg.returncode != 0:
+                    raise BackupError(f"gpg decrypt failed for {gpg_file.name}: {clean(r_gpg.stderr)}")
+                r_tar = subprocess.run(
+                    ["tar", "-xf", str(tar_path), "-C", str(target_path)],
+                    capture_output=True, text=True
+                )
+                if r_tar.returncode != 0:
+                    raise BackupError(f"tar unpack failed for {gpg_file.name}: {clean(r_tar.stderr)}")
+                n_restored += 1
+            finally:
+                if tar_path.exists():
+                    tar_path.unlink()
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+    return n_restored
+
+
 # ---- CLI ----
 
 def _cmd_now(args) -> int:
     cfg = Config.load()
     conn = connect(cfg)
     bad = False
-    steps = (
+    flist = files_list(cfg)
+    steps = [
         ("snapshot", lambda: (lambda sha: f"committed {sha[:8]}" if sha
                               else "no changes")(snapshot(cfg, conn))),
         ("push", lambda: push(cfg, conn)),
@@ -783,7 +1004,10 @@ def _cmd_now(args) -> int:
         ("archive mirror", lambda: mirror_current_month(cfg, conn) or "nothing new"),
         ("off-server", lambda: ", ".join(offsite_archive(cfg, conn))
          or "not needed"),
-    )
+    ]
+    if flist:
+        steps.append(("files now", lambda: files_now(cfg, conn)))
+        steps.append(("files verify", lambda: files_verify(cfg)))
     try:
         for name, step in steps:
             try:
@@ -809,6 +1033,10 @@ def _cmd_restore(args) -> int:
     except RuntimeError:
         cfg = Config(Path(args.target))
     try:
+        if args.files:
+            count = restore_files(cfg, args.source, args.target)
+            print(f"restored {count} file folder(s)")
+            return 0
         print(f"integrity_check: {restore(cfg, args.source, args.target)}")
         if args.archive:
             print("archive files restored: "
@@ -822,11 +1050,72 @@ def _cmd_restore(args) -> int:
     return 0
 
 
+def _cmd_files_add(args) -> int:
+    cfg = Config.load()
+    added, is_first = files_add(cfg, args.path)
+    if is_first:
+        print(FILES_WARNING)
+    if added:
+        print(f"added {args.path}")
+    else:
+        print(f"{args.path} already in files backup list")
+    return 0
+
+
+def _cmd_files_list(args) -> int:
+    cfg = Config.load()
+    folders = files_list(cfg)
+    for f in folders:
+        print(f)
+    return 0
+
+
+def _cmd_files_now(args) -> int:
+    cfg = Config.load()
+    conn = connect(cfg)
+    try:
+        res = files_now(cfg, conn)
+        print(f"files now: {res}")
+        return 0 if res in ("pushed", "no-folders") else 1
+    except (BackupError, RuntimeError, OSError) as e:
+        print(f"error: {clean(str(e))}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+
+
+def _cmd_files_verify(args) -> int:
+    cfg = Config.load()
+    try:
+        res = files_verify(cfg)
+        print(f"files verify: {res}")
+        return 0 if res in ("ok", "no-folders") else 1
+    except (BackupError, RuntimeError, OSError) as e:
+        print(f"error: {clean(str(e))}", file=sys.stderr)
+        return 1
+
+
 def register(subparsers) -> None:
     b = subparsers.add_parser("backup", help="snapshots, push and restore")
     sub = b.add_subparsers(dest="backup_command", required=True)
     sub.add_parser("now", help="snapshot, push, and move old archive "
                    "off-server if the disk needs it").set_defaults(func=_cmd_now)
+
+    f = sub.add_parser("files", help="encrypted files backup")
+    f_sub = f.add_subparsers(dest="files_command", required=True)
+    f_add = f_sub.add_parser("add", help="add a folder to encrypted files backup")
+    f_add.add_argument("path", help="path to folder")
+    f_add.set_defaults(func=_cmd_files_add)
+
+    f_list = f_sub.add_parser("list", help="list folders in encrypted files backup")
+    f_list.set_defaults(func=_cmd_files_list)
+
+    f_now = f_sub.add_parser("now", help="archive and push encrypted files backup")
+    f_now.set_defaults(func=_cmd_files_now)
+
+    f_ver = f_sub.add_parser("verify", help="verify encrypted files backup")
+    f_ver.set_defaults(func=_cmd_files_verify)
+
     r = sub.add_parser("restore", help="rebuild a company home from a backup "
                        "into an empty or missing folder")
     r.add_argument("source", help="backup repo (path or URL) or a company.sql")
@@ -834,4 +1123,6 @@ def register(subparsers) -> None:
     r.add_argument("--archive", metavar="SOURCE",
                    help="also bring back old transcripts and records from "
                         "the archive repo (path or URL)")
+    r.add_argument("--files", action="store_true",
+                   help="restore encrypted files instead of company home")
     r.set_defaults(func=_cmd_restore)

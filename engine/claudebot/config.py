@@ -17,6 +17,7 @@ _TEXT_KEYS = {
     "default_model": re.compile(r"[A-Za-z0-9][A-Za-z0-9._\[\]-]{0,63}"),
     "timezone": re.compile(r"[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+){0,2}"),
     "digest_time": re.compile(r"([01][0-9]|2[0-3]):[0-5][0-9]|^$"),
+    "transcribe_cmd": re.compile(r".+"),
 }
 
 ENV_FILE = Path("/etc/claudebot.env")  # written by install.sh: CLAUDEBOT_HOME=...
@@ -69,6 +70,7 @@ class Config:
     # the prompt-cache lifetime (the next turn would rewrite all of it).
     idle_rotate_tokens: int = 80000
     cache_ttl_seconds: int = 300
+    rollover_handoff_seconds: int = 180
     archive_offserver_pct: int = 70
     batch_max_messages: int = 20
     batch_max_bytes: int = 64 * 1024
@@ -81,6 +83,7 @@ class Config:
     # Zone for routine schedules and for times shown to people.
     timezone: str = "UTC"
     digest_time: str = ""
+    transcribe_cmd: str = ""
     claude_projects_dir: Path | None = None
 
     def __post_init__(self):

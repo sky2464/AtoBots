@@ -80,7 +80,40 @@ def _clip(text, cap: int = _TEXT_CAP) -> str:
     return text if len(text) <= cap else text[:cap - 1] + "…"
 
 
-def build_summary(cfg: Config, conn, last_owner_messages: int = 5) -> str:
+def _transcript_tail(transcript_path, last_n: int = 5) -> list[tuple[str, str]]:
+    """Return the last `last_n` user and assistant messages from transcript."""
+    if not transcript_path or not os.path.exists(transcript_path):
+        return []
+    entries = []
+    try:
+        with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(d, dict) or d.get("isSidechain") \
+                        or d.get("type") not in ("user", "assistant"):
+                    continue
+                msg = d.get("message")
+                content = msg.get("content") if isinstance(msg, dict) else None
+                text = ""
+                if isinstance(content, str):
+                    text = content
+                elif isinstance(content, list):
+                    text = "\n".join(b.get("text", "") for b in content if isinstance(b, dict)
+                                     and b.get("type") == "text" and isinstance(b.get("text"), str))
+                if text:
+                    role = "The Owner" if d["type"] == "user" else "Admin"
+                    entries.append((role, _clip(text, _TEXT_CAP)))
+    except (OSError, TypeError):
+        return []
+    return entries[-(last_n * 2):] if entries else []
+
+
+def build_summary(cfg: Config, conn, last_owner_messages: int = 5, transcript_path=None) -> str:
     """What a fresh session needs, from the records only: open items, the
     Owner's last messages, requests not yet handled and recent decisions."""
     from . import items, requests  # late: they import the CLI helpers
@@ -126,6 +159,13 @@ def build_summary(cfg: Config, conn, last_owner_messages: int = 5) -> str:
         out.append("\n## Recent decisions")
         out += [f"- {d['id']} {_clip(d['title'], 160)}: "
                 f"\"{_clip(d['quote'], 200)}\"" for d in reversed(dec)]
+
+    if transcript_path:
+        tail = _transcript_tail(transcript_path, last_n=5)
+        if tail:
+            out.append("\n## Recent conversation tail")
+            for speaker, text in tail:
+                out.append(f"- **{speaker}**: {text}")
     return "\n".join(out)
 
 
@@ -135,15 +175,33 @@ class Watcher:
     Any failure is swallowed: it must never break the Owner's session."""
 
     def __init__(self, cfg: Config, conn, session_id: str, clock=time.monotonic,
-                 rollover=None, find=None):
+                 rollover=None, find=None, surface=None):
         self.cfg, self.conn, self.session_id = cfg, conn, session_id
         self.clock = clock
         self._rollover, self._find = rollover, find
+        self._surface = surface
         self._next = clock() + CHECK_SECONDS
+        self._handoff_prompted = False
+        self._handoff_deadline = None
         self.done = False
 
     def tick(self) -> bool:
-        if self.done or self.clock() < self._next:
+        if self.done:
+            return False
+        # If handoff was prompted, check if timeout expired or summary arrived
+        if self._handoff_prompted:
+            from . import chat
+            summary, _ = chat._pending(self.cfg)
+            if summary is not None:
+                # Admin wrote their handoff!
+                self.done = True
+                return True
+            if self.clock() >= self._handoff_deadline:
+                # Timed out waiting for Admin handoff; perform rollover with fallback summary
+                return self._do_fallback_rollover()
+            return False
+
+        if self.clock() < self._next:
             return False
         self._next = self.clock() + CHECK_SECONDS
         try:
@@ -151,8 +209,19 @@ class Watcher:
         except Exception:  # noqa: BLE001
             return False
 
+    def _do_fallback_rollover(self) -> bool:
+        from . import activity, archive, chat
+        find = self._find or archive.find_transcript
+        path = find(self.cfg, self.session_id)
+        summary = build_summary(self.cfg, self.conn, transcript_path=path)
+        (self._rollover or chat.rollover)(self.cfg, self.conn, summary)
+        activity.record(self.conn, "system", "chat.rotated",
+                        "rollover handoff timed out; rotated with transcript tail")
+        self.done = True
+        return True
+
     def check(self) -> bool:
-        from . import activity, archive, chat  # late: chat imports this module
+        from . import activity, admin_live, archive, chat  # late: chat imports this module
         find = self._find or archive.find_transcript
         path = find(self.cfg, self.session_id)
         if path is None:
@@ -162,11 +231,15 @@ class Watcher:
         if not should_rotate(tokens, idle, self.cfg) \
                 or not safe_to_restart(path):
             return False
-        why = ("context size" if tokens >= self.cfg.chat_rollover_tokens
-               else "large and idle past the cache lifetime")
-        (self._rollover or chat.rollover)(
-            self.cfg, self.conn, build_summary(self.cfg, self.conn))
-        activity.record(self.conn, "system", "chat.rotated",
-                        f"{tokens} tokens, idle {int(idle)} s: {why}")
-        self.done = True
-        return True
+
+        # When session passes rollover threshold and is safe to restart:
+        # Prompt Admin to write handoff and wait up to rollover_handoff_seconds.
+        surface_fn = self._surface or admin_live.surface
+        try:
+            surface_fn(self.cfg, "This session is long. Write your handoff now with cb chat-rollover.",
+                       conn=self.conn)
+        except Exception:
+            pass
+        self._handoff_prompted = True
+        self._handoff_deadline = self.clock() + getattr(self.cfg, "rollover_handoff_seconds", 180)
+        return False

@@ -84,6 +84,13 @@ command. Everything you do through `cb` is recorded under your name.
 - `cb change done C-N` closes an approved change after verifying services (`--failed "reason"` to close as failed).
 - `cb update TAG` updates ClaudeBot in a standalone unit.
 
+## Configuration and Rollover
+
+- `cb config get chat_rollover_tokens` shows the token limit where session rollover happens.
+- `cb config get idle_rotate_tokens` shows the token size above which an idle session rotates.
+- `cb config get cache_ttl_seconds` shows the prompt cache lifetime in seconds.
+- `cb config get rollover_handoff_seconds` shows how long the engine waits for your handoff summary.
+
 ## Times
 
 Say times to people like `Tue Nov 3, 2026, 7:45 AM` in the company's time zone.

@@ -11,14 +11,14 @@ from pathlib import Path
 
 from . import (activity, admin_live, archive, backup, bots, changes, chat,
                digest, dispatcher, doctor, gitlog, items, messages, requests,
-               routines, search, store, tasks, update, usage)
+               routines, search, store, tasks, transcribe, update, usage)
 from . import __version__
 from .config import Config
 from .db import SCHEMA_VERSION, connect, init_db
 
 MODULES = [store, bots, items, messages, requests, search, routines,
            dispatcher, archive, chat, doctor, backup, admin_live, usage,
-           tasks, activity, update, changes, digest]
+           tasks, activity, update, changes, digest, transcribe]
 
 
 TEMPLATES = Path(__file__).resolve().parent.parent / "templates"
