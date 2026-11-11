@@ -157,77 +157,9 @@ cb update v0.1.0
 
 Naming an older tag goes back to it; `--check` says "OLDER than what is
 running" first. Read that release's section in [CHANGELOG.md](CHANGELOG.md)
-before you do. A release older than 0.0.3 cannot finish its own update, so
-the updater refuses it: use the hand steps under "If something goes wrong"
-with that tag, and restore the database copy only if the older release cannot
+before you do. A release older than 0.0.3 cannot finish its own update: use
+the hand steps under "If something goes wrong" with that tag, and restore the database copy only if the older release cannot
 open the current one.
-
-## Coming from ClaudeBot (0.0.3 or earlier)
-
-Before 0.1.0 this project was called ClaudeBot. The services were
-`claudebot-*`, the variable was `CLAUDEBOT_HOME` and the env file was
-`/etc/claudebot.env`. The `cb` command, the company home and everything in it
-are the same as before.
-
-### From 0.0.3
-
-Nothing special: `cb update --check`, then `cb update`. The update moves the
-install to the new names by itself:
-
-- it installs the `atobots-*` services, then stops, disables and removes the
-  `claudebot-*` ones, and enables the same ones that were enabled before;
-- it writes `/etc/atobots.env` and adds `export ATOBOTS_HOME=...` to
-  `~/.bashrc`;
-- it copies the release-key setting to `atobots.releaseKey`.
-
-If any of it fails, the old services, code and database are put back, as with
-every update. Afterwards, open a new shell (or `source ~/.bashrc`).
-
-Kept for one release, so nothing of the company's breaks: `/etc/claudebot.env`,
-the `CLAUDEBOT_HOME` line in `~/.bashrc`, and `CLAUDEBOT_HOME` in the
-environment of every bot run (a routine or script that uses it keeps
-working). `cb doctor` reports `old-name` when the old name is the only thing
-pointing at the company home. Change company scripts to `ATOBOTS_HOME` when
-convenient.
-
-The engine folder keeps the name it has (for example `~/ClaudeBot`). To rename
-it, stop the services, move the folder, and run
-`engine/install.sh --start "<company name>" "$ATOBOTS_HOME"` from the new place,
-then `cb bot relink`.
-
-### From 0.0.2 or 0.0.1
-
-Those versions carry an updater that cannot do the rename. **Go to 0.0.3
-first, and name the tag.** If the old updater is pointed at 0.1.0 or later,
-the new version refuses, puts the old code back and says so; nothing is
-changed. Run this the old way, as the bots' account, in the engine folder:
-
-```bash
-engine/update.sh --tag v0.0.3
-```
-
-A build of 0.0.2 made from `main` hands the rest of that update to 0.0.3,
-which finishes it. The 0.0.2 and 0.0.1 releases cannot hand over; after their
-updater ends, finish by hand (the same company name and company home as the
-first install; this does not change company data):
-
-```bash
-engine/install.sh --start "My Company" "$CLAUDEBOT_HOME"
-```
-
-```bash
-cb templates refresh && cb bot relink
-```
-
-```bash
-sudo systemctl restart claudebot-admin   # only if the always-on Admin is enabled
-```
-
-```bash
-cb version && cb doctor
-```
-
-Then update from 0.0.3 as described above.
 
 ## What an update never changes
 

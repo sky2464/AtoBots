@@ -6,7 +6,7 @@ Each employee (a *bot*) has its own identity, memory, and job. Bots sleep when i
 
 AtoBots works with [Claude Code](https://claude.com/claude-code), which you install and log in to yourself. AtoBots is an independent project; it is not made, endorsed or supported by Anthropic. The engine is reusable and knows nothing about any one business. Each company gets its own install and its own company home.
 
-> **Status:** early and private. Interfaces may change without notice. Current package version: **0.1.0** (`cb version`). Called ClaudeBot before 0.1.0.
+> **Status:** early. Interfaces may change without notice. Version **0.2.1** (`cb version`). No licence has been chosen yet; see [docs/public-readiness.md](docs/public-readiness.md).
 
 ---
 
@@ -50,9 +50,12 @@ Each bot has three identity parts:
 
 ## Quick start
 
-Run the installer as a non-root user on the server:
+On the server, as the non-root account the bots will run under, clone the
+repository at a release tag and run the installer:
 
 ```bash
+git clone --branch v0.2.1 https://github.com/sky2464/AtoBots.git
+cd AtoBots
 engine/install.sh --start "My Company" /home/claude/MyCompany
 ```
 
@@ -90,21 +93,24 @@ Run `cb --help` or `cb <command> --help` for the full reference. Top-level comma
 ## Configuration
 
 Limits and a few text settings can be overridden in `config.json` in the
-company home. Text settings: `run_user`, `run_home`, `claude_bin`,
-`run_memory_max`, `default_model`, `timezone` (schedules and displayed
-times; `UTC` by default) and `status_peek` (`on` by default; `off` stops the
-live status line in Telegram). A company that already has routines or decisions
-and no timezone key keeps `America/Chicago` until the key is added. Unknown
-keys are ignored, and a bad value
-stops `cb` with a clear message. See [CHANGELOG.md](CHANGELOG.md) for what
-each release changed.
+company home. Text settings:
+
+- `run_user`, `run_home`, `claude_bin`, `run_memory_max`, `default_model`
+- `timezone`: schedules and displayed times (`UTC` by default). A company that
+  already has routines or decisions and no timezone key keeps
+  `America/Chicago` until the key is added.
+- `status_peek`: `on` by default; `off` stops the live status line in
+  Telegram.
+
+Unknown keys are ignored, and a bad value stops `cb` with a clear message.
+See [CHANGELOG.md](CHANGELOG.md) for what each release changed.
 
 ## Repository layout
 
 ```
 engine/
   bin/cb                 command entry point
-  atobots/             the engine (Python package)
+  atobots/               the engine (Python package)
   systemd/               service and timer units
   templates/             starting files for Admin and new bots
   install.sh             server installer
@@ -148,9 +154,6 @@ offline, moves the clone to the newest release, applies database changes and
 migration steps, restarts the services and checks them. If that fails it puts
 the old version and the database back by itself and says so.
 
-- **Coming from ClaudeBot (0.0.3 or earlier):** from 0.0.3 the update moves
-  the install to the new name by itself; older versions go to 0.0.3 first.
-  See "Coming from ClaudeBot" in [UPDATING.md](UPDATING.md).
 - **Engine files were copied to the server (no `.git`):** `cb update --adopt`
   turns the copy into a clone in one job; see "A copied install" in
   [UPDATING.md](UPDATING.md).
@@ -162,6 +165,7 @@ the old version and the database back by itself and says so.
 - [Design specification](docs/superpowers/specs/2026-11-08-engine-design.md): intent, roles, bot lifecycle, and safety rules
 - [Cost control](docs/superpowers/specs/2026-11-09-cost-control-design.md): wake caps, tiers, and what a run is allowed to spend
 - [Updating a running install](UPDATING.md)
+- [Changelog](CHANGELOG.md)
 - [Security: what the engine does and does not protect](SECURITY.md)
 - [Readiness to be public](docs/public-readiness.md)
 

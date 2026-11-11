@@ -231,7 +231,7 @@ def _hook_failed(raw: bytes, reason: str) -> None:
         pass
     try:
         from .config import find_home
-        home = find_home()[0]
+        home = find_home()
         if home:
             with open(Path(home) / "capture-failed.log", "ab") as f:
                 f.write(raw + b"\n")

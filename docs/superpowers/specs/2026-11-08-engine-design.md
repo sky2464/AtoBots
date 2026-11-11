@@ -1,4 +1,4 @@
-# ClaudeBot Engine — Design (`<COMPANY>` / `<PRODUCT>`)
+# AtoBots Engine — Design (`<COMPANY>` / `<PRODUCT>`)
 
 **Date:** Sun Nov 8, 2026 (CT)
 **Owner:** the Owner
@@ -12,11 +12,11 @@ Labels used below: **(Owner)** was decided by the Owner. **(Builder's call)** is
 
 ## 1. Intent
 
-**ClaudeBot is the main engine.** It creates and runs teams of permanent AI employees. The final product is the Owner using ClaudeBot to build bot teams for different companies and customers. (Owner) For now, only the Owner runs it. (Owner)
+**AtoBots is the main engine.** It creates and runs teams of permanent AI employees. The final product is the Owner using AtoBots to build bot teams for different companies and customers. (Owner) For now, only the Owner runs it. (Owner)
 
-**`<COMPANY>` is the first company, and `<PRODUCT>` is one of its products. (Owner, Nov 9, 2026: the VPS is for the `<COMPANY>` business, and `<PRODUCT>` is one product, set up the same way as the Owner's Grok bots.)** This VPS *is* that company install (`$CLAUDEBOT_HOME`): bots manage the `<COMPANY>` business from the server, 24/7 when needed, including the `<PRODUCT>` YouTube channel. (Owner) The Owner's Mac is not part of how the company runs. (Owner) Where older wording said `<PRODUCT>` was the company or install, read it as **`<COMPANY>`** (company) with `<PRODUCT>` as the product line. Backup repos are `<ORG>/backup` and `<ORG>/archive`.
+**`<COMPANY>` is the first company, and `<PRODUCT>` is one of its products. (Owner, Nov 9, 2026: the VPS is for the `<COMPANY>` business, and `<PRODUCT>` is one product, set up the same way as the Owner's Grok bots.)** This VPS *is* that company install (`$ATOBOTS_HOME`): bots manage the `<COMPANY>` business from the server, 24/7 when needed, including the `<PRODUCT>` YouTube channel. (Owner) The Owner's Mac is not part of how the company runs. (Owner) Where older wording said `<PRODUCT>` was the company or install, read it as **`<COMPANY>`** (company) with `<PRODUCT>` as the product line. Backup repos are `<ORG>/backup` and `<ORG>/archive`.
 
-**The product ships with one bot: Admin. (Owner)** If Admin can handle everything, that's all there is. When the Owner asks for a new agent or bot, Admin works with him to define it, creates it with its own Soul, Memory and persona, and remembers it. That's how Grok bots work, and how ClaudeBot should work. (Owner)
+**The product ships with one bot: Admin. (Owner)** If Admin can handle everything, that's all there is. When the Owner asks for a new agent or bot, Admin works with him to define it, creates it with its own Soul, Memory and persona, and remembers it. That's how Grok bots work, and how AtoBots should work. (Owner)
 
 The Owner wants bots that act like the Grok and Muse bots he already knows: employees who work hand in hand, each with its own persona, Soul and Memory. (Owner) He gives the org its work by prompting it, and he checks in by talking to Admin. (Owner)
 
@@ -33,7 +33,7 @@ The Owner wants bots that act like the Grok and Muse bots he already knows: empl
 **Non-goals for now**
 - Phone access. Mac first. (Owner)
 - Other customers. Each will get their own server, and that work is out of scope for this design. (Owner)
-- Letting anyone else install or operate ClaudeBot.
+- Letting anyone else install or operate AtoBots.
 - Connecting to, migrating from, or syncing with Grok or Muse. Grok profiles are pasted in by the Owner as source text only.
 - Bots running nonstop. (Owner chose always on duty, section 5.)
 
@@ -57,7 +57,7 @@ The Owner wants bots that act like the Grok and Muse bots he already knows: empl
 ## 4. Two layers and who does what
 
 ```
-ClaudeBot engine (reusable)         <COMPANY> company (this install)
+AtoBots engine (reusable)         <COMPANY> company (this install)
   Admin, ready to go                  Admin's Memory and company knowledge
   bot creation                        bots the Owner asks for: Soul, persona, Memory
   secure store                        org chart and rules
@@ -116,7 +116,7 @@ Bot setup is stored in the bot list, and Admin can change it later, with each ch
 
 **Always on duty (Owner):** each bot keeps its identity and Memory forever. It sleeps when idle and wakes for a message, a routine or a trigger.
 
-**Admin also runs always-on, with Telegram (Owner, Nov 9, 2026).** Besides waking per message like every bot, Admin has one long-lived session (tmux `admin-live`, started at boot by `claudebot-admin.service`) with the official Telegram channel, so the Owner can talk to it from his phone. It restarts if it stops (back-off up to 5 minutes), keeps its own state in `.admin-live/` and does not hold the chat lock, so bots keep running while it is up.
+**Admin also runs always-on, with Telegram (Owner, Nov 9, 2026).** Besides waking per message like every bot, Admin has one long-lived session (tmux `admin-live`, started at boot by `atobots-admin.service`) with the official Telegram channel, so the Owner can talk to it from his phone. It restarts if it stops (back-off up to 5 minutes), keeps its own state in `.admin-live/` and does not hold the chat lock, so bots keep running while it is up.
 
 **Each bot has three identity parts (Owner). The definitions and edit rights are the Builder's call:**
 
@@ -372,4 +372,4 @@ Which bots come after that is up to the Owner, through Admin.
 
 ## 14. Left to the builder
 
-Exact database tables, `cb` command details, file formats, exact folder locations (the Owner has created `$CLAUDEBOT_HOME` and `~/ClaudeBot` on the server, so check those first), how bots map to Claude Code agents and flags, the encryption method, limit values, backup schedule, and the exact wording of rules and the starting Soul template. Python standard library and SQLite are the default for engine tools, following section 8.
+Exact database tables, `cb` command details, file formats, exact folder locations (the Owner has created `$ATOBOTS_HOME` and `~/AtoBots` on the server, so check those first), how bots map to Claude Code agents and flags, the encryption method, limit values, backup schedule, and the exact wording of rules and the starting Soul template. Python standard library and SQLite are the default for engine tools, following section 8.

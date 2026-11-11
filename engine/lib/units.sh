@@ -36,23 +36,3 @@ install_units() {
         echo "Installed $dest/$name"
     done
 }
-
-# Handover from an updater older than 0.0.3. Those scripts move the checkout
-# to the new version and then source this file to install the units, with
-# their own steps (and their own unit names) still to come. They know nothing
-# about migrations, rollback or a renamed service, so the new version takes
-# over here and the old script never continues. CHANGED and OLD_REF are that
-# script's own variables; CB_UPD_KIND is set only by the current updater.
-if [ "${CHANGED:-0}" = "1" ] && [ -n "${OLD_REF:-}" ] && [ -z "${CB_UPD_KIND:-}" ]; then
-    trap - ERR
-    echo "Handing the rest of this update to the new version ..."
-    export CB_UPD_KIND=git
-    export CB_UPD_LEGACY=1
-    export CB_UPD_OLD_VERSION=${OLD_VERSION:-}
-    export CB_UPD_OLD_REF=$OLD_REF
-    export CB_UPD_BACKUP=${BACKUP:-}
-    export CB_UPD_LABEL="tag:${TAG:-unknown}"
-    export CB_UPD_FORCE=${FORCE:-0}
-    export CB_UPD_OLD_PREFIX=$CB_OLD_UNIT_PREFIX
-    exec "$(dirname "${BASH_SOURCE[0]}")/update_finish.sh"
-fi

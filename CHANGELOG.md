@@ -3,41 +3,33 @@
 Each release has a section here. "Manual steps after updating" lists anything
 `engine/update.sh` does not do for you. How to update: [UPDATING.md](UPDATING.md).
 
-Before 0.1.0 the project was called ClaudeBot. Older sections use the names
-of their time.
+## 0.2.1 - 2026-11-11
+
+Housekeeping: the compatibility code for installs older than 0.1.0 is gone,
+and the README is ready for a first-time reader.
+
+### What changed
+- Only `ATOBOTS_HOME` and `/etc/atobots.env` are read, and bot runs get only
+  `ATOBOTS_HOME`. The `0.1.0` migration, the leftover-service check in
+  `cb doctor` and the handover from very old updaters were removed.
+- Installs older than 0.1.0 can no longer be updated in place. Install the
+  current release fresh and restore the company home from a backup.
+
+### Manual steps after updating
+- None, if the install is already on 0.1.0 and `cb doctor` was quiet.
 
 ## 0.1.0 - 2026-11-10
 
-The rename. The project is now **AtoBots**; it was called ClaudeBot. Nothing
-about what the engine does changed in this release.
+The project is now **AtoBots**. Nothing about what the engine does changed in
+this release.
 
 ### What changed
 - The services are `atobots-dispatcher`, `atobots-admin`, `atobots-backup`
-  and `atobots-doctor` (they were `claudebot-*`).
+  and `atobots-doctor`.
 - The company home variable is `ATOBOTS_HOME` and the env file is
   `/etc/atobots.env`.
 - The Python package folder is `engine/atobots/`.
 - The release-key setting is `atobots.releaseKey`.
-
-### What did not change
-- The `cb` command and every sub-command.
-- The company home, the database, bots, secrets and backups.
-- The tmux session name `admin-live`.
-- The engine folder on the server keeps whatever name it has.
-
-### Moving an existing install
-- From 0.0.3: `cb update --check`, then `cb update`. The update installs the
-  new services, removes the old ones, enables the same ones as before, writes
-  the new env file, and adds `ATOBOTS_HOME` to `~/.bashrc`. If anything
-  fails, the old services, code and database are put back.
-- From 0.0.2 or 0.0.1: go to 0.0.3 first. An updater from before 0.0.3 that
-  is pointed at this release is refused: the new version puts the old code
-  back, starts the dispatcher again and says what to do.
-- The old names keep working for one release: `CLAUDEBOT_HOME` and
-  `/etc/claudebot.env` are still read, and every bot run gets both
-  variables, so a company script that uses the old one does not break.
-  `cb doctor` reports `old-name` when the old name is the only thing in use,
-  and when old service files are still installed next to the new ones.
 
 ### Fixed
 - A zip with links inside is refused outright. Before, a link that stayed
@@ -52,16 +44,6 @@ about what the engine does changed in this release.
   plain words, and how to report a problem.
 - [docs/public-readiness.md](docs/public-readiness.md): what still stands
   between this repository and a public one.
-
-### Manual steps after updating
-- Open a new shell (or `source ~/.bashrc`) so `ATOBOTS_HOME` is set.
-- When convenient, change company scripts and routines that use
-  `$CLAUDEBOT_HOME` to `$ATOBOTS_HOME`. The old name stops working in the
-  release after next.
-
-### Known issues
-- Company Git history written before this release keeps the old author
-  address (`@claudebot.local`); new commits use `@atobots.local`.
 
 ## 0.0.3 - 2026-11-10
 
@@ -212,7 +194,7 @@ From 0.0.1, the updater that runs is the 0.0.1 one, which does not do the new
 steps above. After `engine/update.sh` finishes, run these once
 ([UPDATING.md](UPDATING.md) has the details):
 
-1. `engine/install.sh --start "<company name>" "$CLAUDEBOT_HOME"` — installs
+1. `engine/install.sh --start "<company name>" "$ATOBOTS_HOME"` — installs
    the new unit files.
 2. `cb templates refresh` — replaces `rules.md` and the bundled skills in the
    company home with this release's. If you edited `rules.md`, save your copy
@@ -220,7 +202,7 @@ steps above. After `engine/update.sh` finishes, run these once
 3. `cb bot relink`
 4. Compare Admin's persona with the new starting file and apply it only if
    the Owner agrees:
-   `diff "$CLAUDEBOT_HOME/bots/admin/PERSONA.md" engine/templates/admin/PERSONA.md`
+   `diff "$ATOBOTS_HOME/bots/admin/PERSONA.md" engine/templates/admin/PERSONA.md`
 
 ### Known issues
 - A question or task that a bot never answers is retried without limit (up to

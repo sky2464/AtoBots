@@ -42,24 +42,12 @@ def _home_from_file() -> str | None:
     return _from_env_file(ENV_FILE, names.HOME_VAR)
 
 
-def find_home(environ=None) -> tuple:
-    """(company home, name it was found under). The current variable and env
-    file win; the names from before 0.1.0 are still read, and the second
-    value then says which one, so `cb doctor` can ask for the fix."""
+def find_home(environ=None) -> str | None:
+    """The company home: the environment variable, then the env file."""
     env = os.environ if environ is None else environ
     if env.get(names.HOME_VAR):
-        return env[names.HOME_VAR], None
-    found = _home_from_file()
-    if found:
-        return found, None
-    for var in names.OLD_HOME_VARS:
-        if env.get(var):
-            return env[var], var
-    for path, var in zip(names.OLD_ENV_FILES, names.OLD_HOME_VARS):
-        found = _from_env_file(Path(path), var)
-        if found:
-            return found, path
-    return None, None
+        return env[names.HOME_VAR]
+    return _home_from_file()
 
 
 @dataclass
@@ -147,11 +135,10 @@ class Config:
 
     @classmethod
     def load(cls) -> "Config":
-        home, old_name = find_home()
+        home = find_home()
         if not home:
             raise RuntimeError(f"{names.HOME_VAR} is not set (and {ENV_FILE} has none)")
         cfg = cls(Path(home))
-        cfg.old_name = old_name  # set when only a pre-0.1.0 name pointed here
         cfg._apply_overrides()
         from . import db  # late: db imports this module
         db.set_zone(cfg.timezone)

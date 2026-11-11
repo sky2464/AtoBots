@@ -110,14 +110,7 @@ main() {
         exit 1
     fi
 
-    # Which unit names the old install uses (a rename may lie in between).
     OLD_PREFIX=$CB_UNIT_PREFIX
-    for candidate in "$CB_UNIT_PREFIX" "$CB_OLD_UNIT_PREFIX"; do
-        if [ -f "${CB_SYSTEMD_DIR:-/etc/systemd/system}/$candidate-dispatcher.service" ]; then
-            OLD_PREFIX=$candidate
-            break
-        fi
-    done
     DISPATCHER=$OLD_PREFIX-dispatcher.service
     ADMIN=$OLD_PREFIX-admin.service
 

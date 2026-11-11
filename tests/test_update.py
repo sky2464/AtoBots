@@ -70,24 +70,24 @@ class VersionTests(unittest.TestCase):
                 update.version_key(bad)
 
     def test_migrations_run_in_version_order_between_old_and_new(self):
-        files = ["0.1.0-rename.sh", "0.0.3-first.sh", "0.2.0-later.sh",
+        files = ["0.1.0-example.sh", "0.0.3-first.sh", "0.2.0-later.sh",
                  "README.md", "0.0.10-tenth.sh", "notes.sh"]
         self.assertEqual(
             update.migrations_between(files, "0.0.2", "0.1.0"),
-            ["0.0.3-first.sh", "0.0.10-tenth.sh", "0.1.0-rename.sh"])
+            ["0.0.3-first.sh", "0.0.10-tenth.sh", "0.1.0-example.sh"])
         self.assertEqual(
             update.migrations_between(files, "0.1.0", "0.1.0",
-                                      ["0.1.0-rename.sh"]), [])
+                                      ["0.1.0-example.sh"]), [])
         # going back runs nothing
         self.assertEqual(update.migrations_between(files, "0.2.0", "0.0.3",
                                                    files), [])
 
     def test_a_second_local_build_can_still_add_a_migration(self):
-        files = ["0.1.0-rename.sh", "0.1.0-second.sh"]
+        files = ["0.1.0-example.sh", "0.1.0-second.sh"]
         self.assertEqual(
             update.migrations_between(files, "0.1.0+local.aaaaaaa",
                                       "0.1.0+local.bbbbbbb",
-                                      ["0.1.0-rename.sh"]),
+                                      ["0.1.0-example.sh"]),
             ["0.1.0-second.sh"])
 
     def test_an_unknown_old_version_runs_everything_up_to_new(self):

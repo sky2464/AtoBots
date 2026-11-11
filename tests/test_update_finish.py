@@ -308,12 +308,11 @@ class FinisherTests(Base):
         st = update_finish.State.from_env({
             "CB_UPD_KIND": "adopt", "CB_UPD_OLD_VERSION": "0.0.2",
             "CB_UPD_BACKUP": "/x/b.db", "CB_UPD_OLD_FOLDER": "relative",
-            "CB_UPD_LEGACY": "1", "CB_UPD_STOPPED_AT": "nonsense",
+            "CB_UPD_STOPPED_AT": "nonsense",
             "CB_UPD_SOMETHING_NEW": "ignored"})
         self.assertEqual(st.kind, "adopt")
         self.assertEqual(st.backup, Path("/x/b.db"))
         self.assertIsNone(st.old_folder)
-        self.assertTrue(st.legacy)
         self.assertIsNone(st.stopped_at)
         self.assertEqual(update_finish.State.from_env({}).kind, "git")
 
@@ -526,41 +525,6 @@ class ScriptedRunTests(Base):
         self.assertTrue((copy / "ONLY_IN_OLD").exists())
         self.assertFalse((copy / ".git").exists())
         self.assertFalse((self.tmp / "copied.old").exists())
-        self.assertTrue(self.fake.has("active", DISPATCHER))
-
-    def test_an_updater_from_before_this_release_hands_over(self):
-        """Old updaters source lib/units.sh after the checkout. The new
-        version takes over there, and the old script never continues."""
-        self.release(migration="99.0.0-mark.sh")
-        fakes.git(self.install, "fetch", "-q", "--tags", "origin")
-        backup = self.home / "backups" / "pre-update-legacy.db"
-        backup.parent.mkdir(exist_ok=True)
-        backup_db(self.home / "company.db", backup)
-        legacy = self.tmp / "legacy-update.sh"
-        legacy.write_text(f'''#!/usr/bin/env bash
-set -euo pipefail
-ENGINE_DIR={self.install}/engine
-REPO_DIR={self.install}
-export {HOME_VAR}={self.home}
-OLD_VERSION={self.old_version}
-OLD_REF={self.old_head}
-BACKUP={backup}
-TAG=v99.0.0
-FORCE=0
-trap 'echo LEGACY-ERR-TRAP' ERR
-CHANGED=1
-git -C "$REPO_DIR" checkout --quiet --detach "refs/tags/$TAG"
-source "$ENGINE_DIR/lib/units.sh"
-echo LEGACY-CONTINUED
-''')
-        r = self.run_script(legacy)
-        out = r.stdout + r.stderr
-        self.assertEqual(r.returncode, 0, out)
-        self.assertNotIn("LEGACY-CONTINUED", out)
-        self.assertNotIn("LEGACY-ERR-TRAP", out)
-        self.assertIn("Handing the rest of this update to the new version", out)
-        self.assertEqual(self.version(), "99.0.0")
-        self.assertTrue((self.home / "migrated").exists())
         self.assertTrue(self.fake.has("active", DISPATCHER))
 
     def test_install_and_units_never_write_through_a_symlink(self):

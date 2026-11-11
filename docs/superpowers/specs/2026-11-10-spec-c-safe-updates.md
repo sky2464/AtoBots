@@ -22,7 +22,7 @@ clear answer to "can the older engine open this database?".
 
 ## Task C1 — Schema version (L9)
 
-Files: `engine/claudebot/db.py`, `engine/claudebot/cli.py`. Tests:
+Files: `engine/atobots/db.py`, `engine/atobots/cli.py`. Tests:
 `tests/test_db.py`.
 
 1. `SCHEMA_VERSION = 2` in `db.py`. (Version 1 is every database made by
@@ -33,7 +33,7 @@ Files: `engine/claudebot/db.py`, `engine/claudebot/cli.py`. Tests:
    returns.
 3. If the stored version is **higher** than `SCHEMA_VERSION`, `connect()`
    raises `RuntimeError("this company database was written by a newer
-   ClaudeBot (schema N); update the engine or restore the pre-update
+   AtoBots (schema N); update the engine or restore the pre-update
    backup")`. `cli.main` already prints `RuntimeError` and returns 1.
 4. `cb version --schema` prints the engine's schema version and, when a
    company home is configured, the database's.
@@ -44,7 +44,7 @@ being left alone (assert no `ALTER`, by counting statements through
 
 ## Task C2 — Pause the dispatcher during an update (L3)
 
-Files: `engine/claudebot/dispatcher.py`, `engine/update.sh`. Tests:
+Files: `engine/atobots/dispatcher.py`, `engine/update.sh`. Tests:
 `tests/test_dispatcher.py`, `tests/test_templates.py`.
 
 1. New commands `cb dispatcher hold --minutes N --reason TEXT` and
@@ -59,7 +59,7 @@ Files: `engine/claudebot/dispatcher.py`, `engine/update.sh`. Tests:
    3. wait until `cb dispatcher idle`, up to 30 minutes;
    4. if still busy: print the running bots (`cb status`) and **stop with
       exit 1 after `cb dispatcher release`**, unless `--force` was given;
-   5. `sudo systemctl stop claudebot-dispatcher`;
+   5. `sudo systemctl stop atobots-dispatcher`;
    6. checkout the tag; `CHANGED=1`;
    7. `cb init`, `cb templates refresh` (see C3);
    8. re-render units (see C4), `daemon-reload`, start services;
@@ -72,7 +72,7 @@ Files: `engine/claudebot/dispatcher.py`, `engine/update.sh`. Tests:
 
 ## Task C3 — Keep the Owner's `rules.md` (L4)
 
-Files: `engine/claudebot/cli.py`, `UPDATING.md`. Tests:
+Files: `engine/atobots/cli.py`, `UPDATING.md`. Tests:
 `tests/test_templates.py`.
 
 `refresh_engine_templates` changes:
@@ -96,7 +96,7 @@ Files: `engine/claudebot/cli.py`, `UPDATING.md`. Tests:
 ## Task C4 — Render every unit in one place (L3, L12)
 
 Files: `engine/install.sh`, `engine/update.sh`, new `engine/lib/units.sh`,
-`engine/systemd/claudebot-admin.service`. Tests: `tests/test_templates.py`.
+`engine/systemd/atobots-admin.service`. Tests: `tests/test_templates.py`.
 
 1. Move `render_unit` into `engine/lib/units.sh` with one function
    `install_units HOME_DIR ENGINE_DIR RUN_USER MEMORY_MAX` that renders the
@@ -111,7 +111,7 @@ Files: `engine/install.sh`, `engine/update.sh`, new `engine/lib/units.sh`,
 
 ## Task C5 — `cb hook stop` is a no-op again (L8)
 
-File: `engine/claudebot/requests.py`. Tests: `tests/test_requests.py`.
+File: `engine/atobots/requests.py`. Tests: `tests/test_requests.py`.
 
 Register `hook stop` with a handler that reads and discards stdin and returns
 0. Help text: "kept for sessions started by an older engine; does nothing".
@@ -119,14 +119,14 @@ Register `hook stop` with a handler that reads and discards stdin and returns
 ## Task C6 — Prune old pre-update copies (L15)
 
 File: `engine/update.sh`. After a successful update keep the five newest
-`pre-update-*.db` files in `$CLAUDEBOT_HOME/backups` and delete older ones;
+`pre-update-*.db` files in `$ATOBOTS_HOME/backups` and delete older ones;
 print each deleted name.
 
 ## Task C7 — Verify the release tag when a key is configured (S8)
 
 Files: `engine/update.sh`, `UPDATING.md`.
 
-If `git config --get claudebot.releaseKey` (in the clone) returns a
+If `git config --get atobots.releaseKey` (in the clone) returns a
 fingerprint, run `git verify-tag "$TAG"` and require that fingerprint in its
 output; fail before any change otherwise. With no key configured, print one
 line: `note: release tags are not verified (see UPDATING.md, "Verifying

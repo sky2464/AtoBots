@@ -2,8 +2,7 @@
 
 Status: **BUILT in 0.0.3.** What follows is the design as it was written
 before the build. How to use the result: [UPDATING.md](../../../UPDATING.md).
-The two projects that waited for this one:
-[rename and go public](2026-11-10-rename-and-go-public-design.md),
+The project that waited for this one:
 [Telegram status peek](2026-11-10-telegram-status-peek-design.md).
 
 ## Why
@@ -67,7 +66,7 @@ a build the Owner made, and whatever way the install was first made.
 
 ## What already exists (keep, do not redo)
 
-`engine/update.sh`, `engine/claudebot/update.py` (`cb update TAG` starts the
+`engine/update.sh`, `engine/atobots/update.py` (`cb update TAG` starts the
 script in a standalone systemd unit so it survives Admin's restart),
 `engine/lib/units.sh`, the schema-version refusal, `cb dispatcher hold` /
 `release` / `idle`, `cb templates refresh` with the `rules.md` protection, the
@@ -194,7 +193,7 @@ read the new files to decide.
 ### 5. Migrations
 
 `engine/migrations/` holds scripts named
-`<version>-<short-name>.sh`, for example `0.1.0-rename.sh`. During an update,
+`<version>-<short-name>.sh`, for example `0.1.0-example.sh`. During an update,
 after the checkout and `cb init`, the updater runs every script whose version
 is greater than the old version and not greater than the new one, in order.
 Rules for these scripts: idempotent, bash with `set -euo pipefail`, no

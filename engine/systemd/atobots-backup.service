@@ -7,6 +7,4 @@ Type=oneshot
 TimeoutStartSec=30min
 User=@USER@
 Environment=ATOBOTS_HOME=@HOME@
-# The name before 0.1.0, for company scripts that still use it.
-Environment=CLAUDEBOT_HOME=@HOME@
 ExecStart=@ENGINE@/bin/cb backup now

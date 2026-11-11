@@ -98,8 +98,7 @@ if ! grep -q '^export ATOBOTS_HOME=' "$BASHRC"; then
     echo "export ATOBOTS_HOME=$HOME_DIR" >> "$BASHRC"
     echo "Added ATOBOTS_HOME to $BASHRC"
 fi
-# The marker carried the old name before 0.1.0; either one counts.
-if ! grep -q -e "$CB_UNIT_PREFIX-path" -e "$CB_OLD_UNIT_PREFIX-path" "$BASHRC"; then
+if ! grep -q -e "$CB_UNIT_PREFIX-path" "$BASHRC"; then
     # shellcheck disable=SC2016  # written literally; expands when bashrc runs
     echo 'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac  # atobots-path' >> "$BASHRC"
     echo "Added ~/.local/bin to PATH in $BASHRC"

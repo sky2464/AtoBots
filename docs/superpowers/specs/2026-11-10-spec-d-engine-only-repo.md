@@ -68,11 +68,11 @@ State that in the PR description.
 
 Files: `engine/templates/rules.md`, `engine/templates/admin/PERSONA.md`,
 `engine/templates/backend/PERSONA.md`,
-`engine/templates/skills/*/SKILL.md`, `engine/claudebot/admin_live.py`
-(`LIVE_PROMPT`), `engine/claudebot/chat.py` (`_compose_prompt`),
-`engine/claudebot/rotation.py` (`build_summary`),
-`engine/claudebot/requests.py`, `engine/claudebot/routines.py`,
-`engine/claudebot/db.py`, `engine/claudebot/config.py`.
+`engine/templates/skills/*/SKILL.md`, `engine/atobots/admin_live.py`
+(`LIVE_PROMPT`), `engine/atobots/chat.py` (`_compose_prompt`),
+`engine/atobots/rotation.py` (`build_summary`),
+`engine/atobots/requests.py`, `engine/atobots/routines.py`,
+`engine/atobots/db.py`, `engine/atobots/config.py`.
 
 1. The Owner is "the Owner" / "they" everywhere; no "he", "him", "his".
 2. `rules.md` "Other outside actions": replace the email / video wording with
@@ -161,8 +161,8 @@ this one.
 
 1. Finish D1–D5 and tag the result.
 2. Create a new empty repository. Export the tagged tree with
-   `git archive` into it and make one commit ("ClaudeBot <version>") with a
-   project identity (for example `ClaudeBot <noreply@…>`), then tag it.
+   `git archive` into it and make one commit ("AtoBots <version>") with a
+   project identity (for example `AtoBots <noreply@…>`), then tag it.
 3. Customers clone only the new repository. `engine/update.sh` works there
    unchanged, because it only needs `origin` and `v*` tags.
 4. Keep this repository private as the development history, or archive it.
