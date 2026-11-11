@@ -2,6 +2,7 @@
 (they come from AUTOINCREMENT row numbers, so archiving or deleting a row
 cannot free a number)."""
 import argparse
+import os
 import re
 import sqlite3
 import sys
@@ -247,10 +248,29 @@ def _line(r) -> str:
 
 def _cmd_new(args):
     def go(cfg, conn):
-        print(new(cfg, conn, args.title, args.owner, status=args.status,
-                  parent=args.parent, priority=args.priority,
-                  owner_waiting=args.owner_waiting, actor=_actor(),
-                  finding=args.finding))
+        item_id = new(cfg, conn, args.title, args.owner, status=args.status,
+                      parent=args.parent, priority=args.priority,
+                      owner_waiting=args.owner_waiting, actor=_actor(),
+                      finding=args.finding)
+        print(item_id)
+        if not args.no_request:
+            from . import requests as req_mod
+            if args.request:
+                rid = req_mod._request_number(args.request)
+                req_mod.link(conn, rid, [item_id])
+                print(f"Linked to R-{rid}.")
+            else:
+                who = activity.caller(conn)
+                session = who.session or os.environ.get("CB_SESSION_ID")
+                if session:
+                    rows = conn.execute(
+                        "SELECT r.id FROM owner_requests r WHERE r.session_id=?"
+                        " AND NOT EXISTS (SELECT 1 FROM request_items l WHERE l.request_id=r.id)"
+                        " ORDER BY r.id", (session,)).fetchall()
+                    for row in rows:
+                        rid = row["id"]
+                        req_mod.link(conn, rid, [item_id])
+                        print(f"Linked to R-{rid}.")
         return 0
     return _run(go)
 
@@ -379,6 +399,9 @@ def register(subparsers) -> None:
     n.add_argument("--owner-waiting", action="store_true")
     n.add_argument("--finding", help="health-check finding key this item is "
                    "for; the item closes itself when the problem clears")
+    n.add_argument("--request", help="link this item to a specific request (e.g. R-12)")
+    n.add_argument("--no-request", action="store_true",
+                   help="do not link this item to unhandled session requests")
     n.set_defaults(func=_cmd_new)
     s = sub.add_parser("status")
     s.add_argument("id")

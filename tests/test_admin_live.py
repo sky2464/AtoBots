@@ -172,6 +172,14 @@ class SurfaceTests(Base):
         self.assertFalse(admin_live.is_running(self.cfg))
 
 
+class LivePromptTests(Base):
+    def test_live_prompt_contains_system_and_waiting_for_admin_rules(self):
+        self.assertIn("[system]", admin_live.LIVE_PROMPT)
+        self.assertIn("waiting for Admin", admin_live.LIVE_PROMPT)
+        self.assertIn("cb inbox", admin_live.LIVE_PROMPT)
+        self.assertIn("Telegram in the same turn", admin_live.LIVE_PROMPT)
+
+
 class MemoryWrapTests(unittest.TestCase):
     def test_memory_wrap_passthrough_without_systemd_run(self):
         cfg = Config(Path("/tmp/unused-home"))

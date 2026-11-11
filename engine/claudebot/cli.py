@@ -10,15 +10,15 @@ from dataclasses import fields
 from pathlib import Path
 
 from . import (activity, admin_live, archive, backup, bots, changes, chat,
-               dispatcher, doctor, gitlog, items, messages, requests, routines,
-               search, store, tasks, update, usage)
+               digest, dispatcher, doctor, gitlog, items, messages, requests,
+               routines, search, store, tasks, update, usage)
 from . import __version__
 from .config import Config
 from .db import SCHEMA_VERSION, connect, init_db
 
 MODULES = [store, bots, items, messages, requests, search, routines,
            dispatcher, archive, chat, doctor, backup, admin_live, usage,
-           tasks, activity, update, changes]
+           tasks, activity, update, changes, digest]
 
 
 TEMPLATES = Path(__file__).resolve().parent.parent / "templates"
@@ -248,8 +248,27 @@ def _cmd_templates_refresh(_args) -> int:
     return 0
 
 
+class CBArgumentParser(argparse.ArgumentParser):
+    _current_argv = None
+
+    def parse_args(self, args=None, namespace=None):
+        self._current_argv = args if args is not None else sys.argv[1:]
+        return super().parse_args(args, namespace)
+
+    def error(self, message):
+        argv = self._current_argv or []
+        first_cmd = None
+        for a in argv:
+            if not a.startswith("-"):
+                first_cmd = a
+                break
+        if first_cmd in ("send", "ask", "reply"):
+            sys.stderr.write('Not sent. Example: cb send tl "subject" "body"\n')
+        super().error(message)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="cb")
+    p = CBArgumentParser(prog="cb")
     sub = p.add_subparsers(dest="command", required=True)
     for m in MODULES:
         m.register(sub)

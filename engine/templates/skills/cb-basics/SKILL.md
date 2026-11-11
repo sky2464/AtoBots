@@ -27,6 +27,9 @@ command. Everything you do through `cb` is recorded under your name.
 - `cb send NAME "subject" "body" --item T-0007` leaves a message and wakes the
   bot. Point to files (`work/T-0007/script.md`) instead of pasting them.
   Bodies stay short. Never send thanks or acknowledgements.
+- A message is sent only when the command prints an id. Any other result
+  means it was not sent. Do not tell the Owner it was passed on until you have
+  the id.
 - Do not reply to a reply or a note unless it needs something done. Ending
   the run without replying is correct.
 - `cb ask NAME T-0007 "question" --handoff-file PATH` asks and then ends your

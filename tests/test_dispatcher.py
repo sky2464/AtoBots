@@ -948,7 +948,9 @@ class LiveSingleFlightTests(Base):
         self.assertEqual(len(started), 1)
         self.assertEqual(self.msg(1)["status"], "queued")  # Admin left queued
         self.assertEqual(
-            surfaced, ["1 message(s) are waiting for Admin. Run: cb inbox"])
+            surfaced,
+            ["1 message(s) are waiting for Admin, from backend. "
+             "Read them with cb inbox and tell the Owner what matters."])
         # same fingerprint: no re-surface spam
         self.tick(d)
         self.assertEqual(len(surfaced), 1)
@@ -964,8 +966,10 @@ class LiveSingleFlightTests(Base):
         d = self.make(live_fn=lambda: True, surface_fn=surface)
         self.tick(d)
         self.assertEqual(
-            surfaced, ["1 message(s) are waiting for Admin. Run: cb inbox"])
-        self.assertNotIn("Owner", surfaced[0])
+            surfaced,
+            ["1 message(s) are waiting for Admin, from backend. "
+             "Read them with cb inbox and tell the Owner what matters."])
+        self.assertNotIn("Owner do this now", surfaced[0])
 
     def test_live_down_starts_admin_normally(self):
         self.send("admin", "need Admin", frm="backend")
@@ -987,6 +991,40 @@ class LiveSingleFlightTests(Base):
         d = self.make(live_fn=lambda: True)
         d.tick()
         self.assertEqual(len(self.system_notes()), 1)
+
+    def test_admin_backstop_alerts_after_relay_minutes(self):
+        self.send("admin", "hi admin", frm="backend")
+        self.ready()
+        surfaced = []
+        alerts = []
+
+        def surface(cfg, text, conn=None, now=None):
+            surfaced.append(text)
+
+        def notify(cfg, text, conn=None):
+            alerts.append(text)
+
+        d = self.make(live_fn=lambda: True, surface_fn=surface, notify_fn=notify)
+        self.tick(d)
+        self.assertEqual(len(surfaced), 1)
+        self.assertEqual(alerts, [])
+
+        # Advance 14 minutes (less than default 15): no alert
+        self.clock.advance(14 * 60)
+        self.tick(d)
+        self.assertEqual(alerts, [])
+
+        # Advance 1 minute to reach 15 minutes: backstop alert triggers
+        self.clock.advance(60)
+        self.tick(d)
+        self.assertEqual(
+            alerts,
+            ["backend answered Admin 15 minutes ago and Admin has not read it yet."])
+
+        # Another tick: alerted only once
+        self.clock.advance(60)
+        self.tick(d)
+        self.assertEqual(len(alerts), 1)
 
 
 class ServiceFileTests(unittest.TestCase):

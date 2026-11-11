@@ -281,5 +281,66 @@ class CallerTests(ItemsBase):
         self.assertEqual(named, activity.Caller("backend", None, None, False))
 
 
+class ItemAutoLinkTests(ItemsBase):
+    def run_cli(self, *argv, env=None):
+        buf = io.StringIO()
+        e = {"CLAUDEBOT_HOME": str(self.cfg.home), "CB_BOT": "admin"}
+        if env:
+            e.update(env)
+        with mock.patch.dict(os.environ, e), redirect_stdout(buf):
+            rc = cli.main(list(argv))
+        return rc, buf.getvalue()
+
+    def test_item_new_auto_links_unhandled_requests_in_same_session(self):
+        seed_owner_session(self.conn, "sess-1")
+        from claudebot import requests as req_mod
+        rid1 = req_mod.capture(self.conn, "fix login", "sess-1")
+        rid2 = req_mod.capture(self.conn, "fix logout", "sess-1")
+        rid_other = req_mod.capture(self.conn, "unrelated", "sess-other")
+
+        rc, out = self.run_cli("item", "new", "Fix auth", env={"CB_SESSION_ID": "sess-1"})
+        self.assertEqual(rc, 0)
+        lines = out.strip().splitlines()
+        self.assertEqual(lines[0], "T-0001")
+        self.assertIn(f"Linked to R-{rid1}.", lines)
+        self.assertIn(f"Linked to R-{rid2}.", lines)
+        self.assertNotIn(f"Linked to R-{rid_other}.", out)
+
+        # Confirm requests 1 and 2 are now linked to T-0001
+        self.assertEqual(
+            [r["id"] for r in req_mod.unhandled(self.conn)],
+            [rid_other])
+
+    def test_item_new_with_explicit_request_flag(self):
+        seed_owner_session(self.conn, "sess-1")
+        from claudebot import requests as req_mod
+        rid1 = req_mod.capture(self.conn, "first thing", "sess-1")
+        rid2 = req_mod.capture(self.conn, "second thing", "sess-1")
+
+        rc, out = self.run_cli("item", "new", "First item",
+                               "--request", f"R-{rid1}",
+                               env={"CB_SESSION_ID": "sess-1"})
+        self.assertEqual(rc, 0)
+        lines = out.strip().splitlines()
+        self.assertEqual(lines[0], "T-0001")
+        self.assertIn(f"Linked to R-{rid1}.", lines)
+        self.assertNotIn(f"Linked to R-{rid2}.", out)
+
+        # rid1 is handled, rid2 remains unhandled
+        self.assertEqual([r["id"] for r in req_mod.unhandled(self.conn)], [rid2])
+
+    def test_item_new_with_no_request_flag(self):
+        seed_owner_session(self.conn, "sess-1")
+        from claudebot import requests as req_mod
+        rid = req_mod.capture(self.conn, "request", "sess-1")
+
+        rc, out = self.run_cli("item", "new", "Unlinked item",
+                               "--no-request",
+                               env={"CB_SESSION_ID": "sess-1"})
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.strip(), "T-0001")
+        self.assertEqual([r["id"] for r in req_mod.unhandled(self.conn)], [rid])
+
+
 if __name__ == "__main__":
     unittest.main()
