@@ -296,6 +296,31 @@ class CheckTests(Base):
                          [".gitignore"])
         self.assertFalse((copy / ".git").exists())
 
+    def test_an_install_below_the_floor_is_told_to_go_through_the_floor(self):
+        """The 0.0.x -> latest case: the check says which release to use
+        first, instead of letting the update fail and roll back."""
+        repo = fakes.make_engine_repo(self.tmp / "clone")
+        fakes.set_version(repo, "0.0.5")
+        fakes.commit_all(repo, "old")
+        fakes.git(repo, "tag", "v0.0.5")
+        fakes.set_version(repo, "9.9.9")
+        (repo / "engine" / "MIN_UPDATE_FROM").write_text("0.1.0\n")
+        fakes.commit_all(repo, "new")
+        fakes.git(repo, "tag", "v9.9.9")
+        fakes.git(repo, "checkout", "-q", "--detach", "v0.0.5")
+        report = self.check(repo, tag="v9.9.9")
+        self.assertFalse(report["ready"])
+        text = update.format_check(report)
+        self.assertIn("on 0.0.5, older than 0.1.0", text)
+        self.assertIn("cb update v0.1.0", text)
+        # from the floor itself there is no such blocker
+        self.assertEqual(update.parse_floor(b"0.1.0\n"), "0.1.0")
+        self.assertIsNone(update.parse_floor(b"soon"))
+
+    def test_the_floor_file_is_a_version_and_a_real_release_step(self):
+        floor = update.parse_floor((ROOT / "engine" / "MIN_UPDATE_FROM").read_text())
+        self.assertEqual(floor, "0.1.0")
+
     def test_clone_and_a_newer_tag(self):
         repo = fakes.make_engine_repo(self.tmp / "clone", tag="v0.0.2")
         fakes.set_version(repo, "99.0.9")

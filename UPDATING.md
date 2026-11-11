@@ -4,6 +4,17 @@ This guide is for a server that already runs AtoBots. There is one flow for
 every install: look first, then start one job that does the rest and undoes
 itself if it fails.
 
+## Which case are you in?
+
+Find the version first: `cb version` (an install older than 0.0.3 may not have
+that command; look at `__version__` in the `__init__.py` under `engine/`).
+
+| The install is | Do this |
+|---|---|
+| 0.1.0 or newer, with Git history | The short version below. |
+| a copy with no Git history, 0.1.0 or newer | "A copied install". |
+| older than 0.1.0 (any kind) | "Installs older than 0.1.0": one command, in two steps done for you. |
+
 ## The short version
 
 Ask Admin in Telegram to update, or run the same two commands yourself as the
@@ -142,6 +153,45 @@ git clone <repository-url> ~/AtoBots.new
 
 It finds the installed engine from the `cb` link in `~/.local/bin` (pass
 `--old-engine PATH` if it cannot). `~/AtoBots.new` can be removed afterwards.
+
+## Installs older than 0.1.0
+
+0.1.0 renamed the services, the settings and the engine package, and later
+releases no longer carry the code that moves an older install across. So an
+older install cannot be sent straight to the newest release. The adopt script
+does it in two steps by itself: it moves the install to release v0.1.0 first
+(that release still knows the old layout), then to the release you asked for.
+Each step has its own backup and undoes itself if it fails. The version that
+sets this limit is in `engine/MIN_UPDATE_FROM`.
+
+Use it for any install below 0.1.0, whether or not it has Git history. It
+works from the newest release, so get that onto the server and run its script
+as the bots' account. `--detach` runs it as its own job, so it keeps going
+when Admin, the chat, is stopped halfway (do this if you started it from the
+chat):
+
+```bash
+git clone <repository-url> ~/AtoBots.new
+```
+
+```bash
+~/AtoBots.new/engine/adopt.sh --repo <repository-url> --detach
+```
+
+It prints the log file to watch. The chat is offline for a few minutes at each
+step. Afterwards remove `~/AtoBots.new` and the old folder it names.
+
+Two things that do not work, and the update tells you why:
+
+- `cb update` from a 0.0.x install straight to a release past 0.1.0: the new
+  version refuses before changing anything and rolls back with a message
+  that names v0.1.0. Use the command above, or go through `cb update v0.1.0`
+  first by hand and then `cb update`.
+- Adopting from a zip (`--source`) when the install is older than 0.1.0: the
+  steps in between have to be fetched, so `--repo` is required.
+
+A fresh install with the company restored from a backup is not needed. (A
+backup never holds secrets, so that route means re-entering them.)
 
 ## One specific release, or going back
 

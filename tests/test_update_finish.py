@@ -104,7 +104,7 @@ class FinisherTests(Base):
 
     def finisher(self, **state) -> update_finish.Finisher:
         st = update_finish.State(
-            kind="git", old_version="0.0.1", old_ref=self.old_ref,
+            kind="git", old_version="0.1.0", old_ref=self.old_ref,
             backup=self.backup, label="tag:v0.0.2", old_prefix=PREFIX,
             stopped_at=990.0)
         for key, value in state.items():
@@ -148,7 +148,7 @@ class FinisherTests(Base):
                          if PREFIX == "atobots" else "")
         # Admin is not enabled here, so the job itself reports the result.
         self.assertEqual(len(self.notices), 1)
-        self.assertIn("0.0.1 ->", self.notices[0])
+        self.assertIn("0.1.0 ->", self.notices[0])
         self.assertIn("The services are running", self.notices[0])
         if "existing issue" in self.notices[0]:
             self.assertIn("Not caused by the update", self.notices[0])
@@ -525,6 +525,105 @@ class ScriptedRunTests(Base):
         self.assertTrue((copy / "ONLY_IN_OLD").exists())
         self.assertFalse((copy / ".git").exists())
         self.assertFalse((self.tmp / "copied.old").exists())
+        self.assertTrue(self.fake.has("active", DISPATCHER))
+
+    def _old_release_line(self, version="0.0.5"):
+        """Upstream gets an old release, then a new one with the floor."""
+        fakes.set_version(self.upstream, version)
+        fakes.commit_all(self.upstream, f"release {version}")
+        fakes.git(self.upstream, "tag", f"v{version}")
+
+    def test_an_install_below_the_floor_is_refused_and_rolled_back(self):
+        """What happens to a 0.0.x clone that is sent straight to a release
+        that dropped the old layout: a clear message, nothing changed."""
+        self._old_release_line()
+        fakes.git(self.install, "fetch", "-q", "--tags", "origin")
+        fakes.git(self.install, "checkout", "-q", "--detach", "v0.0.5")
+        self.old_head = fakes.git(self.install, "rev-parse", "HEAD")
+        self.release("99.0.0")
+        r = self.run_script(self.install / "engine" / "update.sh", "v99.0.0")
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 1, out)
+        self.assertIn("older than 0.1.0", out)
+        self.assertIn("cb update v0.1.0", out)
+        self.assertEqual(fakes.git(self.install, "rev-parse", "HEAD"),
+                         self.old_head)
+        self.assertTrue(self.fake.has("active", DISPATCHER))
+
+    def _two_step_upstream(self):
+        """v0.1.0 has no floor (the real one never had); v99.0.0 does."""
+        floor = self.upstream / "engine" / "MIN_UPDATE_FROM"
+        floor.unlink()
+        fakes.set_version(self.upstream, "0.1.0")
+        fakes.commit_all(self.upstream, "release 0.1.0")
+        fakes.git(self.upstream, "tag", "v0.1.0")
+        floor.write_text("0.1.0\n")
+        self.release("99.0.0")
+
+    def test_adopting_an_old_copy_goes_through_the_floor_release(self):
+        copy = fakes.copy_engine(self.tmp / "copied")
+        fakes.set_version(copy, "0.0.5")
+        (copy / "ONLY_IN_OLD").write_text("x")
+        self._two_step_upstream()
+        newer = fakes.clone(self.upstream, self.tmp / "newer")
+        fakes.git(newer, "checkout", "-q", "--detach", "v99.0.0")
+        r = self.run_script(newer / "engine" / "adopt.sh", "--old-engine",
+                            str(copy / "engine"), "--repo",
+                            str(self.upstream))
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 0, out)
+        self.assertIn("goes in two steps", out)
+        self.assertIn("Step 1: adopting into v0.1.0", out)
+        self.assertIn("Step 2: updating to v99.0.0", out)
+        self.assertEqual(self.cb(copy, "version").stdout.strip(), "99.0.0")
+        self.assertTrue((copy / ".git").is_dir())
+        self.assertTrue((self.tmp / "copied.old" / "ONLY_IN_OLD").exists())
+        self.assertEqual(meta(self.home / "company.db", update.SOURCE_KEY),
+                         "tag:v99.0.0")
+        # two stops and two starts: one per step
+        calls = self.fake.calls()
+        self.assertEqual(calls.count(f"stop {DISPATCHER}"), 2)
+        self.assertEqual(len(list((self.home / "backups"
+                                   ).glob("pre-update-*.db"))), 2)
+
+    def test_adopting_an_old_copy_needs_a_repository(self):
+        copy = fakes.copy_engine(self.tmp / "copied")
+        fakes.set_version(copy, "0.0.5")
+        newer = fakes.copy_engine(self.tmp / "newer")
+        r = self.run_script(newer / "engine" / "adopt.sh", "--old-engine",
+                            str(copy / "engine"), "--source", str(newer))
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("--repo URL", r.stderr)
+        self.assertEqual(self.fake.calls(), [])
+
+    def test_a_failing_first_step_leaves_the_old_copy_running(self):
+        copy = fakes.copy_engine(self.tmp / "copied")
+        fakes.set_version(copy, "0.0.5")
+        (copy / "ONLY_IN_OLD").write_text("x")
+        self._two_step_upstream()
+        # make the floor release itself fail to finish
+        bad = self.upstream / "engine" / "migrations" / "0.1.0-bad.sh"
+        bad.write_text(FAIL)
+        bad.chmod(0o755)
+        fakes.git(self.upstream, "tag", "-d", "v0.1.0")
+        fakes.set_version(self.upstream, "0.1.0")
+        (self.upstream / "engine" / "MIN_UPDATE_FROM").unlink()
+        fakes.commit_all(self.upstream, "bad floor release")
+        fakes.git(self.upstream, "tag", "v0.1.0")
+        (self.upstream / "engine" / "MIN_UPDATE_FROM").write_text("0.1.0\n")
+        fakes.set_version(self.upstream, "99.0.0")
+        fakes.commit_all(self.upstream, "back to new")
+        fakes.git(self.upstream, "tag", "-f", "v99.0.0")
+        newer = fakes.clone(self.upstream, self.tmp / "newer")
+        fakes.git(newer, "checkout", "-q", "--detach", "v99.0.0")
+        r = self.run_script(newer / "engine" / "adopt.sh", "--old-engine",
+                            str(copy / "engine"), "--repo",
+                            str(self.upstream))
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertNotIn("Step 2", out)
+        self.assertTrue((copy / "ONLY_IN_OLD").exists())
+        self.assertFalse((copy / ".git").exists())
         self.assertTrue(self.fake.has("active", DISPATCHER))
 
     def test_install_and_units_never_write_through_a_symlink(self):
