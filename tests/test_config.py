@@ -11,8 +11,8 @@ from unittest import mock
 ENGINE = Path(__file__).resolve().parent.parent / "engine"
 sys.path.insert(0, str(ENGINE))
 
-from claudebot import db, routines  # noqa: E402
-from claudebot.config import Config  # noqa: E402
+from atobots import db, routines  # noqa: E402
+from atobots.config import Config  # noqa: E402
 
 
 class ConfigTests(unittest.TestCase):
@@ -26,7 +26,7 @@ class ConfigTests(unittest.TestCase):
     def load(self, data=None):
         if data is not None:
             (self.home / "config.json").write_text(json.dumps(data))
-        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.home)}):
+        with mock.patch.dict(os.environ, {"ATOBOTS_HOME": str(self.home)}):
             return Config.load()
 
     def test_account_defaults_to_whoever_runs_cb(self):
@@ -41,14 +41,14 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg.rules_cap_bytes, 4 * 1024)
 
     def test_config_get_prints_one_value(self):
-        from claudebot import cli
+        from atobots import cli
         buf = io.StringIO()
         err = io.StringIO()
-        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.home)}), \
+        with mock.patch.dict(os.environ, {"ATOBOTS_HOME": str(self.home)}), \
                 redirect_stdout(buf):
             self.assertEqual(cli.main(["config", "get", "run_memory_max"]), 0)
         self.assertEqual(buf.getvalue().strip(), "1200M")
-        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.home)}), \
+        with mock.patch.dict(os.environ, {"ATOBOTS_HOME": str(self.home)}), \
                 redirect_stderr(err):
             self.assertEqual(cli.main(["config", "get", "no_such_key"]), 1)
         self.assertIn("unknown setting", err.getvalue())
@@ -75,8 +75,8 @@ class ConfigTests(unittest.TestCase):
                 self.load(bad)
 
     def test_existing_schedules_keep_chicago_until_timezone_is_set(self):
-        from claudebot.config import Config
-        from claudebot.db import init_db
+        from atobots.config import Config
+        from atobots.db import init_db
         cfg = Config(self.home)
         init_db(cfg)
         conn = db.connect(cfg)

@@ -7,8 +7,8 @@ from pathlib import Path
 ENGINE = Path(__file__).resolve().parent.parent / "engine"
 sys.path.insert(0, str(ENGINE))
 
-from claudebot import gitlog  # noqa: E402
-from claudebot.config import Config  # noqa: E402
+from atobots import gitlog  # noqa: E402
+from atobots.config import Config  # noqa: E402
 
 
 def git(cfg, *args):
@@ -30,7 +30,7 @@ class GitlogTests(unittest.TestCase):
                     "media/", ".claude/projects/", "backups/", ".alerts/"):
             self.assertIn(pat, ig)
         self.assertEqual(git(self.cfg, "config", "--local", "user.name").strip(),
-                         "claudebot")
+                         "atobots")
 
     def test_backups_and_alerts_not_committed(self):
         self.write("backups/old.sql", "dump")
@@ -56,7 +56,7 @@ class GitlogTests(unittest.TestCase):
         sha = gitlog.commit_run(self.cfg, "backend", ["T-0001"], 7)
         self.assertEqual(sha, git(self.cfg, "rev-parse", "HEAD").strip())
         log = git(self.cfg, "log", "-1", "--format=%an <%ae>%n%cn%n%B")
-        self.assertIn("backend <backend@claudebot.local>", log)
+        self.assertIn("backend <backend@atobots.local>", log)
         self.assertIn("T-0001", log)
         self.assertIn("run 7", log)
 
@@ -106,7 +106,7 @@ class GitlogTests(unittest.TestCase):
         sha = gitlog.commit_sweep(self.cfg, "snapshot")
         self.assertEqual(sha, git(self.cfg, "rev-parse", "HEAD").strip())
         log = git(self.cfg, "log", "-1", "--format=%an <%ae>|%s")
-        self.assertEqual(log.strip(), "system <system@claudebot.local>|snapshot")
+        self.assertEqual(log.strip(), "system <system@atobots.local>|snapshot")
         files = git(self.cfg, "ls-files").split()
         self.assertIn("shared.md", files)
         self.assertNotIn(".secrets/token", files)
@@ -138,8 +138,8 @@ class GitlogTests(unittest.TestCase):
             "import sys, time\n"
             f"sys.path.insert(0, {str(ENGINE)!r})\n"
             "from pathlib import Path\n"
-            "from claudebot import gitlog\n"
-            "from claudebot.config import Config\n"
+            "from atobots import gitlog\n"
+            "from atobots.config import Config\n"
             f"cfg = Config(Path({str(self.cfg.home)!r}))\n"
             "bot, item = sys.argv[1], sys.argv[2]\n"
             "d = cfg.home / 'work' / item\n"

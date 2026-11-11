@@ -9,9 +9,9 @@ from pathlib import Path
 ENGINE = Path(__file__).resolve().parent.parent / "engine"
 sys.path.insert(0, str(ENGINE))
 
-from claudebot import bots, items, requests, rotation  # noqa: E402
-from claudebot.config import Config  # noqa: E402
-from claudebot.db import connect, init_db  # noqa: E402
+from atobots import bots, items, requests, rotation  # noqa: E402
+from atobots.config import Config  # noqa: E402
+from atobots.db import connect, init_db  # noqa: E402
 
 
 def _assistant(tokens, stop="end_turn"):
@@ -152,7 +152,7 @@ class WatcherTests(Base):
 
         # Simulate Admin writing their handoff summary
         from unittest import mock
-        with mock.patch("claudebot.chat._pending", return_value=("Admin's handoff summary", "token123")):
+        with mock.patch("atobots.chat._pending", return_value=("Admin's handoff summary", "token123")):
             self.assertTrue(w.tick())
             self.assertTrue(w.done)
             # fallback rollover was not called

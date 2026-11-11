@@ -9,9 +9,9 @@ from unittest import mock
 ENGINE = Path(__file__).resolve().parent.parent / "engine"
 sys.path.insert(0, str(ENGINE))
 
-from claudebot import bots, items, messages, runner  # noqa: E402
-from claudebot.config import Config  # noqa: E402
-from claudebot.db import connect, init_db  # noqa: E402
+from atobots import bots, items, messages, runner  # noqa: E402
+from atobots.config import Config  # noqa: E402
+from atobots.db import connect, init_db  # noqa: E402
 
 # A stand-in for `sudo systemd-run ...`: applies --setenv and
 # --working-directory, skips the other options and runs the command.
@@ -49,7 +49,7 @@ import json, os, re, stat, sys
 d = os.environ["FAKE_DIR"]
 argv = sys.argv[1:]
 rec = {{"argv": argv, "cb_bot": os.environ.get("CB_BOT"),
-       "home": os.environ.get("CLAUDEBOT_HOME"), "cwd": os.getcwd()}}
+       "home": os.environ.get("ATOBOTS_HOME"), "cwd": os.getcwd()}}
 for flag in ("--mcp-config", "--append-system-prompt-file"):
     if flag in argv:
         p = argv[argv.index(flag) + 1]
@@ -135,11 +135,11 @@ class CommandTests(RunnerBase):
         cmd = runner.build_command(self.cfg, self.bot(), "sid-1",
                                    "/tmp/ident.md",
                                    task_file="/tmp/task.md",
-                                   unit="claudebot-run-1.service")
+                                   unit="atobots-run-1.service")
         self.assertEqual(cmd[:3], ["sudo", "systemd-run", "--wait"])
         for flag in ("--collect", "--pipe", f"--uid={self.cfg.run_user}"):
             self.assertIn(flag, cmd)
-        self.assertIn("--unit=claudebot-run-1.service", cmd)
+        self.assertIn("--unit=atobots-run-1.service", cmd)
         self.assertIn("MemoryMax=1200M", cmd)
         self.assertIn("RuntimeMaxSec=1800", cmd)
         self.assertEqual(cmd[cmd.index("MemoryMax=1200M") - 1], "-p")
@@ -147,7 +147,7 @@ class CommandTests(RunnerBase):
         self.assertEqual(cmd[cmd.index("MemorySwapMax=0") - 1], "-p")
         self.assertIn(f"--working-directory={self.cfg.bots_dir / 'backend'}", cmd)
         self.assertIn("--setenv=CB_BOT=backend", cmd)
-        self.assertIn(f"--setenv=CLAUDEBOT_HOME={self.cfg.home}", cmd)
+        self.assertIn(f"--setenv=ATOBOTS_HOME={self.cfg.home}", cmd)
         self.assertIn(f"--setenv=HOME={self.cfg.run_home}", cmd)
         tail = cmd[cmd.index(self.cfg.claude_bin):]
         self.assertIn("/tmp/task.md", tail[tail.index("-p") + 1])
@@ -315,7 +315,7 @@ class McpSecretTests(RunnerBase):
         def use_env(cfg, conn, actor, env_map, decision=None):
             calls.append((actor, dict(env_map)))
             return {"V": "S3CR3T"}
-        with mock.patch("claudebot.store.use_env", use_env):
+        with mock.patch("atobots.store.use_env", use_env):
             out = json.loads(runner._mcp_text(self.cfg, b, self.conn))
         srv = out["mcpServers"]["notes"]
         self.assertEqual(srv["env"], {"A": "S3CR3T", "B": "pre-S3CR3T"})
@@ -325,7 +325,7 @@ class McpSecretTests(RunnerBase):
     def test_refused_or_unknown_secret_stops_the_run_setup(self):
         from unittest import mock
         b = self.define({"mcpServers": {"n": {"env": {"A": "${secret:nope}"}}}})
-        with mock.patch("claudebot.store.use_env",
+        with mock.patch("atobots.store.use_env",
                         side_effect=PermissionError("owner-order-only")):
             with self.assertRaises(PermissionError):
                 runner._mcp_text(self.cfg, b, self.conn)
@@ -499,8 +499,8 @@ class RunTests(RunnerBase):
         def fake_run(*a, **kw):
             raise FakeTimeout()
 
-        with mock.patch("claudebot.runner.subprocess.run", side_effect=fake_run), \
-                mock.patch("claudebot.runner._stop_unit",
+        with mock.patch("atobots.runner.subprocess.run", side_effect=fake_run), \
+                mock.patch("atobots.runner._stop_unit",
                            side_effect=lambda u: stops.append(u)):
             r = self.run_bot()
         self.assertEqual(r.reason, "timeout")

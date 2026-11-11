@@ -10,9 +10,9 @@ from unittest import mock
 ENGINE = Path(__file__).resolve().parent.parent / "engine"
 sys.path.insert(0, str(ENGINE))
 
-from claudebot import backup, bots, gitlog  # noqa: E402
-from claudebot.config import Config  # noqa: E402
-from claudebot.db import connect, init_db  # noqa: E402
+from atobots import backup, bots, gitlog  # noqa: E402
+from atobots.config import Config  # noqa: E402
+from atobots.db import connect, init_db  # noqa: E402
 
 
 def git(cwd, *args, check=True):
@@ -241,7 +241,7 @@ class BackupFilesTests(BackupBase):
 
     def test_files_now_missing_passphrase(self):
         backup.files_add(self.cfg, self.private_dir)
-        with mock.patch("claudebot.store._reveal", side_effect=Exception("no key")):
+        with mock.patch("atobots.store._reveal", side_effect=Exception("no key")):
             with self.assertRaises(backup.BackupError):
                 backup.files_now(self.cfg, self.conn)
 
@@ -276,7 +276,7 @@ class BackupFilesTests(BackupBase):
                     return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             return real_subp_run(cmd, *args, **kwargs)
 
-        with mock.patch("claudebot.store._reveal", return_value=passphrase):
+        with mock.patch("atobots.store._reveal", return_value=passphrase):
             with mock.patch("subprocess.run", side_effect=mock_subp_run):
                 res = backup.files_now(self.cfg, self.conn)
                 self.assertEqual(res, "pushed")
@@ -295,7 +295,7 @@ class BackupFilesTests(BackupBase):
             with mock.patch.object(backup, "push", return_value="pushed"):
                 with mock.patch.object(backup, "files_now", return_value="pushed") as fn:
                     with mock.patch.object(backup, "files_verify", return_value="ok") as fv:
-                        with mock.patch("claudebot.backup.Config.load", return_value=self.cfg):
+                        with mock.patch("atobots.backup.Config.load", return_value=self.cfg):
                             rc = backup._cmd_now(None)
                             self.assertEqual(rc, 0)
                             self.assertTrue(fn.called)

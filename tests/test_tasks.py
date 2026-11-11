@@ -10,9 +10,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "engine"))
 
-from claudebot import bots, cli, items, messages, tasks  # noqa: E402
-from claudebot.config import Config  # noqa: E402
-from claudebot.db import connect, init_db  # noqa: E402
+from atobots import bots, cli, items, messages, tasks  # noqa: E402
+from atobots.config import Config  # noqa: E402
+from atobots.db import connect, init_db  # noqa: E402
 
 
 class TasksBase(unittest.TestCase):
@@ -256,7 +256,7 @@ class CliTests(TasksBase):
 
         def run(session):
             err, out = io.StringIO(), io.StringIO()
-            env = {"CLAUDEBOT_HOME": str(self.cfg.home), "CB_BOT": "admin",
+            env = {"ATOBOTS_HOME": str(self.cfg.home), "CB_BOT": "admin",
                    "CB_SESSION_ID": session}
             with mock.patch.dict(os.environ, env), redirect_stdout(out), \
                     redirect_stderr(err):

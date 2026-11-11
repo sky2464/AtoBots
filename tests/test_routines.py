@@ -10,9 +10,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "engine"))
 
-from claudebot import bots, cli, routines  # noqa: E402
-from claudebot.config import Config  # noqa: E402
-from claudebot.db import connect, init_db, set_zone  # noqa: E402
+from atobots import bots, cli, routines  # noqa: E402
+from atobots.config import Config  # noqa: E402
+from atobots.db import connect, init_db, set_zone  # noqa: E402
 
 
 def _iso(*a):
@@ -273,7 +273,7 @@ class RoutineTests(RoutinesBase):
 
     def test_cli_add_list_off_on_rm(self):
         (self.cfg.home / "config.json").write_text('{"timezone": "UTC"}\n')
-        env = {"CLAUDEBOT_HOME": str(self.cfg.home), "CB_BOT": "admin"}
+        env = {"ATOBOTS_HOME": str(self.cfg.home), "CB_BOT": "admin"}
         rel = self.check_script("cli.sh", "exit 0\n")
 
         def run(*argv):
@@ -306,8 +306,8 @@ class RoutineTests(RoutinesBase):
             "work to do, exit 1 means nothing", text)
 
     def test_add_loads_config_once(self):
-        env = {"CLAUDEBOT_HOME": str(self.cfg.home), "CB_BOT": "admin"}
-        with mock.patch("claudebot.routines.Config.load",
+        env = {"ATOBOTS_HOME": str(self.cfg.home), "CB_BOT": "admin"}
+        with mock.patch("atobots.routines.Config.load",
                         wraps=routines.Config.load) as load, \
                 mock.patch.dict("os.environ", env), redirect_stdout(io.StringIO()):
             self.assertEqual(
@@ -320,7 +320,7 @@ class RoutineTests(RoutinesBase):
         self.conn.execute(
             "INSERT INTO runs(bot, session_id, lane, started_at) VALUES"
             " ('backend','norm-1','normal','2026-11-10T00:00:00+00:00')")
-        env = {"CLAUDEBOT_HOME": str(self.cfg.home), "CB_BOT": "admin",
+        env = {"ATOBOTS_HOME": str(self.cfg.home), "CB_BOT": "admin",
                "CB_SESSION_ID": "norm-1"}
 
         def run(*argv):

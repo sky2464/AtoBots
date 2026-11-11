@@ -134,7 +134,7 @@ def build_digest(cfg: Config, conn: sqlite3.Connection,
     if not has_changes and not waiting_owner and not unhandled_reqs and not findings:
         return None, since
 
-    lines = [f"# ClaudeBot Digest ({ct_display(since)} - {ct_display(now)})\n"]
+    lines = [f"# AtoBots Digest ({ct_display(since)} - {ct_display(now)})\n"]
     for title, items_list in sections:
         lines.append(f"## {title}")
         for it in items_list:

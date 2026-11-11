@@ -31,8 +31,8 @@ a bot only what its job needs, to keep its sessions small. The Owner connects
 any account themselves. Install a new tool only from a source they approved.
 
 Where things live, if the job needs them: an MCP server definition is a file
-`$CLAUDEBOT_HOME/mcp/NAME.json` (name it in `--mcp NAME`), and a plugin is a
-folder `$CLAUDEBOT_HOME/plugins/NAME/` (name it in `--plugins NAME`). A token an
+`$ATOBOTS_HOME/mcp/NAME.json` (name it in `--mcp NAME`), and a plugin is a
+folder `$ATOBOTS_HOME/plugins/NAME/` (name it in `--plugins NAME`). A token an
 MCP server needs is written in its definition as `${secret:NAME}`, the name
 of an item in the secure store; the value is filled in when the bot's run
 starts and each use is recorded. Never write a token value into the file.
@@ -43,7 +43,7 @@ not just one, so ask them first and say so plainly.
 ## 2. Draft the Soul and Persona
 
 Make an item for the job (`cb item new "Create bot NAME"`) and write both into
-its folder, for example `$CLAUDEBOT_HOME/work/T-0009/soul.md` and `persona.md`.
+its folder, for example `$ATOBOTS_HOME/work/T-0009/soul.md` and `persona.md`.
 Your working folder is your own bot folder, so use that full path.
 
 - Soul (under 4 KB): who the bot is at its core. Values, judgment, what it will
@@ -69,8 +69,8 @@ Note the decision ID it prints (D-0001 style). Never record words they did not s
 ## 4. Create the bot
 
 ```
-cb bot new NAME --role "short role" --soul-file $CLAUDEBOT_HOME/work/T-0009/soul.md \
-  --persona-file $CLAUDEBOT_HOME/work/T-0009/persona.md --reports-to admin \
+cb bot new NAME --role "short role" --soul-file $ATOBOTS_HOME/work/T-0009/soul.md \
+  --persona-file $ATOBOTS_HOME/work/T-0009/persona.md --reports-to admin \
   --model sonnet --skills cb-basics,work-tracking
 ```
 

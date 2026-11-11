@@ -10,9 +10,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "engine"))
 
-from claudebot import bots, cli, items, messages  # noqa: E402
-from claudebot.config import Config  # noqa: E402
-from claudebot.db import connect, init_db  # noqa: E402
+from atobots import bots, cli, items, messages  # noqa: E402
+from atobots.config import Config  # noqa: E402
+from atobots.db import connect, init_db  # noqa: E402
 
 
 class MessagesBase(unittest.TestCase):
@@ -283,7 +283,7 @@ class AskReplyTests(MessagesBase):
 class MessagesCliTests(MessagesBase):
     def run_cli(self, *argv, env=None):
         out, err = io.StringIO(), io.StringIO()
-        e = {"CLAUDEBOT_HOME": str(self.cfg.home)}
+        e = {"ATOBOTS_HOME": str(self.cfg.home)}
         e.update(env or {})
         with mock.patch.dict(os.environ, e), redirect_stdout(out), redirect_stderr(err):
             try:
@@ -398,7 +398,7 @@ class MessagesCliTests(MessagesBase):
 class SendConfirmationAndUsageTests(MessagesBase):
     def run_cli(self, *argv, env=None):
         out, err = io.StringIO(), io.StringIO()
-        e = {"CLAUDEBOT_HOME": str(self.cfg.home)}
+        e = {"ATOBOTS_HOME": str(self.cfg.home)}
         e.update(env or {})
         with mock.patch.dict(os.environ, e), redirect_stdout(out), redirect_stderr(err):
             try:

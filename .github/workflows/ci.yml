@@ -61,3 +61,4 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y shellcheck
           shellcheck engine/*.sh engine/lib/*.sh
+          if ls engine/migrations/*.sh >/dev/null 2>&1; then shellcheck engine/migrations/*.sh; fi

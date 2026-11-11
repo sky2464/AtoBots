@@ -158,7 +158,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if stored > SCHEMA_VERSION:
         raise RuntimeError(
             f"this company database was written by a newer "
-            f"ClaudeBot (schema {stored}); update the engine or restore "
+            f"AtoBots (schema {stored}); update the engine or restore "
             f"the pre-update backup")
     cols = [r[1] for r in conn.execute("PRAGMA table_info(owner_requests)")]
     if cols and "source" not in cols:

@@ -27,7 +27,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import activity, bots, chat, store
+from . import activity, bots, chat, names, store
 from .config import Config
 from .db import connect, utcnow
 
@@ -50,6 +50,14 @@ RESTART_DELAY = 10          # seconds before claude is started again
 MAX_DELAY = 300             # longest back-off
 QUICK_SECONDS = 60          # a session shorter than this counts as a failure
 STOP_WAIT = 30              # how long `cb admin run` waits for the session
+# Claude Code's folder-trust question, as it appears on the screen. While it
+# is up nobody can reach Admin by Telegram, and it is answered at the
+# terminal only.
+TRUST_HINTS = ("trust this folder", "trust the files in this folder")
+TRUST_NOTICE_FILE = "trust-notice"
+TRUST_NOTICE_EVERY = 3600   # s between two notices about the same question
+TRUST_FIX = ("On the server run: tmux attach -t admin-live, then choose "
+             "\"Yes, I trust this folder\".")
 
 LIVE_PROMPT = """# This session: always-on Admin with Telegram
 
@@ -169,7 +177,21 @@ class Live:
         d["skipDangerousModePermissionPrompt"] = True
         # Enabled for this session only: regular Admin runs do not load it.
         d["enabledPlugins"] = {CHANNEL.removeprefix("plugin:"): True}
+        # The end of a turn takes the Telegram status peek away.
+        d["hooks"]["Stop"] = chat.hook_entry("stop")
         return d
+
+    def peek(self, cfg, session_id: str):
+        """The status peek for this session, or None when it is switched
+        off (`status_peek` in config.json)."""
+        if getattr(cfg, "status_peek", "on") != "on":
+            return None
+        from . import archive, peek
+        return peek.Peek(
+            state_dir(cfg),
+            token_fn=lambda: peek.read_token(token_file()),
+            transcript_fn=lambda: archive.find_transcript(cfg, session_id),
+            chats_fn=access_allow_from)
 
 
 def token_file() -> Path:
@@ -280,12 +302,61 @@ def _telegram_post(token: str, chat_id, text: str) -> None:
         resp.read()
 
 
+def screen_text() -> str | None:
+    """What the always-on Admin's terminal shows now, or None."""
+    try:
+        r = subprocess.run(["tmux", "capture-pane", "-p", "-t", SESSION],
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def waiting_on_trust(text: str | None = None) -> bool:
+    """True when the screen shows Claude Code's folder-trust question."""
+    if text is None:
+        text = screen_text()
+    if not text:
+        return False
+    folded = " ".join(text.casefold().split())
+    return any(hint in folded for hint in TRUST_HINTS)
+
+
+def _trust_notice(cfg: Config, conn=None, post=None, now_fn=time.time) -> None:
+    """Tell the Owner, at most once an hour, that Admin is waiting on the
+    trust question. Best effort."""
+    stamp = state_dir(cfg) / TRUST_NOTICE_FILE
+    try:
+        if now_fn() - stamp.stat().st_mtime < TRUST_NOTICE_EVERY:
+            return
+    except OSError:
+        pass
+    try:
+        stamp.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        stamp.write_text(str(int(now_fn())))
+        os.utime(stamp, (now_fn(), now_fn()))
+        notify_telegram(
+            cfg, "AtoBots: Admin is up but waiting on Claude Code's "
+                 "folder-trust question, so it cannot answer here. "
+                 + TRUST_FIX, conn=conn, post=post)
+    except Exception:  # noqa: BLE001  # never block the caller
+        pass
+
+
 def surface(cfg: Config, text: str, *, key: str = "admin-queue",
-            conn=None, now: str | None = None, post=None) -> None:
+            conn=None, now: str | None = None, post=None,
+            trust_fn=None) -> None:
     """Type a one-line `[system]` notice into always-on Admin's tmux session.
-    Fall back to Telegram only when tmux is unavailable."""
+    Fall back to Telegram only when tmux is unavailable.
+
+    Nothing is typed while the folder-trust question is on the screen: the
+    line and its Enter would answer that question for the Owner. They are
+    told once instead."""
     if not isinstance(text, str) or not _SURFACE_TEXT.fullmatch(text):
         raise ValueError("surface text is not a plain notice")
+    if (trust_fn or waiting_on_trust)():
+        _trust_notice(cfg, conn=conn, post=post)
+        return None
     line = "[system] " + text
     try:
         subprocess.run(["tmux", "send-keys", "-t", SESSION, "-l", line],
@@ -296,7 +367,7 @@ def surface(cfg: Config, text: str, *, key: str = "admin-queue",
     except (OSError, subprocess.CalledProcessError):
         pass
     try:
-        notify_telegram(cfg, f"ClaudeBot: {text}", conn=conn, post=post)
+        notify_telegram(cfg, f"AtoBots: {text}", conn=conn, post=post)
     except Exception:  # noqa: BLE001  # never block the dispatcher
         pass
     return None
@@ -434,7 +505,8 @@ def _start_session(cfg: Config) -> bool:
     env = _env_for_claude(cfg)
     cb = str(chat._engine_cb())
     inner = " ".join(shlex.quote(x) for x in [
-        "env", f"CLAUDEBOT_HOME={cfg.home}", f"PATH={env['PATH']}",
+        "env", *(f"{k}={v}" for k, v in names.home_env(cfg.home).items()),
+        f"PATH={env['PATH']}",
         cb, "admin", "serve"])
     r = _tmux("new-session", "-d", "-s", SESSION, "-x", "200", "-y", "50",
               "-c", str(cfg.bots_dir / chat.BOT), inner)
@@ -456,7 +528,7 @@ def _write_marker(marker: Path, data: dict) -> None:
 
 
 def check_pending_update(cfg: Config, notify_fn=None, surface_fn=None,
-                         now_fn=time.time) -> bool:
+                         now_fn=time.time, trust_fn=None) -> bool:
     """Handle update-pending.json: ask Admin itself to confirm to the Owner.
 
     The Owner chose a real Admin reply as proof of an update (a model reply
@@ -491,14 +563,18 @@ def check_pending_update(cfg: Config, notify_fn=None, surface_fn=None,
     if not isinstance(surfaced, (int, float)):
         if now - seen < UPDATE_SETTLE:
             return False
-        text = (f"ClaudeBot updated {old} to {new}. Reply to the Owner that "
+        if (trust_fn or waiting_on_trust)():
+            # Typing here would answer the trust question. The update job
+            # sees the unanswered marker and tells the Owner how to fix it.
+            return False
+        text = (f"AtoBots updated {old} to {new}. Reply to the Owner that "
                 f"the update finished and you are back, then run: "
                 f"cb admin update-ack")
         try:
             surface_fn(cfg, text)
         except ValueError:
             # A version string with odd characters: use a plain notice.
-            surface_fn(cfg, "ClaudeBot was updated. Reply to the Owner that "
+            surface_fn(cfg, "AtoBots was updated. Reply to the Owner that "
                        "the update finished and you are back, then run: "
                        "cb admin update-ack")
         data["surfaced_at"] = now
@@ -508,7 +584,7 @@ def check_pending_update(cfg: Config, notify_fn=None, surface_fn=None,
         return False
     conn = connect(cfg)
     try:
-        notify_fn(cfg, f"ClaudeBot updated {old} to {new}, but Admin did not "
+        notify_fn(cfg, f"AtoBots updated {old} to {new}, but Admin did not "
                        f"confirm. Check the Admin session.", conn=conn)
     finally:
         conn.close()
@@ -568,25 +644,25 @@ def supervise(cfg: Config, stop: threading.Event, sleep=None,
 
 
 def verify_services(cfg: Config, runner=subprocess.run) -> tuple[bool, list[str]]:
-    """Verify claudebot-dispatcher and (if enabled) claudebot-admin are active."""
+    """Verify atobots-dispatcher and (if enabled) atobots-admin are active."""
     lines = []
     all_ok = True
 
     try:
-        r = runner(["systemctl", "is-active", "--quiet", "claudebot-dispatcher.service"],
+        r = runner(["systemctl", "is-active", "--quiet", "atobots-dispatcher.service"],
                    timeout=10)
         disp_ok = (r.returncode == 0)
     except (OSError, subprocess.TimeoutExpired):
         disp_ok = False
 
     if disp_ok:
-        lines.append("claudebot-dispatcher: PASS")
+        lines.append("atobots-dispatcher: PASS")
     else:
-        lines.append("claudebot-dispatcher: FAIL")
+        lines.append("atobots-dispatcher: FAIL")
         all_ok = False
 
     try:
-        r_en = runner(["systemctl", "is-enabled", "--quiet", "claudebot-admin.service"],
+        r_en = runner(["systemctl", "is-enabled", "--quiet", "atobots-admin.service"],
                       timeout=10)
         admin_enabled = (r_en.returncode == 0)
     except (OSError, subprocess.TimeoutExpired):
@@ -594,19 +670,19 @@ def verify_services(cfg: Config, runner=subprocess.run) -> tuple[bool, list[str]
 
     if admin_enabled:
         try:
-            r_act = runner(["systemctl", "is-active", "--quiet", "claudebot-admin.service"],
+            r_act = runner(["systemctl", "is-active", "--quiet", "atobots-admin.service"],
                            timeout=10)
             admin_ok = (r_act.returncode == 0)
         except (OSError, subprocess.TimeoutExpired):
             admin_ok = False
 
         if admin_ok:
-            lines.append("claudebot-admin: PASS")
+            lines.append("atobots-admin: PASS")
         else:
-            lines.append("claudebot-admin: FAIL")
+            lines.append("atobots-admin: FAIL")
             all_ok = False
     else:
-        lines.append("claudebot-admin: PASS (not enabled)")
+        lines.append("atobots-admin: PASS (not enabled)")
 
     return all_ok, lines
 

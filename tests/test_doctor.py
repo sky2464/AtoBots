@@ -1,15 +1,16 @@
 """Doctor: checks and out-of-band dispatcher-down alerts."""
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ENGINE = Path(__file__).resolve().parent.parent / "engine"
 import sys
 sys.path.insert(0, str(ENGINE))
 
-from claudebot import bots, doctor, messages  # noqa: E402
-from claudebot.config import Config  # noqa: E402
-from claudebot.db import connect, init_db  # noqa: E402
+from atobots import bots, doctor, messages  # noqa: E402
+from atobots.config import Config  # noqa: E402
+from atobots.db import connect, init_db  # noqa: E402
 
 
 class Base(unittest.TestCase):
@@ -107,8 +108,8 @@ class OutOfBandTests(Base):
             live_session_fn=lambda: False, token_fn=lambda c: True,
             track=False, now=self.now)
         findings = {f.key: f.text for f in found}
-        self.assertIn("sudo systemctl restart claudebot-dispatcher.service", findings["dispatcher"])
-        self.assertIn("sudo systemctl restart claudebot-admin.service", findings["admin-live"])
+        self.assertIn("sudo systemctl restart atobots-dispatcher.service", findings["dispatcher"])
+        self.assertIn("sudo systemctl restart atobots-admin.service", findings["admin-live"])
 
 
     def test_commands_check_detects_python_and_missing_commands(self):
@@ -134,11 +135,18 @@ class OutOfBandTests(Base):
         )
         self.conn.commit()
 
-        found = doctor.checks(
-            self.cfg, self.conn, active_fn=lambda: True,
-            mem_fn=lambda: 4000, live_enabled_fn=lambda: False,
-            live_session_fn=lambda: False, token_fn=lambda c: True,
-            track=False, now=self.now)
+        # Some machines have a bare `python` and some do not; the check must
+        # be tested for a server that has none.
+        real_which = doctor.shutil.which
+        with mock.patch.object(
+                doctor.shutil, "which",
+                side_effect=lambda name, *a, **k: None if name == "python"
+                else real_which(name, *a, **k)):
+            found = doctor.checks(
+                self.cfg, self.conn, active_fn=lambda: True,
+                mem_fn=lambda: 4000, live_enabled_fn=lambda: False,
+                live_session_fn=lambda: False, token_fn=lambda c: True,
+                track=False, now=self.now)
 
         keys = [f.key for f in found]
         self.assertIn("commands:settings.json:python", keys)

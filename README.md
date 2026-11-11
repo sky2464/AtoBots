@@ -1,12 +1,12 @@
-# ClaudeBot
+# AtoBots
 
-**ClaudeBot is an engine for running teams of permanent AI employees on a server.**
+**AtoBots is an engine for running teams of permanent AI employees on a server.**
 
 Each employee (a *bot*) has its own identity, memory, and job. Bots sleep when idle and wake when a message arrives, a routine is due, or the owner asks for them. The owner works through **Admin**, the one bot that ships with every install. Admin defines new bots with the owner, creates them, and remembers them.
 
-ClaudeBot is built on [Claude Code](https://claude.com/claude-code). The engine is reusable and knows nothing about any one business. Each company gets its own install and its own company home.
+AtoBots works with [Claude Code](https://claude.com/claude-code), which you install and log in to yourself. AtoBots is an independent project; it is not made, endorsed or supported by Anthropic. The engine is reusable and knows nothing about any one business. Each company gets its own install and its own company home.
 
-> **Status:** early and private. Interfaces may change without notice. Current package version: **0.0.2** (`cb version`).
+> **Status:** early and private. Interfaces may change without notice. Current package version: **0.1.0** (`cb version`). Called ClaudeBot before 0.1.0.
 
 ---
 
@@ -23,7 +23,7 @@ ClaudeBot is built on [Claude Code](https://claude.com/claude-code). The engine 
 ## How it is organized
 
 ```
-ClaudeBot engine (reusable)              Company home (one per install)
+AtoBots engine (reusable)              Company home (one per install)
 ──────────────────────────────           ──────────────────────────────
 Admin and bot creation                   Admin's memory and company knowledge
 Secure store                             Bot list, roles, and org chart
@@ -91,8 +91,9 @@ Run `cb --help` or `cb <command> --help` for the full reference. Top-level comma
 
 Limits and a few text settings can be overridden in `config.json` in the
 company home. Text settings: `run_user`, `run_home`, `claude_bin`,
-`run_memory_max`, `default_model` and `timezone` (schedules and displayed
-times; `UTC` by default). A company that already has routines or decisions
+`run_memory_max`, `default_model`, `timezone` (schedules and displayed
+times; `UTC` by default) and `status_peek` (`on` by default; `off` stops the
+live status line in Telegram). A company that already has routines or decisions
 and no timezone key keeps `America/Chicago` until the key is added. Unknown
 keys are ignored, and a bad value
 stops `cb` with a clear message. See [CHANGELOG.md](CHANGELOG.md) for what
@@ -103,11 +104,13 @@ each release changed.
 ```
 engine/
   bin/cb                 command entry point
-  claudebot/             the engine (Python package)
+  atobots/             the engine (Python package)
   systemd/               service and timer units
   templates/             starting files for Admin and new bots
   install.sh             server installer
-  update.sh              moves a running install to a release tag
+  update.sh              first half of an update (cb update starts it)
+  adopt.sh               turns a copied install into a Git clone
+  migrations/            steps a release runs on existing installs
 tests/                   unit tests (run with unittest discover)
 docs/                    design specs and updating notes
 .github/workflows/       CI (unittest discover on push and pull requests)
@@ -129,34 +132,38 @@ push and pull request.
 ## Updating a running install
 
 The server holds a Git clone of this repository; releases are `v*` tags.
+Ask Admin to update, or run:
 
 ```bash
-cb version
+cb update --check
 ```
 
 ```bash
-engine/update.sh
+cb update
 ```
 
-The script backs up the company database, moves the clone to the newest
-release, applies database changes, restarts the services and runs `cb doctor`.
-If it fails it prints how to go back.
+The first command changes nothing and says what the update would do. The
+second backs up the company database, tells the Owner before the chat goes
+offline, moves the clone to the newest release, applies database changes and
+migration steps, restarts the services and checks them. If that fails it puts
+the old version and the database back by itself and says so.
 
-- **Coming from 0.0.1:** a few steps are done by hand after the script. Follow
-  "Updating from 0.0.1 to 0.0.2" in [UPDATING.md](UPDATING.md).
-- **Engine files were copied to the server (no `.git`):** move to a clone once;
-  see "Moving a copied install to a clone" in [UPDATING.md](UPDATING.md).
-- Read the release's "Manual steps after updating" and "Known issues" in
+- **Coming from ClaudeBot (0.0.3 or earlier):** from 0.0.3 the update moves
+  the install to the new name by itself; older versions go to 0.0.3 first.
+  See "Coming from ClaudeBot" in [UPDATING.md](UPDATING.md).
+- **Engine files were copied to the server (no `.git`):** `cb update --adopt`
+  turns the copy into a clone in one job; see "A copied install" in
+  [UPDATING.md](UPDATING.md).
+- Read the release's "Manual steps after updating" in
   [CHANGELOG.md](CHANGELOG.md) first. Do not rsync into the clone.
-
-Install and update a running company from a Git clone.
-The steps are in [UPDATING.md](UPDATING.md).
 
 ## Documentation
 
-- [Design specification](docs/superpowers/specs/2026-11-08-claudebot-engine-design.md): intent, roles, bot lifecycle, and safety rules
-- [Cost control](docs/superpowers/specs/2026-11-09-claudebot-cost-control-design.md): wake caps, tiers, and what a run is allowed to spend
+- [Design specification](docs/superpowers/specs/2026-11-08-engine-design.md): intent, roles, bot lifecycle, and safety rules
+- [Cost control](docs/superpowers/specs/2026-11-09-cost-control-design.md): wake caps, tiers, and what a run is allowed to spend
 - [Updating a running install](UPDATING.md)
+- [Security: what the engine does and does not protect](SECURITY.md)
+- [Readiness to be public](docs/public-readiness.md)
 
 ## Safety principles
 

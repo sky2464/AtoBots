@@ -37,7 +37,7 @@ Line numbers refer to the checked-out branch `chore/land-review-fixes-stack`.
 | `docs/superpowers/plans/preflight-notes.md` | 1 | Replace the server directory with a placeholder. Keep the notes, since they are generic. |
 | `docs/superpowers/plans/2026-11-08-claudebot-engine.md` | 4 | Replace names with placeholders. This is a historical plan, so keep its structure. |
 | `docs/superpowers/plans/2026-11-09-claudebot-cost-control.md` | 1 | Replace the alias with `<VPS_ALIAS>`. |
-| `docs/superpowers/specs/2026-11-08-claudebot-engine-design.md` | 11 | Replace the company and product names. Remove the Owner's first name, using "the Owner" instead. Keep the design rules. |
+| `docs/superpowers/specs/2026-11-08-engine-design.md` | 11 | Replace the company and product names. Remove the Owner's first name, using "the Owner" instead. Keep the design rules. |
 | `tests/test_archive.py` 45 | 1 | Change the project directory to `-home-claude-company-bots-backend`. |
 | `tests/test_templates.py` 149 | 1 | See decision 2 below. |
 

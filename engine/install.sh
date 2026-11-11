@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Install ClaudeBot on this server. Run by hand as the account the bots will
+# Install AtoBots on this server. Run by hand as the account the bots will
 # use (not root; it needs passwordless sudo):
 #   engine/install.sh [--start] COMPANY_NAME /home/claude/COMPANY_HOME
 # The dispatcher and timers are enabled (they start at boot) but are NOT started
 # now unless you pass --start, so you can look around first.
 # Safe to run again. It sets up the company (cb init), installs the systemd
-# units, links `cb` into ~/.local/bin and records CLAUDEBOT_HOME in ~/.bashrc.
+# units, links `cb` into ~/.local/bin and records ATOBOTS_HOME in ~/.bashrc.
 # It does not touch SSH, the firewall or sudo rules.
 set -euo pipefail
 
@@ -42,16 +42,15 @@ if ! [[ $ENGINE_DIR =~ ^/[A-Za-z0-9._/-]+$ ]]; then
     exit 2
 fi
 UNIT_SRC=$ENGINE_DIR/systemd
-BIN_DIR=$HOME/.local/bin
 BASHRC=$HOME/.bashrc
 
 # Units to install and enable (started only with --start). Each timer needs a
 # matching .service next to it.
-SERVICES=(claudebot-dispatcher.service)
+SERVICES=(atobots-dispatcher.service)
 # The always-on Admin (Telegram) is installed but enabled only once the bot
 # token is configured: enabling makes it start at every boot.
-ADMIN_UNIT=claudebot-admin.service
-TIMERS=(claudebot-backup.timer claudebot-doctor.timer)
+ADMIN_UNIT=atobots-admin.service
+TIMERS=(atobots-backup.timer atobots-doctor.timer)
 
 # 0. Check everything we need before changing anything, so this either does
 # the whole job or stops here with a clear message.
@@ -78,44 +77,38 @@ if [ ! -e "$HOME_DIR/company.db" ]; then
     ZONE=$(cat /etc/timezone 2>/dev/null || echo UTC)
     INIT_TZ=(--timezone "$ZONE")
 fi
-CLAUDEBOT_HOME=$HOME_DIR "$ENGINE_DIR/bin/cb" init --company "$COMPANY" "${INIT_TZ[@]}"
+ATOBOTS_HOME=$HOME_DIR "$ENGINE_DIR/bin/cb" init --company "$COMPANY" "${INIT_TZ[@]}"
 
-# 2. The cb command.
-mkdir -p "$BIN_DIR"
-ln -sfn "$ENGINE_DIR/bin/cb" "$BIN_DIR/cb"
-echo "Linked $BIN_DIR/cb"
-# Also on the default PATH and in an env file, for `ssh host 'cb ...'`, which
-# never reads ~/.bashrc.
-# A root-owned wrapper, not a symlink into this clone: if root ever runs cb
-# it must refuse, and it must not execute a file the bots can edit.
-sudo tee /usr/local/bin/cb > /dev/null <<EOF
-#!/bin/sh
-[ "\$(id -u)" -ne 0 ] || { echo "cb: do not run as root" >&2; exit 1; }
-exec $ENGINE_DIR/bin/cb "\$@"
-EOF
-sudo chmod 755 /usr/local/bin/cb
-echo "CLAUDEBOT_HOME=$HOME_DIR" | sudo tee /etc/claudebot.env > /dev/null
-echo "Installed /usr/local/bin/cb and wrote /etc/claudebot.env"
+# 2. The cb command: a link for this account, and for every other shell
+# (`ssh host 'cb ...'` never reads ~/.bashrc) a root-owned wrapper on the
+# default PATH plus an env file (/etc/atobots.env). The wrapper is not a
+# symlink into this clone: if root ever runs cb it must refuse, and it must
+# not execute a file the bots can edit. Whatever is at those paths now (a
+# file or a symlink) is replaced, never written through.
+# shellcheck source=lib/cb_wrapper.sh
+source "$ENGINE_DIR/lib/cb_wrapper.sh"
+install_links "$ENGINE_DIR" "$HOME_DIR"
 # shellcheck source=lib/python_alias.sh
 source "$ENGINE_DIR/lib/python_alias.sh"
 ensure_python_alias
 
 # 3. Shell settings, added only if absent.
 touch "$BASHRC"
-if ! grep -q '^export CLAUDEBOT_HOME=' "$BASHRC"; then
-    echo "export CLAUDEBOT_HOME=$HOME_DIR" >> "$BASHRC"
-    echo "Added CLAUDEBOT_HOME to $BASHRC"
+if ! grep -q '^export ATOBOTS_HOME=' "$BASHRC"; then
+    echo "export ATOBOTS_HOME=$HOME_DIR" >> "$BASHRC"
+    echo "Added ATOBOTS_HOME to $BASHRC"
 fi
-if ! grep -q 'claudebot-path' "$BASHRC"; then
+# The marker carried the old name before 0.1.0; either one counts.
+if ! grep -q -e "$CB_UNIT_PREFIX-path" -e "$CB_OLD_UNIT_PREFIX-path" "$BASHRC"; then
     # shellcheck disable=SC2016  # written literally; expands when bashrc runs
-    echo 'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac  # claudebot-path' >> "$BASHRC"
+    echo 'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac  # atobots-path' >> "$BASHRC"
     echo "Added ~/.local/bin to PATH in $BASHRC"
 fi
 
 # 4. Systemd units, with the placeholders filled in.
 # shellcheck source=lib/units.sh
 source "$ENGINE_DIR/lib/units.sh"
-export CLAUDEBOT_HOME=$HOME_DIR
+export ATOBOTS_HOME=$HOME_DIR
 MEMORY_MAX=$("$ENGINE_DIR/bin/cb" config get run_memory_max)
 install_units "$HOME_DIR" "$ENGINE_DIR" "$RUN_USER" "$MEMORY_MAX"
 

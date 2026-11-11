@@ -11,9 +11,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "engine"))
 
-from claudebot import bots, cli  # noqa: E402
-from claudebot.config import Config  # noqa: E402
-from claudebot.db import connect, init_db  # noqa: E402
+from atobots import bots, cli  # noqa: E402
+from atobots.config import Config  # noqa: E402
+from atobots.db import connect, init_db  # noqa: E402
 
 
 class BotsBase(unittest.TestCase):
@@ -300,7 +300,7 @@ class PromptTests(BotsBase):
 class CliTests(BotsBase):
     def run_cli(self, *argv):
         buf = io.StringIO()
-        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.cfg.home)}), \
+        with mock.patch.dict(os.environ, {"ATOBOTS_HOME": str(self.cfg.home)}), \
                 redirect_stdout(buf):
             rc = cli.main(list(argv))
         return rc, buf.getvalue()
@@ -347,9 +347,9 @@ class CliTests(BotsBase):
         home = Path(self._tmp.name)
         (home / "soul.md").write_text("soul text")
         (home / "persona.md").write_text("persona text")
-        worker = {"CLAUDEBOT_HOME": str(self.cfg.home), "CB_BOT": "admin",
+        worker = {"ATOBOTS_HOME": str(self.cfg.home), "CB_BOT": "admin",
                   "CB_SESSION_ID": "norm-1"}
-        owner = {"CLAUDEBOT_HOME": str(self.cfg.home), "CB_SESSION_ID": "live-1"}
+        owner = {"ATOBOTS_HOME": str(self.cfg.home), "CB_SESSION_ID": "live-1"}
 
         def run(env, *argv):
             err, out = io.StringIO(), io.StringIO()

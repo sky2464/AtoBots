@@ -12,9 +12,9 @@ ENGINE = Path(__file__).resolve().parent.parent / "engine"
 import sys
 sys.path.insert(0, str(ENGINE))
 
-from claudebot import admin_live, bots, chat  # noqa: E402
-from claudebot.config import Config  # noqa: E402
-from claudebot.db import connect, init_db  # noqa: E402
+from atobots import admin_live, bots, chat  # noqa: E402
+from atobots.config import Config  # noqa: E402
+from atobots.db import connect, init_db  # noqa: E402
 
 
 class Base(unittest.TestCase):
@@ -58,7 +58,7 @@ class TokenFileTests(Base):
 
     def test_session_env_writes_and_cleanup_scrubs(self):
         live = admin_live.Live()
-        with mock.patch("claudebot.admin_live.store.use_env",
+        with mock.patch("atobots.admin_live.store.use_env",
                         return_value={admin_live.TOKEN_VAR: "tok-1"}):
             env = live.session_env(self.cfg, self.conn)
         self.assertIsInstance(env, dict)
@@ -70,7 +70,7 @@ class TokenFileTests(Base):
 
     def test_session_env_refuses_empty_decrypted_token(self):
         live = admin_live.Live()
-        with mock.patch("claudebot.admin_live.store.use_env",
+        with mock.patch("atobots.admin_live.store.use_env",
                         return_value={admin_live.TOKEN_VAR: "  "}):
             with self.assertRaises(admin_live.TokenError) as cm:
                 live.session_env(self.cfg, self.conn)
@@ -94,9 +94,9 @@ class ServeLoopTokenTests(Base):
             started.append(1)
             raise AssertionError("must not start a session")
 
-        with mock.patch("claudebot.admin_live.has_token", return_value=False), \
-             mock.patch("claudebot.chat._one_session", side_effect=boom), \
-             mock.patch("claudebot.admin_live.activity.record"):
+        with mock.patch("atobots.admin_live.has_token", return_value=False), \
+             mock.patch("atobots.chat._one_session", side_effect=boom), \
+             mock.patch("atobots.admin_live.activity.record"):
             admin_live.serve_loop(self.cfg, live, self.conn, sleep=sleep)
         self.assertEqual(started, [])
         self.assertEqual(len(sleeps), 1)
@@ -113,9 +113,9 @@ class ServeLoopTokenTests(Base):
         def fail(*a, **k):
             raise admin_live.TokenError("decrypt failed")
 
-        with mock.patch("claudebot.admin_live.has_token", return_value=True), \
-             mock.patch("claudebot.chat._one_session", side_effect=fail), \
-             mock.patch("claudebot.admin_live.activity.record"):
+        with mock.patch("atobots.admin_live.has_token", return_value=True), \
+             mock.patch("atobots.chat._one_session", side_effect=fail), \
+             mock.patch("atobots.admin_live.activity.record"):
             admin_live.serve_loop(self.cfg, live, self.conn, sleep=sleep)
         self.assertEqual(len(sleeps), 1)
         self.assertFalse(self.env_path.exists())
@@ -143,7 +143,7 @@ class SurfaceTests(Base):
 
         (self.tg / "access.json").write_text(json.dumps(
             {"allowFrom": [42, "99"]}))
-        with mock.patch("claudebot.admin_live.subprocess.run", side_effect=fake_run):
+        with mock.patch("atobots.admin_live.subprocess.run", side_effect=fake_run):
             admin_live.surface(
                 self.cfg, "two replies waiting", key="admin-queue",
                 conn=self.conn, now="2026-11-09T12:00:00+00:00",
@@ -151,13 +151,64 @@ class SurfaceTests(Base):
         self.assertTrue(any(c[:3] == ["tmux", "send-keys", "-t"] for c in tmux_cmds))
         self.assertEqual(posted, [])
 
-        with mock.patch("claudebot.admin_live.has_token", return_value=True), \
-             mock.patch("claudebot.admin_live.store.use_env",
+        with mock.patch("atobots.admin_live.has_token", return_value=True), \
+             mock.patch("atobots.admin_live.store.use_env",
                         return_value={admin_live.TOKEN_VAR: "T"}):
             admin_live.notify_telegram(
                 self.cfg, "hello", conn=self.conn, post=post)
         self.assertEqual({c for _, c, _ in posted}, {42, "99"})
         self.assertTrue(all(t == "T" for t, _, _ in posted))
+
+    def test_nothing_is_typed_into_the_trust_question(self):
+        """A `[system]` line plus Enter would answer Claude Code's
+        folder-trust question for the Owner. They are told once instead."""
+        screen = ("Do you trust the files in this folder?\n"
+                  " 1. Yes, I trust this folder\n 2. No, exit\n")
+        self.assertTrue(admin_live.waiting_on_trust(screen))
+        self.assertFalse(admin_live.waiting_on_trust("> ready for input"))
+        # words from an ordinary conversation are not the question
+        self.assertFalse(admin_live.waiting_on_trust(
+            "Owner: do you trust this vendor?"))
+        self.assertFalse(admin_live.waiting_on_trust(""))
+        posted, cmds = [], []
+        (self.tg / "access.json").write_text(json.dumps({"allowFrom": [42]}))
+
+        def fake_run(cmd, **kwargs):
+            cmds.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout=screen)
+
+        with mock.patch("atobots.admin_live.subprocess.run",
+                        side_effect=fake_run), \
+                mock.patch("atobots.admin_live.has_token",
+                           return_value=True), \
+                mock.patch("atobots.admin_live.store.use_env",
+                           return_value={admin_live.TOKEN_VAR: "T"}):
+            for _ in range(3):
+                admin_live.surface(self.cfg, "two replies waiting",
+                                   conn=self.conn,
+                                   post=lambda *a: posted.append(a))
+        self.assertFalse(any("send-keys" in c for c in cmds))
+        self.assertEqual(len(posted), 1)            # once, not on every notice
+        self.assertIn("folder-trust", posted[0][2])
+        self.assertIn("tmux attach -t admin-live", posted[0][2])
+
+    def test_update_confirmation_waits_while_the_trust_question_is_up(self):
+        sd = admin_live.state_dir(self.cfg)
+        sd.mkdir(parents=True, exist_ok=True)
+        marker = sd / admin_live.UPDATE_PENDING_FILE
+        marker.write_text(json.dumps({"old_version": "1", "new_version": "2",
+                                      "seen_at": 0}))
+        surfaced = []
+        done = admin_live.check_pending_update(
+            self.cfg, surface_fn=lambda *a, **k: surfaced.append(a),
+            now_fn=lambda: 100, trust_fn=lambda: True)
+        self.assertFalse(done)
+        self.assertEqual(surfaced, [])
+        self.assertTrue(marker.exists())
+        admin_live.check_pending_update(
+            self.cfg, surface_fn=lambda *a, **k: surfaced.append(a),
+            now_fn=lambda: 100, trust_fn=lambda: False)
+        self.assertEqual(len(surfaced), 1)
 
     def test_is_running_tracks_serve_lock(self):
         self.assertFalse(admin_live.is_running(self.cfg))
@@ -184,21 +235,21 @@ class MemoryWrapTests(unittest.TestCase):
     def test_memory_wrap_passthrough_without_systemd_run(self):
         cfg = Config(Path("/tmp/unused-home"))
         cmd = ["/bin/claude", "--model", "sonnet"]
-        with mock.patch("claudebot.chat.shutil.which", return_value=None):
+        with mock.patch("atobots.chat.shutil.which", return_value=None):
             self.assertEqual(chat.memory_wrap(cfg, cmd), cmd)
 
     def test_memory_wrap_adds_memorymax_with_systemd_run(self):
         cfg = Config(Path("/tmp/unused-home"), run_memory_max="900M")
         cmd = ["/bin/claude", "--model", "sonnet"]
-        with mock.patch("claudebot.chat.shutil.which",
+        with mock.patch("atobots.chat.shutil.which",
                         return_value="/bin/systemd-run"), \
              mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": ""}, clear=False):
             wrapped = chat.memory_wrap(cfg, cmd)
         self.assertEqual(wrapped, cmd)
 
-        with mock.patch("claudebot.chat.shutil.which",
+        with mock.patch("atobots.chat.shutil.which",
                         return_value="/bin/systemd-run"), \
-             mock.patch("claudebot.chat.Path") as path_cls, \
+             mock.patch("atobots.chat.Path") as path_cls, \
              mock.patch.dict(os.environ,
                              {"XDG_RUNTIME_DIR": "/run/user/1000"}, clear=False):
             path_cls.return_value.__truediv__.return_value.is_dir.return_value = True
@@ -290,8 +341,8 @@ class UpdatePendingTests(Base):
         def has_sess():
             return not stop.is_set()
 
-        with mock.patch("claudebot.admin_live.has_session", side_effect=has_sess), \
-             mock.patch("claudebot.admin_live.kill_session"):
+        with mock.patch("atobots.admin_live.has_session", side_effect=has_sess), \
+             mock.patch("atobots.admin_live.kill_session"):
             admin_live.supervise(self.cfg, stop, check_update_fn=fake_check)
         self.assertTrue(len(checked) >= 1)
 
@@ -308,17 +359,17 @@ class VerifyServicesTests(unittest.TestCase):
 
         ok, lines = admin_live.verify_services(self.cfg, runner=fake_run)
         self.assertTrue(ok)
-        self.assertEqual(lines, ["claudebot-dispatcher: PASS", "claudebot-admin: PASS"])
+        self.assertEqual(lines, ["atobots-dispatcher: PASS", "atobots-admin: PASS"])
 
     def test_verify_services_dispatcher_down(self):
         def fake_run(cmd, **kw):
-            if "claudebot-dispatcher.service" in cmd:
+            if "atobots-dispatcher.service" in cmd:
                 return subprocess.CompletedProcess(cmd, 3)
             return subprocess.CompletedProcess(cmd, 0)
 
         ok, lines = admin_live.verify_services(self.cfg, runner=fake_run)
         self.assertFalse(ok)
-        self.assertEqual(lines, ["claudebot-dispatcher: FAIL", "claudebot-admin: PASS"])
+        self.assertEqual(lines, ["atobots-dispatcher: FAIL", "atobots-admin: PASS"])
 
     def test_verify_services_admin_not_enabled(self):
         def fake_run(cmd, **kw):
@@ -328,20 +379,20 @@ class VerifyServicesTests(unittest.TestCase):
 
         ok, lines = admin_live.verify_services(self.cfg, runner=fake_run)
         self.assertTrue(ok)
-        self.assertEqual(lines, ["claudebot-dispatcher: PASS", "claudebot-admin: PASS (not enabled)"])
+        self.assertEqual(lines, ["atobots-dispatcher: PASS", "atobots-admin: PASS (not enabled)"])
 
     def test_cli_verify_services(self):
-        from claudebot import cli
+        from atobots import cli
         import io
         from contextlib import redirect_stdout
-        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.cfg.home)}), \
-             mock.patch("claudebot.admin_live.verify_services",
-                        return_value=(True, ["claudebot-dispatcher: PASS", "claudebot-admin: PASS"])):
+        with mock.patch.dict(os.environ, {"ATOBOTS_HOME": str(self.cfg.home)}), \
+             mock.patch("atobots.admin_live.verify_services",
+                        return_value=(True, ["atobots-dispatcher: PASS", "atobots-admin: PASS"])):
             out = io.StringIO()
             with redirect_stdout(out):
                 rc = cli.main(["verify", "services"])
             self.assertEqual(rc, 0)
-            self.assertIn("claudebot-dispatcher: PASS", out.getvalue())
+            self.assertIn("atobots-dispatcher: PASS", out.getvalue())
 
 
 if __name__ == "__main__":

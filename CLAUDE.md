@@ -1,4 +1,4 @@
-# ClaudeBot
+# AtoBots
 
 Engine for a company of Claude Code bots. The Owner talks to Admin; Admin delegates work.
 
@@ -8,7 +8,7 @@ Engine for a company of Claude Code bots. The Owner talks to Admin; Admin delega
 - `tests/` — unittest suite (`python3 -m unittest discover -s tests`)
 - `docs/` — design
 
-Company data lives in `CLAUDEBOT_HOME` (the company home), not in this repo. Secrets stay in `.secrets/` on the server and are never backed up.
+Company data lives in `ATOBOTS_HOME` (the company home), not in this repo. Secrets stay in `.secrets/` on the server and are never backed up.
 
 ## Host inventory
 

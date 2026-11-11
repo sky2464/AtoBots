@@ -1,357 +1,255 @@
-# Updating ClaudeBot
+# Updating AtoBots
 
-This guide is for a server that already runs ClaudeBot. The supported setup is
-a Git clone of this repository on the server, installed with
-`engine/install.sh` and updated with `engine/update.sh`. Do not copy files into
-the clone with rsync.
+This guide is for a server that already runs AtoBots. There is one flow for
+every install: look first, then start one job that does the rest and undoes
+itself if it fails.
 
-Run every command below as the same UNIX account that runs the bots, in the
-ClaudeBot clone (the folder that holds `engine/`).
+## The short version
 
-| Your server now | Go to |
-|---|---|
-| A Git clone on 0.0.1 | [Updating from 0.0.1 to 0.0.2](#updating-from-001-to-002) |
-| Engine files copied by rsync (the folder has no `.git`) | [Moving a copied install to a clone](#moving-a-copied-install-to-a-clone) |
-| A Git clone on 0.0.2 or later | [Update to the newest release](#update-to-the-newest-release) |
-
-To tell which you have: `git -C ~/ClaudeBot rev-parse --is-inside-work-tree`
-prints `true` for a clone (use your own path if the engine is elsewhere).
-
-## Before you update
-
-- Read the release's section in [CHANGELOG.md](CHANGELOG.md), above all
-  "Manual steps after updating" and "Known issues".
-- Pick a quiet moment. The update restarts the dispatcher, and it restarts the
-  always-on Admin if that is enabled, which ends the Owner's current
-  conversation with it. Work in the queue is kept.
-- Close any open `cb chat` first.
-- The server needs read access to the repository (`git fetch` must work).
-
-## See the current version
+Ask Admin in Telegram to update, or run the same two commands yourself as the
+bots' account:
 
 ```bash
-cb version
-```
-
-## See the available releases
-
-```bash
-git fetch --tags && git tag --list 'v*' --sort=v:refname
-```
-
-The newest release is the last line. Release notes are also on the GitHub
-Releases page of the repository.
-
-## Update to the newest release
-
-```bash
-engine/update.sh
-```
-
-To update to one specific release instead:
-
-```bash
-engine/update.sh --tag v0.0.2
-```
-
-From 0.0.2 on, the script runs these steps in order and prints each one:
-
-1. checks that the clone has no local changes and fetches the release tags;
-2. copies the company database to a backup file (see below);
-3. moves the clone to the release tag;
-4. runs `cb init` (adds any new database columns; safe to repeat) and
-   `cb templates refresh`. Bundled skills are replaced. `rules.md` is replaced
-   only when it still matches a template this project shipped; if the company
-   has edited it, that file is left alone and the new template is written
-   beside it as `rules.md.new`. Bot Soul, Persona and Memory files are not
-   touched;
-5. waits for bot runs to finish, up to 30 minutes;
-6. reinstalls the dispatcher, backup and health-check unit files and restarts
-   the dispatcher, and Admin if it is enabled;
-7. runs `cb doctor`.
-
-It does not reinstall the always-on Admin's unit file. When a release says the
-units changed, run `engine/install.sh` again afterwards (safe to repeat).
-
-## Updating from 0.0.1 to 0.0.2
-
-The updater that runs is the one already on your server (0.0.1's). It backs
-up the database, moves to 0.0.2, runs `cb init` and restarts the services, but
-it does not know the newer steps, so you finish them by hand.
-
-1. See where you are. It should print `0.0.1`:
-
-```bash
-cb version
-```
-
-2. Run the update:
-
-```bash
-engine/update.sh --tag v0.0.2
-```
-
-3. Reinstall the unit files and links. Use the same company name and company
-home as the first install; this does not change company data:
-
-```bash
-engine/install.sh --start "My Company" "$CLAUDEBOT_HOME"
-```
-
-4. If you ever edited `rules.md` in the company home, save your copy before
-the next step replaces it:
-
-```bash
-cp "$CLAUDEBOT_HOME/rules.md" "$CLAUDEBOT_HOME/rules.md.mine"
-```
-
-5. Bring in this release's rules and bundled skills, and point every bot at
-them:
-
-```bash
-cb templates refresh
+cb update --check
 ```
 
 ```bash
-cb bot relink
+cb update
 ```
 
-6. If the always-on Admin is enabled, restart it so it reads the new rules
-(this ends the current conversation with it):
+The first command changes nothing. It says what is running, what the target
+is, what would change, what restarts, and how long the chat is offline. The
+second starts the update in its own job, so it keeps running while Admin
+restarts.
+
+## What the update job does
+
+1. Checks that the engine folder has no local edits and finds the target.
+2. Copies the company database to
+   `$ATOBOTS_HOME/backups/pre-update-<old version>-<UTC date and time>.db`
+   (a full, consistent copy made by SQLite, readable only by you). The five
+   newest copies are kept.
+3. Sends the Owner a Telegram message: what is being installed and for about
+   how long the chat will be offline.
+4. Holds the queue and waits for bot runs to finish, up to 30 minutes. With
+   runs still active it stops there and changes nothing, unless you passed
+   `--force`.
+5. Stops the dispatcher and the backup and health-check timers, and waits for
+   a backup or health check that is already running.
+6. Switches the code to the new version. From here on the new version runs
+   its own steps: `cb init` (database changes; safe to repeat), the release's
+   migration scripts, `cb templates refresh`, `cb bot relink`, the `cb`
+   links, and the unit files.
+7. Starts the dispatcher and the timers and, if it is enabled, restarts the
+   always-on Admin (the conversation starts fresh).
+8. Checks that the services came back and stayed up, then runs `cb doctor`.
+
+Admin confirms to the Owner in Telegram when it is back. If Admin is not
+enabled, the job sends the result itself.
+
+## If something goes wrong
+
+**The update rolls itself back.** When a step after the switch fails, or the
+services do not come back, the job puts back the old code, the database copy
+from step 2 and the old unit files, starts the services again, checks them,
+and sends the Owner a message saying what failed and that it was rolled back.
+Anything recorded in the database during the update itself is lost with the
+restore; the queue is held for that time, so this is little.
+
+**The rollback is tried once.** If it fails too, the job stops and sends a
+message that says so. The steps to go back by hand are printed at the end of
+the update log (`$ATOBOTS_HOME/logs/update-<time>.log`):
 
 ```bash
-sudo systemctl restart claudebot-admin
+sudo systemctl stop atobots-dispatcher
 ```
 
-7. Check the result. `cb version` should print `0.0.2`:
+```bash
+git -C ~/AtoBots checkout --force --detach v0.1.0   # the version you were on
+```
 
 ```bash
-cb version
+rm -f "$ATOBOTS_HOME/company.db-wal" "$ATOBOTS_HOME/company.db-shm"
+```
+
+```bash
+cp "$ATOBOTS_HOME/backups/pre-update-<the file the log names>.db" "$ATOBOTS_HOME/company.db"
+```
+
+```bash
+sudo systemctl start atobots-dispatcher
 ```
 
 ```bash
 cb doctor
 ```
 
-8. Admin's starting persona changed in this release. A persona is changed
-only with the Owner's agreement, so the update leaves yours alone. Look at the
-difference:
+If Admin is enabled, start `atobots-admin` the same way.
+
+**Admin is up but silent.** After a restart Claude Code can ask whether it
+trusts the folder, and only someone at the server can answer. The finish
+message says so when this happens. Fix it on the server:
 
 ```bash
-diff "$CLAUDEBOT_HOME/bots/admin/PERSONA.md" engine/templates/admin/PERSONA.md
+tmux attach -t admin-live
 ```
 
-To take the new one as it is:
+Choose "Yes, I trust this folder", then detach with Ctrl-b d. The engine
+never types into that question for you.
 
-```bash
-cb bot set admin --persona-file engine/templates/admin/PERSONA.md
-```
+**`cb doctor` lists problems.** The finish message keeps these apart from the
+update: "Not caused by the update: N existing issue(s) need a decision". They
+were there before. Read each line and decide; common ones are a backup remote
+that is not set up yet, or low disk space.
 
-Optional settings new in 0.0.2 go in `$CLAUDEBOT_HOME/config.json`; see
-"Configuration" in the [README](README.md). Nothing needs to be set for an
-existing install.
+## When the update refuses to start
 
-## Moving a copied install to a clone
+It stops before changing anything if:
+
+- the engine folder has local edits (`git status` shows them; commit or
+  discard them);
+- the tag does not exist (`git -C ~/AtoBots tag --list 'v*'`);
+- the install is a copy with no Git history (see the next section);
+- bot runs are still active after 30 minutes (run it again later, or with
+  `--force`).
+
+## A copied install
 
 Older installs were sometimes made by copying the engine files to the server.
-`engine/update.sh` needs a Git clone, so move to one once. Company data is in
-the company home and is not touched; these steps replace only the engine
-folder. The examples assume the engine is in `~/ClaudeBot`.
-
-1. Stop the services (the second line only if the always-on Admin is enabled):
+`cb update --check` reports this as "a copy with no Git history". The copy is
+turned into a Git clone once, by one job, with the same backup and the same
+way back:
 
 ```bash
-sudo systemctl stop claudebot-dispatcher
+cb update --adopt --repo <repository-url>
+```
+
+It moves the old engine folder to `<folder>.old`, puts a clone in its place,
+and finishes like any update. The old folder is kept until you remove it; the
+finish message gives the command. If the adoption fails, the old folder and
+the database are put back.
+
+An install too old to have `cb update --adopt` is adopted by hand, once. Get
+the new version onto the server and run its own script as the bots' account:
+
+```bash
+git clone <repository-url> ~/AtoBots.new
 ```
 
 ```bash
-sudo systemctl stop claudebot-admin
+~/AtoBots.new/engine/adopt.sh
 ```
 
-2. Back up the database:
+It finds the installed engine from the `cb` link in `~/.local/bin` (pass
+`--old-engine PATH` if it cannot). `~/AtoBots.new` can be removed afterwards.
+
+## One specific release, or going back
 
 ```bash
-mkdir -p "$CLAUDEBOT_HOME/backups" && python3 -c 'import sqlite3,sys; s=sqlite3.connect(sys.argv[1]); d=sqlite3.connect(sys.argv[2]); s.backup(d); d.close(); s.close()' "$CLAUDEBOT_HOME/company.db" "$CLAUDEBOT_HOME/backups/pre-clone-move.db"
-```
-
-3. Keep the old engine folder until the end:
-
-```bash
-mv ~/ClaudeBot ~/ClaudeBot.old
-```
-
-4. Clone the repository and move to the release (use your repository's
-address):
-
-```bash
-git clone <repository-url> ~/ClaudeBot
+cb update --check v0.1.0
 ```
 
 ```bash
-cd ~/ClaudeBot && git checkout v0.0.2
+cb update v0.1.0
 ```
 
-5. Install over the existing company home. This updates the database, the
-`cb` links and the unit files, and starts the services:
+### Roll back on purpose
+
+Naming an older tag goes back to it; `--check` says "OLDER than what is
+running" first. Read that release's section in [CHANGELOG.md](CHANGELOG.md)
+before you do. A release older than 0.0.3 cannot finish its own update, so
+the updater refuses it: use the hand steps under "If something goes wrong"
+with that tag, and restore the database copy only if the older release cannot
+open the current one.
+
+## Coming from ClaudeBot (0.0.3 or earlier)
+
+Before 0.1.0 this project was called ClaudeBot. The services were
+`claudebot-*`, the variable was `CLAUDEBOT_HOME` and the env file was
+`/etc/claudebot.env`. The `cb` command, the company home and everything in it
+are the same as before.
+
+### From 0.0.3
+
+Nothing special: `cb update --check`, then `cb update`. The update moves the
+install to the new names by itself:
+
+- it installs the `atobots-*` services, then stops, disables and removes the
+  `claudebot-*` ones, and enables the same ones that were enabled before;
+- it writes `/etc/atobots.env` and adds `export ATOBOTS_HOME=...` to
+  `~/.bashrc`;
+- it copies the release-key setting to `atobots.releaseKey`.
+
+If any of it fails, the old services, code and database are put back, as with
+every update. Afterwards, open a new shell (or `source ~/.bashrc`).
+
+Kept for one release, so nothing of the company's breaks: `/etc/claudebot.env`,
+the `CLAUDEBOT_HOME` line in `~/.bashrc`, and `CLAUDEBOT_HOME` in the
+environment of every bot run (a routine or script that uses it keeps
+working). `cb doctor` reports `old-name` when the old name is the only thing
+pointing at the company home. Change company scripts to `ATOBOTS_HOME` when
+convenient.
+
+The engine folder keeps the name it has (for example `~/ClaudeBot`). To rename
+it, stop the services, move the folder, and run
+`engine/install.sh --start "<company name>" "$ATOBOTS_HOME"` from the new place,
+then `cb bot relink`.
+
+### From 0.0.2 or 0.0.1
+
+Those versions carry an updater that cannot do the rename. **Go to 0.0.3
+first, and name the tag.** If the old updater is pointed at 0.1.0 or later,
+the new version refuses, puts the old code back and says so; nothing is
+changed. Run this the old way, as the bots' account, in the engine folder:
+
+```bash
+engine/update.sh --tag v0.0.3
+```
+
+A build of 0.0.2 made from `main` hands the rest of that update to 0.0.3,
+which finishes it. The 0.0.2 and 0.0.1 releases cannot hand over; after their
+updater ends, finish by hand (the same company name and company home as the
+first install; this does not change company data):
 
 ```bash
 engine/install.sh --start "My Company" "$CLAUDEBOT_HOME"
 ```
 
-6. Refresh the rules and skills, and relink them (the old links point into
-the folder you moved):
-
 ```bash
-cb templates refresh
+cb templates refresh && cb bot relink
 ```
 
 ```bash
-cb bot relink
-```
-
-7. If the always-on Admin is enabled:
-
-```bash
-sudo systemctl restart claudebot-admin
-```
-
-8. Check, and remove the old folder once `cb doctor` is clean:
-
-```bash
-cb doctor
+sudo systemctl restart claudebot-admin   # only if the always-on Admin is enabled
 ```
 
 ```bash
-rm -rf ~/ClaudeBot.old
+cb version && cb doctor
 ```
 
-To go back before step 8: stop the services, move `~/ClaudeBot.old` back into
-place, restore `pre-clone-move.db` as described under "If an update fails",
-and start the services.
+Then update from 0.0.3 as described above.
 
-## What the update backs up, and where
+## What an update never changes
 
-Before anything changes, the script copies the company database to:
+Two things an update never changes for you, because they belong to the
+company:
 
-```
-$CLAUDEBOT_HOME/backups/pre-update-<old version>-<UTC date>.db
-```
+- A bot's Soul and persona. When a release changes a starting persona the
+  CHANGELOG says so; compare with
+  `diff "$ATOBOTS_HOME/bots/admin/PERSONA.md" engine/templates/admin/PERSONA.md`
+  and take it with `cb bot set admin --persona-file engine/templates/admin/PERSONA.md`.
+- A `rules.md` the company has edited. The new template is written beside it
+  as `rules.md.new`, and `cb doctor` reports `rules-new` until you have
+  compared them and removed that file.
 
-For example, `$CLAUDEBOT_HOME/backups/pre-update-0.0.1-2026-11-10.db`.
-The folder is created if it does not exist, and the file is readable only by
-you. The copy is a full, consistent copy made by SQLite. The update runs
-`cb init`, which also rewrites each bot's settings file and commits any pending
-company changes to the company's Git history. Restoring the database backup
-does not undo those.
-
-## If the update refuses to start
-
-The script stops before changing anything if:
-
-- the ClaudeBot checkout has local changes. Look at them with `git status`, then
-  commit or discard them and run the update again;
-- the tag you asked for does not exist. Check the list in "See the available
-  releases";
-- there is no database yet. Run `engine/install.sh` first.
-
-## If an update fails
-
-The script prints the exact steps to go back. They are also below, with your
-own values filled in by the script when it runs. In short:
-
-```bash
-sudo systemctl stop claudebot-dispatcher
-```
-
-Put the old code back. Use the old version tag or commit the script printed:
-
-```bash
-git checkout v0.0.1   # the version you were on
-```
-
-Remove the database's temporary files, then restore the database from the backup
-the script printed (replace the paths with yours):
-
-```bash
-rm -f /home/claude/MyCompany/company.db-wal /home/claude/MyCompany/company.db-shm
-```
-
-```bash
-cp /home/claude/MyCompany/backups/pre-update-0.0.1-2026-11-10.db /home/claude/MyCompany/company.db
-```
-
-Start the services again:
-
-```bash
-sudo systemctl start claudebot-dispatcher
-```
-
-Then check the install:
-
-```bash
-cb doctor
-```
-
-If Admin is enabled, stop and start it as well (`claudebot-admin`), in the same
-way as the dispatcher.
-
-## Roll back on purpose
-
-To go back to an older release after a successful update, use the same steps as
-above with the older tag. Restore the database only if the older release cannot
-open it. Read that release's section in `CHANGELOG.md` first.
-
-## If `cb doctor` reports problems
-
-`cb doctor` lists every problem it finds, one line each, and exits with an
-error when there are any. The update itself has finished when this happens, and
-nothing was rolled back. Read each line and fix it. Common cases:
-
-- **The dispatcher is down.** Start it with `sudo systemctl start claudebot-dispatcher`.
-- **Backups are not pushed to a remote yet.** This is expected until a backup
-  remote is set up. It is not caused by the update.
-- **Disk or memory is low.** Free space or stop other programs on the server.
-
-Run `cb doctor` again after each fix. A line that is still there means the
-problem is not fixed yet.
+Memory files, company work, secrets and `config.json` are not touched.
+Bundled skills (`cb-basics`, `work-tracking`, `create-bot`) are replaced;
+skills you added under other names stay.
 
 ## What each release tells you
 
-Every release has a section in [CHANGELOG.md](CHANGELOG.md). It lists the changes
-in plain words. If a release needs a step from you (for example, copying a file
-by hand), the section says so under "Manual steps after updating". Read that
-section before you update.
-
-## Things an update does not change
-
-An update replaces the engine code and the engine-owned files in the company
-home. It leaves the company's own files alone:
-
-- Each bot's Soul and persona are not rewritten. A persona is changed only
-  with the Owner's agreement; a Soul only by the Owner. For existing installs,
-  the Owner should manually update `$CLAUDEBOT_HOME/bots/backend/SOUL.md` under
-  "What I will never do" to add:
-  - Stop or restart the service I run inside. A change to the live install
-    runs on its own (`cb update`) and ends with a restart, never a stop.
-  - Restart a service from a health check: the health check alerts, it never
-    restarts a service.
-- For existing installs: run `cb doctor`, then change `python` to `python3` in the file it names.
-- Memory files, company work, secrets and `config.json` are not touched.
-
-Engine-owned, and refreshed by `cb templates refresh` on every update from
-0.0.2 on:
-
-- `rules.md` in the company home, when it still matches a template this
-  project shipped. If you have edited it, the update leaves your file alone
-  and writes the new template as `rules.md.new`. Compare the two and keep
-  the company's rules. `cb doctor` reports `rules-new` until `rules.md.new`
-  is removed. The company home is a Git repository, so
-  `git -C "$CLAUDEBOT_HOME" log -p rules.md` shows earlier versions.
-- The bundled skills in `skills/` in the company home (`cb-basics`,
-  `work-tracking`, `create-bot`). Skills you added under other names stay.
-
-When a release changes a bot's starting persona, the CHANGELOG says so, and
-the new version is in the engine's `engine/templates/` folder.
+Every release has a section in [CHANGELOG.md](CHANGELOG.md), in plain words.
+A step that needs you is listed under "Manual steps after updating".
 
 ## Verifying releases
 
@@ -359,9 +257,44 @@ Maintainers sign a release with `git tag -s`. To make this clone refuse an
 unsigned or wrongly signed tag, set the fingerprint `git verify-tag` prints:
 
 ```bash
-git config claudebot.releaseKey <fingerprint>
+git config atobots.releaseKey <fingerprint>
 ```
 
-`engine/update.sh` then runs `git verify-tag` and continues only when that
+The update then runs `git verify-tag` and continues only when that
 fingerprint is in the output. With no key configured it prints one note and
-continues. The check happens before the checkout or the database backup.
+continues. `cb update --check` says which of the two applies.
+
+## For maintainers: installing a build that is not a release
+
+A zip or a folder holding the engine tree can be installed without a tag. It
+is an **unverified local build**: nothing proves who made the file, and it
+runs with the bots' account. It is installed only on the Owner's direct yes.
+
+```bash
+cb update --check --zip build.zip
+```
+
+```bash
+cb update --zip build.zip --change C-0007
+```
+
+- The zip is unpacked by the installed version, in a temporary folder under
+  the company home. It is refused if it holds an absolute path, a `..` path,
+  a link of any kind, or no `engine/update.sh`.
+- It is committed to a `local-builds` branch of the clone and installed like
+  a tag, with the same backup and rollback.
+- `cb version` then prints `<version>+local.<hash>`, so a local build is
+  never mistaken for the release with the same number. The database records
+  where the running engine came from (`cb update --check` shows it).
+- A bot must name an approved change plan (`cb change plan`, then
+  `cb change approve` with the Owner's exact words). A person at the server
+  does not need one.
+- Moving to a release later is allowed; `--check` says the local build will
+  be replaced.
+
+## For maintainers: migration scripts
+
+A release that must change something on existing installs ships a script in
+[engine/migrations](engine/migrations/README.md). The update runs the ones
+between the old and the new version, in order. A failing script rolls the
+update back.

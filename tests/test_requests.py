@@ -9,9 +9,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "engine"))
 
-from claudebot import bots, cli, items, requests  # noqa: E402
-from claudebot.config import Config  # noqa: E402
-from claudebot.db import connect, init_db  # noqa: E402
+from atobots import bots, cli, items, requests  # noqa: E402
+from atobots.config import Config  # noqa: E402
+from atobots.db import connect, init_db  # noqa: E402
 
 
 class RequestsBase(unittest.TestCase):
@@ -98,7 +98,7 @@ class HookTests(RequestsBase):
         stdin = mock.Mock()
         stdin.buffer = io.BytesIO(raw)
         out, err = io.StringIO(), io.StringIO()
-        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.cfg.home)}), \
+        with mock.patch.dict(os.environ, {"ATOBOTS_HOME": str(self.cfg.home)}), \
                 mock.patch("sys.stdin", stdin), mock.patch("sys.stdout", out), \
                 mock.patch("sys.stderr", err):
             rc = cli.main(["hook", "prompt"])
@@ -208,7 +208,7 @@ class HookTests(RequestsBase):
         )
         def allowed(attrs):
             return attrs.get("user_id") == "1"
-        with mock.patch("claudebot.requests._telegram_sender_allowed",
+        with mock.patch("atobots.requests._telegram_sender_allowed",
                         side_effect=allowed):
             rc, out, _ = self.run_hook(json.dumps(
                 {"session_id": "s", "prompt": prompt}).encode())
@@ -232,7 +232,7 @@ class HookTests(RequestsBase):
     def test_hook_exits_0_when_home_missing(self):
         stdin = mock.Mock()
         stdin.buffer = io.BytesIO(b"{}")
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDEBOT_HOME"}
+        env = {k: v for k, v in os.environ.items() if k != "ATOBOTS_HOME"}
         with mock.patch.dict(os.environ, env, clear=True), \
                 mock.patch("sys.stdin", stdin):
             self.assertEqual(cli.main(["hook", "prompt"]), 0)
@@ -243,7 +243,7 @@ class RequestCliTests(RequestsBase):
         rid = requests.capture(self.conn, "do z", "s")
         a = self.item()
         buf = io.StringIO()
-        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.cfg.home)}), \
+        with mock.patch.dict(os.environ, {"ATOBOTS_HOME": str(self.cfg.home)}), \
                 mock.patch("sys.stdout", buf):
             self.assertEqual(cli.main(["request", "unhandled"]), 0)
             self.assertIn("do z", buf.getvalue())
@@ -256,10 +256,10 @@ class RequestCliTests(RequestsBase):
     def test_unhandled_shows_search_hint_for_matching_item(self):
         rid = requests.capture(self.conn, "transcribe voice messages", "s")
         t = items.new(self.cfg, self.conn, "voice message transcription", "admin")
-        from claudebot import search
+        from atobots import search
         search.reindex_records(self.cfg, self.conn)
         buf = io.StringIO()
-        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.cfg.home)}), \
+        with mock.patch.dict(os.environ, {"ATOBOTS_HOME": str(self.cfg.home)}), \
                 mock.patch("sys.stdout", buf):
             self.assertEqual(cli.main(["request", "unhandled"]), 0)
         out = buf.getvalue()
@@ -270,7 +270,7 @@ class RequestCliTests(RequestsBase):
         rid = requests.capture(self.conn, "what time is it?", "s")
         self.assertEqual([r["id"] for r in requests.unhandled(self.conn)], [rid])
         buf = io.StringIO()
-        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.cfg.home)}), \
+        with mock.patch.dict(os.environ, {"ATOBOTS_HOME": str(self.cfg.home)}), \
                 mock.patch("sys.stdout", buf):
             rc = cli.main(["request", "close", f"R-{rid}", "--reason", "answered in chat"])
             self.assertEqual(rc, 0)

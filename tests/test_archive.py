@@ -16,11 +16,11 @@ from unittest import mock
 ENGINE = Path(__file__).resolve().parent.parent / "engine"
 sys.path.insert(0, str(ENGINE))
 
-from claudebot import (archive, bots, cli, dispatcher, items, messages,  # noqa: E402
+from atobots import (archive, bots, cli, dispatcher, items, messages,  # noqa: E402
                        requests, search)
-from claudebot.config import Config  # noqa: E402
-from claudebot.db import connect, init_db  # noqa: E402
-from claudebot.runner import RunResult, task_packet  # noqa: E402
+from atobots.config import Config  # noqa: E402
+from atobots.db import connect, init_db  # noqa: E402
+from atobots.runner import RunResult, task_packet  # noqa: E402
 
 NOW = datetime(2026, 11, 9, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -67,7 +67,7 @@ class Base(unittest.TestCase):
 
     def cb(self, *argv):
         out, err = io.StringIO(), io.StringIO()
-        with mock.patch.dict(os.environ, {"CLAUDEBOT_HOME": str(self.cfg.home)}), \
+        with mock.patch.dict(os.environ, {"ATOBOTS_HOME": str(self.cfg.home)}), \
                 redirect_stdout(out), redirect_stderr(err):
             rc = cli.main(list(argv))
         return rc, out.getvalue(), err.getvalue()
@@ -164,7 +164,7 @@ class TranscriptTests(Base):
 
     def test_only_recorded_runs_are_touched(self):
         run_id, path = self.make_run(lines=CHAT)
-        other = self.cfg.claude_projects_dir / "-home-claude-ClaudeBot" / "owner-session.jsonl"
+        other = self.cfg.claude_projects_dir / "-home-claude-AtoBots" / "owner-session.jsonl"
         other.parent.mkdir(parents=True)
         other.write_text("{}\n")
         archive.archive_transcript(self.cfg, self.conn, run_id)

@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import activity, bots, items, messages, tasks, usage
+from . import names
 from .config import Config
 from .db import tx, utcnow
 
@@ -124,7 +125,7 @@ def task_prompt_for_file(task_file: str) -> str:
 
 def unit_name_for(run_id: int) -> str:
     """Transient systemd unit name for one run (stopped on Python timeout)."""
-    return f"claudebot-run-{int(run_id)}.service"
+    return f"atobots-run-{int(run_id)}.service"
 
 
 def build_command(cfg: Config, bot: bots.Bot, session_id: str, prompt_file,
@@ -152,7 +153,7 @@ def build_command(cfg: Config, bot: bots.Bot, session_id: str, prompt_file,
            f"--setenv=PATH={cfg.run_home}/.local/bin:/usr/local/bin:/usr/bin:/bin",
            f"--setenv=CB_BOT={bot.name}",
            f"--setenv=CB_SESSION_ID={session_id}",
-           f"--setenv=CLAUDEBOT_HOME={cfg.home}",
+           *(f"--setenv={k}={v}" for k, v in names.home_env(cfg.home).items()),
            cfg.claude_bin, "-p", prompt,
            "--output-format", "json",
            "--dangerously-skip-permissions",
