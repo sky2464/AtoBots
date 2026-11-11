@@ -207,5 +207,100 @@ class DumpRedactTests(BackupBase):
         self.assertIn("activity row", notes[0]["body"])
 
 
+class BackupFilesTests(BackupBase):
+    def setUp(self):
+        super().setUp()
+        self.files_bare = Path(self._tmp.name) / "files.git"
+        git(Path(self._tmp.name), "init", "-q", "--bare", "-b", "main", str(self.files_bare))
+        git(self.cfg.home, "remote", "add", backup.FILES_REMOTE, str(self.files_bare))
+        self.private_dir = Path(self._tmp.name) / "my_private_docs"
+        self.private_dir.mkdir(parents=True)
+        (self.private_dir / "doc1.txt").write_text("very private text 1")
+        (self.private_dir / "doc2.txt").write_text("very private text 2")
+
+    def test_files_add_and_list_and_warning(self):
+        self.assertEqual(backup.files_list(self.cfg), [])
+        added, is_first = backup.files_add(self.cfg, self.private_dir)
+        self.assertTrue(added)
+        self.assertTrue(is_first)
+        self.assertEqual(backup.files_list(self.cfg), [str(self.private_dir.resolve())])
+
+        # Second add of another folder is not first
+        other_dir = Path(self._tmp.name) / "other_docs"
+        other_dir.mkdir()
+        added, is_first = backup.files_add(self.cfg, other_dir)
+        self.assertTrue(added)
+        self.assertFalse(is_first)
+        self.assertEqual(backup.files_list(self.cfg),
+                         sorted([str(self.private_dir.resolve()), str(other_dir.resolve())]))
+
+        # Re-adding existing is False
+        added, is_first = backup.files_add(self.cfg, self.private_dir)
+        self.assertFalse(added)
+        self.assertFalse(is_first)
+
+    def test_files_now_missing_passphrase(self):
+        backup.files_add(self.cfg, self.private_dir)
+        with mock.patch("claudebot.store._reveal", side_effect=Exception("no key")):
+            with self.assertRaises(backup.BackupError):
+                backup.files_now(self.cfg, self.conn)
+
+    def test_files_now_verify_and_restore(self):
+        backup.files_add(self.cfg, self.private_dir)
+        passphrase = b"super-secure-passphrase\n"
+        real_subp_run = subprocess.run
+
+        # Mock gpg and tar execution so tests don't require external gpg binary
+        def mock_subp_run(cmd, *args, **kwargs):
+            if cmd[0] == "tar":
+                if "-cf" in cmd:
+                    tar_path = cmd[2]
+                    Path(tar_path).write_bytes(b"mock-tar-contents")
+                    return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+                elif "-xf" in cmd:
+                    target_dir = Path(cmd[4])
+                    # Untar mock: recreate structure
+                    sub = target_dir / self.private_dir.name
+                    sub.mkdir(parents=True, exist_ok=True)
+                    (sub / "restored.txt").write_text("restored text")
+                    return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            elif cmd[0] == "gpg":
+                if "--symmetric" in cmd:
+                    out_path = cmd[cmd.index("-o") + 1]
+                    Path(out_path).write_bytes(b"mock-gpg-encrypted")
+                    return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+                elif "--decrypt" in cmd:
+                    out_path = cmd[cmd.index("-o") + 1]
+                    if out_path != os.devnull:
+                        Path(out_path).write_bytes(b"mock-tar-contents")
+                    return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            return real_subp_run(cmd, *args, **kwargs)
+
+        with mock.patch("claudebot.store._reveal", return_value=passphrase):
+            with mock.patch("subprocess.run", side_effect=mock_subp_run):
+                res = backup.files_now(self.cfg, self.conn)
+                self.assertEqual(res, "pushed")
+
+                ver = backup.files_verify(self.cfg)
+                self.assertEqual(ver, "ok")
+
+                restore_dir = Path(self._tmp.name) / "restored_files"
+                count = backup.restore_files(self.cfg, str(self.files_bare), restore_dir)
+                self.assertEqual(count, 1)
+                self.assertTrue((restore_dir / self.private_dir.name / "restored.txt").is_file())
+
+    def test_cmd_now_runs_files_when_configured(self):
+        backup.files_add(self.cfg, self.private_dir)
+        with mock.patch.object(backup, "snapshot", return_value="12345678"):
+            with mock.patch.object(backup, "push", return_value="pushed"):
+                with mock.patch.object(backup, "files_now", return_value="pushed") as fn:
+                    with mock.patch.object(backup, "files_verify", return_value="ok") as fv:
+                        with mock.patch("claudebot.backup.Config.load", return_value=self.cfg):
+                            rc = backup._cmd_now(None)
+                            self.assertEqual(rc, 0)
+                            self.assertTrue(fn.called)
+                            self.assertTrue(fv.called)
+
+
 if __name__ == "__main__":
     unittest.main()

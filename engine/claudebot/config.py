@@ -67,6 +67,7 @@ class Config:
     # the prompt-cache lifetime (the next turn would rewrite all of it).
     idle_rotate_tokens: int = 80000
     cache_ttl_seconds: int = 300
+    rollover_handoff_seconds: int = 180
     archive_offserver_pct: int = 70
     batch_max_messages: int = 20
     batch_max_bytes: int = 64 * 1024
