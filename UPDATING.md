@@ -60,6 +60,17 @@ enabled, the job sends the result itself.
 
 ## If something goes wrong
 
+**Admin always comes back.** The job runs as its own systemd unit
+(`atobots-update`, or `atobots-adopt` for `adopt.sh --detach`), so stopping
+Admin does not stop it. When the job ends, however it ends (done, failed,
+killed, or past its three-hour limit), systemd runs a small guard script
+kept next to the log. If Admin or the backup and health-check timers are
+enabled but not running, the guard starts them again and tells the Owner on
+Telegram. It leaves the dispatcher stopped when the job ended half way,
+because the code and the database may not match; the message says so, and
+Admin can read the log and run `cb doctor` with you. After a normal update
+the guard finds everything running and does nothing.
+
 **The update rolls itself back.** When a step after the switch fails, or the
 services do not come back, the job puts back the old code, the database copy
 from step 2 and the old unit files, starts the services again, checks them,
@@ -180,6 +191,18 @@ git clone <repository-url> ~/AtoBots.new
 
 It prints the log file to watch. The chat is offline for a few minutes at each
 step. Afterwards remove `~/AtoBots.new` and the old folder it names.
+
+To have Admin do it from Telegram (its skills are from the old version, so
+give it the steps), send something like:
+
+> Update AtoBots with the new adopt script. Clone <repository-url> into
+> ~/AtoBots.new, then run `~/AtoBots.new/engine/adopt.sh --repo
+> <repository-url> --detach` and tell me the log file it prints. Do not stop
+> or restart any service yourself; the job does that, and you will be
+> offline for a few minutes.
+
+The job sends its own Telegram messages, and the guard starts Admin again
+whatever happens.
 
 Two things that do not work, and the update tells you why:
 

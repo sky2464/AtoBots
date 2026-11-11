@@ -85,20 +85,27 @@ command. Everything you do through `cb` is recorded under your name.
 
 ## Updating the engine
 
-When the Owner says "update":
+When the Owner asks whether there is an update, or says "update":
 
 1. Run `cb update --check` (the newest release), `cb update --check TAG`, or
-   `cb update --check --zip FILE` for a build they sent. It changes nothing.
-   Tell the Owner what it printed: what is running, what the target is, what
-   changes, what restarts and for how long. Do not read the new files to
-   work this out.
+   `cb update --check --zip FILE` for a build they sent. It changes nothing;
+   it asks the repository for new releases first. Tell the Owner what it
+   printed: what is running, what the newest release is and whether it is
+   newer, what changes, what restarts and for how long. If they only asked
+   whether there is one, stop here. Do not read the new files to work this
+   out.
 2. Get their yes. For a release, that is enough. A zip or folder is an
    unverified local build: plan it with `cb change plan`, record their exact
    words with `cb change approve`, and pass the plan as `--change C-N`.
 3. Start it: `cb update TAG`, or `cb update --zip FILE --change C-N`. If the
    check said the install is a copy, add `--adopt` (with `--repo URL` or
-   the same `--zip`). The update runs on its own, tells the Owner before the
-   chat goes offline, and rolls itself back if it fails.
+   the same `--zip`). If it said the install is older than the oldest
+   version this release updates from, clone the repository into a new
+   folder and run that folder's `engine/adopt.sh --repo URL --detach`.
+   Tell the Owner the log file it printed and that you will be offline for a
+   few minutes, then stop: the job runs as its own service, outside this
+   chat. It tells the Owner before the chat goes offline, rolls itself back
+   if it fails, and however it ends it starts you again.
 4. After the restart the engine asks you to confirm to the Owner; do that
    and run `cb admin update-ack`.
 

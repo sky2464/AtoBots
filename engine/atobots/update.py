@@ -861,14 +861,31 @@ def is_unit_active(unit: str = UNIT_NAME) -> bool:
         return False
 
 
+# The longest an update job may run. Waiting for bot runs takes up to 30
+# minutes and every later step has its own limit; this only stops a job that
+# hangs, so the guard can bring Admin back.
+JOB_MAX = "3h"
+
+
 def build_command(cfg: Config, args, log_path: Path, force: bool = False,
-                  script_path: Path | None = None) -> list[str]:
+                  script_path: Path | None = None,
+                  guard_path: Path | None = None) -> list[str]:
     """The systemd-run line. The job runs in its own unit so it survives the
-    restart of whoever asked for it."""
+    restart of whoever asked for it. With `guard_path`, systemd runs that
+    guard when the job ends for any reason (finished, failed, killed or out
+    of time); it starts Admin again so the Owner keeps Telegram."""
     if script_path is None:
         script_path = engine_dir() / "update.sh"
     if isinstance(args, str):
         args = [args]
+    guard = []
+    if guard_path is not None:
+        job = Path(script_path).stem
+        guard = [
+            "-p", f"RuntimeMaxSec={JOB_MAX}",
+            "-p", f'ExecStopPost=-/bin/bash "{guard_path}" '
+                  f'{names.UNIT_PREFIX} {job} "{log_path}"',
+        ]
     cmd = [
         "sudo", "systemd-run",
         f"--unit={UNIT_NAME}",
@@ -879,6 +896,7 @@ def build_command(cfg: Config, args, log_path: Path, force: bool = False,
         f"--uid={cfg.run_user}",
         "-p", f"StandardOutput=file:{log_path}",
         "-p", f"StandardError=file:{log_path}",
+        *guard,
         str(script_path),
         *args,
     ]
@@ -902,8 +920,18 @@ def _start_job(cfg: Config, args: list, force: bool, script_path=None,
         pass
     now_str = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     log_path = logs_dir / f"update-{now_str}.log"
+    # A copy of this version's guard: the job may switch or roll back the
+    # engine folder, and the guard must still be there when the job ends.
+    guard_path = logs_dir / f"update-{now_str}.guard.sh"
+    try:
+        shutil.copyfile(engine_dir() / "lib" / "update_guard.sh", guard_path)
+        os.chmod(guard_path, 0o700)
+    except OSError as e:
+        print(f"error: could not prepare the update guard: {e}",
+              file=sys.stderr)
+        return 1
     cmd = build_command(cfg, args, log_path, force=force,
-                        script_path=script_path)
+                        script_path=script_path, guard_path=guard_path)
     try:
         runner(cmd, check=True)
     except subprocess.CalledProcessError as e:
@@ -917,6 +945,8 @@ def _start_job(cfg: Config, args: list, force: bool, script_path=None,
     print("The update runs on its own; Admin will restart at the end.")
     print("The Owner gets a Telegram notice before the chat goes offline, "
           "and a result afterwards. A failed update rolls itself back.")
+    print("However the job ends, Admin is started again so the Owner can "
+          "still reach it on Telegram.")
     return 0
 
 

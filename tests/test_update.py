@@ -419,6 +419,28 @@ class StartTests(Base):
         self.assertEqual(cmd[-1], "v1.0.0")
         forced = update.build_command(self.cfg, "v1.0.0", log_path, force=True)
         self.assertEqual(forced[-2:], ["v1.0.0", "--force"])
+        self.assertFalse(any(c.startswith("ExecStopPost") for c in cmd))
+
+    def test_build_command_with_guard(self):
+        log_path = self.cfg.logs_dir / "update-t.log"
+        guard = self.cfg.logs_dir / "update-t.guard.sh"
+        cmd = update.build_command(self.cfg, [], log_path, guard_path=guard)
+        self.assertIn(f"RuntimeMaxSec={update.JOB_MAX}", cmd)
+        self.assertIn(f'ExecStopPost=-/bin/bash "{guard}" {names.UNIT_PREFIX}'
+                      f' update "{log_path}"', cmd)
+        self.assertTrue(cmd[-1].endswith("update.sh"))
+
+    def test_start_job_copies_the_guard_next_to_the_log(self):
+        rc, calls, stdout = self.run_ok(update.run_update, "v0.0.2")
+        self.assertEqual(rc, 0)
+        guards = list(self.cfg.logs_dir.glob("update-*.guard.sh"))
+        self.assertEqual(len(guards), 1)
+        self.assertEqual(guards[0].read_text(),
+                         (update.engine_dir() / "lib" / "update_guard.sh")
+                         .read_text())
+        self.assertEqual(stat.S_IMODE(guards[0].stat().st_mode), 0o700)
+        self.assertTrue(any(str(guards[0]) in c for c in calls[0]))
+        self.assertIn("Admin is started again", stdout)
 
     def run_ok(self, fn, *args, **kw):
         calls = []

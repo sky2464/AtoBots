@@ -19,6 +19,20 @@ Updating an old install works again, in one command.
   below it, and an update that is started anyway stops before changing
   anything and rolls back with the same message.
 
+### Updating from Telegram keeps Admin reachable
+- An update or adoption job now has a guard. systemd runs it however the job
+  ends (done, failed, killed, or past its new three-hour limit). If Admin or
+  the backup and health-check timers are enabled but stopped, it starts them
+  again and tells the Owner on Telegram, so asking Admin to update can no
+  longer leave the Owner without Admin. It leaves the dispatcher stopped
+  after a job that ended half way, and says so.
+- `engine/adopt.sh --detach` has the same guard and time limit.
+- Admin's update steps (the `cb-basics` skill) cover "is there an update?"
+  (check and report only), the two-step path for very old installs, and
+  stopping after starting the job instead of waiting for it in the chat.
+- UPDATING.md has a message to send an older Admin over Telegram to run the
+  update for you.
+
 ### Fixed
 - When more than a few bots wrote to Admin at once, the notice for the live
   Admin session grew past its length limit and was never shown. It now names

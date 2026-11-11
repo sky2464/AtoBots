@@ -49,13 +49,20 @@ except ValueError:
 }
 
 # detach ARGS...   Run this script again as its own systemd job and return.
+# The guard (lib/update_guard.sh, copied next to the log) runs however the
+# job ends and starts Admin again, so the Owner keeps Telegram.
 detach() {
     local log=${CB_ADOPT_LOG:-$HOME/atobots-adopt-$(date -u +%Y%m%dT%H%M%SZ).log}
+    local guard=${log%.log}.guard.sh
+    install -m 700 "$(dirname "${BASH_SOURCE[0]}")/lib/update_guard.sh" "$guard"
     sudo systemd-run --unit=atobots-adopt --collect --no-block \
         --uid="$(id -un)" -p "StandardOutput=file:$log" \
-        -p "StandardError=file:$log" bash "${BASH_SOURCE[0]}" "$@"
+        -p "StandardError=file:$log" -p "RuntimeMaxSec=3h" \
+        -p "ExecStopPost=-/bin/bash \"$guard\" atobots adopt \"$log\"" \
+        bash "${BASH_SOURCE[0]}" "$@"
     echo "Started as its own job. Log: $log"
     echo "Watch it with: tail -f $log"
+    echo "However it ends, Admin is started again so Telegram keeps working."
 }
 
 # bridge_through_stepping_stone
